@@ -80,6 +80,22 @@ export function recomputeNextRuns(state: CronServiceState) {
       );
       job.state.runningAtMs = undefined;
     }
+    // Preserve nextRunAtMs for jobs that are currently due but haven't executed
+    // yet. Without this guard, recomputing at the exact trigger time (or just
+    // after) advances nextRunAtMs to the *following* occurrence before
+    // runDueJobs() has a chance to fire the current one — a TOCTOU race that
+    // silently skips the run.
+    const prevNext = job.state.nextRunAtMs;
+    if (
+      typeof prevNext === "number" &&
+      now >= prevNext &&
+      typeof runningAt !== "number" &&
+      (job.state.lastRunAtMs === undefined || job.state.lastRunAtMs < prevNext)
+    ) {
+      // Job is due and hasn't run for this slot — keep the existing
+      // nextRunAtMs so runDueJobs() will pick it up.
+      continue;
+    }
     job.state.nextRunAtMs = computeJobNextRunAtMs(job, now);
   }
 }
