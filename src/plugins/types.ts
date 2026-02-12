@@ -515,7 +515,8 @@ export type PluginHookAfterLlmCallEvent = {
   toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
   iteration: number;
   model: string;
-  latencyMs: number;
+  /** Wall-clock LLM call duration. Undefined when not measurable (e.g. event-subscription path). */
+  latencyMs?: number;
   tokenUsage?: { input: number; output: number };
 };
 
@@ -536,7 +537,8 @@ export type PluginHookContextAssembledEvent = {
 // loop_iteration_start hook (void — parallel)
 export type PluginHookLoopIterationStartEvent = {
   iteration: number;
-  pendingToolResults: number;
+  /** Number of pending tool results awaiting processing. Undefined when not available. */
+  pendingToolResults?: number;
   messageCount: number;
 };
 
@@ -544,7 +546,8 @@ export type PluginHookLoopIterationStartEvent = {
 export type PluginHookLoopIterationEndEvent = {
   iteration: number;
   toolCallsMade: number;
-  newMessagesAdded: number;
+  /** Number of new messages added this iteration. Undefined when not available. */
+  newMessagesAdded?: number;
   willContinue: boolean;
 };
 
