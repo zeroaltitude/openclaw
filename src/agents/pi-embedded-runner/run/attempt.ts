@@ -700,7 +700,7 @@ export async function runEmbeddedAttempt(
                   .runLoopIterationStart(
                     {
                       iteration: hookTurnIteration,
-                      pendingToolResults: 0,
+                      // pendingToolResults omitted — not available from event subscription
                       messageCount: activeSession.messages.length,
                     },
                     hookAgentCtx,
@@ -714,7 +714,7 @@ export async function runEmbeddedAttempt(
                     {
                       iteration: hookTurnIteration,
                       toolCallsMade: toolResults.length,
-                      newMessagesAdded: 0,
+                      // newMessagesAdded omitted — not available from event subscription
                       willContinue: toolResults.length > 0,
                     },
                     hookAgentCtx,
@@ -753,7 +753,7 @@ export async function runEmbeddedAttempt(
                       toolCalls,
                       iteration: hookTurnIteration,
                       model: params.modelId,
-                      latencyMs: 0, // Not tracked from event subscription
+                      // latencyMs omitted — not measurable from event subscription
                     },
                     hookAgentCtx,
                   )
@@ -939,74 +939,26 @@ export async function runEmbeddedAttempt(
 
         // Emit before_response_emit hook
         if (hookRunner?.hasHooks("before_response_emit")) {
-          const lastAssistantMsg = messagesSnapshot
-            .slice()
-            .toReversed()
-            .find((m) => m.role === "assistant");
-          if (
-            lastAssistantMsg &&
-            typeof lastAssistantMsg === "object" &&
-            "content" in lastAssistantMsg
-          ) {
-            const content =
-              typeof lastAssistantMsg.content === "string"
-                ? lastAssistantMsg.content
-                : Array.isArray(lastAssistantMsg.content)
-                  ? (lastAssistantMsg.content as Array<{ type?: string; text?: string }>)
-                      .filter((c) => c?.type === "text")
-                      .map((c) => c.text ?? "")
-                      .join("")
-                  : "";
-            if (content) {
-              try {
-                const emitResult = await hookRunner.runBeforeResponseEmit(
-                  {
-                    content,
-                    channel: params.messageChannel ?? params.messageProvider,
-                    messageCount: messagesSnapshot.length,
-                  },
-                  hookAgentCtx,
-                );
-                if (emitResult?.block) {
-                  log.warn(
-                    `before_response_emit: response blocked: ${emitResult.blockReason ?? "no reason"}`,
-                  );
-                }
-                // Apply modified content from plugin hooks (e.g. developerMode taint headers)
-                if (emitResult?.content && emitResult.content !== content) {
-                  log.info(
-                    `before_response_emit: APPLYING modified content (len=${emitResult.content.length}, aTexts=${assistantTexts.length})`,
-                  );
-                  // Update assistantTexts — this is what the delivery pipeline actually uses
-                  if (assistantTexts.length > 0) {
-                    assistantTexts[assistantTexts.length - 1] = emitResult.content;
-                  } else {
-                    assistantTexts.push(emitResult.content);
-                  }
-                  // Also update session messages for consistency
-                  const sessionMsg = activeSession.messages[activeSession.messages.length - 1];
-                  if (sessionMsg && sessionMsg.role === "assistant") {
-                    if (typeof sessionMsg.content === "string") {
-                      (sessionMsg as unknown as Record<string, unknown>).content =
-                        emitResult.content;
-                    } else if (Array.isArray(sessionMsg.content)) {
-                      const sParts = (
-                        sessionMsg.content as Array<{ type?: string; text?: string }>
-                      ).filter((c) => c?.type === "text");
-                      if (sParts.length > 0) {
-                        sParts[0].text = emitResult.content;
-                      }
-                    }
-                  }
-                } else {
-                  log.info(
-                    `before_response_emit: no modification (hasResult=${!!emitResult}, hasContent=${!!emitResult?.content})`,
-                  );
-                }
-              } catch (err) {
-                log.warn(`before_response_emit hook failed: ${String(err)}`);
+          try {
+            const { applyBeforeResponseEmitHook } = await import("./hook-response-emit.js");
+            const modifiedContent = await applyBeforeResponseEmitHook({
+              hookRunner,
+              agentCtx: hookAgentCtx,
+              assistantTexts,
+              messagesSnapshot,
+              activeSession,
+              channel: params.messageChannel ?? params.messageProvider,
+            });
+            if (modifiedContent !== undefined) {
+              // Update assistantTexts — this is what the delivery pipeline actually uses
+              if (assistantTexts.length > 0) {
+                assistantTexts[assistantTexts.length - 1] = modifiedContent;
+              } else {
+                assistantTexts.push(modifiedContent);
               }
             }
+          } catch (err) {
+            log.warn(`before_response_emit hook failed: ${String(err)}`);
           }
         }
 
