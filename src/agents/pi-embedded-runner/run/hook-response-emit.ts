@@ -97,7 +97,7 @@ export async function applyBeforeResponseEmitHook(
   if (sessionMsg?.role === "assistant" && "content" in sessionMsg) {
     const msgContent = (sessionMsg as { content: unknown }).content;
     if (typeof msgContent === "string") {
-      (sessionMsg as Record<string, unknown>).content = emitResult.content;
+      (sessionMsg as unknown as Record<string, unknown>).content = emitResult.content;
     } else if (Array.isArray(msgContent)) {
       const textParts = (msgContent as ContentPart[]).filter((c) => c?.type === "text");
       if (textParts.length > 0) {
