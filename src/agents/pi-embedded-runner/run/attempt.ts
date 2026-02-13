@@ -548,7 +548,6 @@ export async function runEmbeddedAttempt(
       // Wrap streamFn for extended security hooks (before_llm_call / context_assembled).
       // This must be the outermost wrapper so hooks see the full context first.
       const hookIterationRef = { current: 0 };
-      const hookRunner = getGlobalHookRunner();
       const hookAgentId =
         typeof params.agentId === "string" && params.agentId.trim()
           ? normalizeAgentId(params.agentId)
@@ -709,7 +708,7 @@ export async function runEmbeddedAttempt(
               if (event.type === "turn_start") {
                 hookTurnIteration++;
                 hookIterationRef.current = hookTurnIteration;
-                hookRunner!
+                hookRunner
                   .runLoopIterationStart(
                     {
                       iteration: hookTurnIteration,
@@ -722,7 +721,7 @@ export async function runEmbeddedAttempt(
               }
               if (event.type === "turn_end") {
                 const toolResults = event.toolResults ?? [];
-                hookRunner!
+                hookRunner
                   .runLoopIterationEnd(
                     {
                       iteration: hookTurnIteration,
@@ -734,7 +733,7 @@ export async function runEmbeddedAttempt(
                   )
                   .catch((err) => log.warn(`loop_iteration_end hook: ${String(err)}`));
               }
-              if (event.type === "message_end" && hookRunner!.hasHooks("after_llm_call")) {
+              if (event.type === "message_end" && hookRunner.hasHooks("after_llm_call")) {
                 const msg = event.message;
                 // Extract tool calls from assistant message content
                 const toolCalls: Array<{
@@ -759,10 +758,10 @@ export async function runEmbeddedAttempt(
                     }
                   }
                 }
-                hookRunner!
+                hookRunner
                   .runAfterLlmCall(
                     {
-                      response: msg as AgentMessage,
+                      response: msg,
                       toolCalls,
                       iteration: hookTurnIteration,
                       model: params.modelId,
