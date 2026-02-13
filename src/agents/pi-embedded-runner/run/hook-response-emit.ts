@@ -28,13 +28,18 @@ export interface ApplyBeforeResponseEmitParams {
 /**
  * Extract text content from an assistant message.
  * Handles both string content and content-part arrays.
+ * Guards against AgentMessage union members that lack `content`.
  */
 export function extractAssistantText(msg: AgentMessage): string {
-  if (typeof msg.content === "string") {
-    return msg.content;
+  if (!("content" in msg)) {
+    return "";
   }
-  if (Array.isArray(msg.content)) {
-    return (msg.content as ContentPart[])
+  const content = (msg as { content: unknown }).content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return (content as ContentPart[])
       .filter((c) => c?.type === "text")
       .map((c) => c.text ?? "")
       .join("");
@@ -89,11 +94,12 @@ export async function applyBeforeResponseEmitHook(
   // We update in-place because activeSession.messages is a mutable array
   // shared with the session persistence layer.
   const sessionMsg = activeSession.messages[activeSession.messages.length - 1];
-  if (sessionMsg?.role === "assistant") {
-    if (typeof sessionMsg.content === "string") {
-      sessionMsg.content = emitResult.content;
-    } else if (Array.isArray(sessionMsg.content)) {
-      const textParts = (sessionMsg.content as ContentPart[]).filter((c) => c?.type === "text");
+  if (sessionMsg?.role === "assistant" && "content" in sessionMsg) {
+    const msgContent = (sessionMsg as { content: unknown }).content;
+    if (typeof msgContent === "string") {
+      (sessionMsg as Record<string, unknown>).content = emitResult.content;
+    } else if (Array.isArray(msgContent)) {
+      const textParts = (msgContent as ContentPart[]).filter((c) => c?.type === "text");
       if (textParts.length > 0) {
         textParts[0].text = emitResult.content;
       }
