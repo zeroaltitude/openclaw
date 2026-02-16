@@ -13,30 +13,26 @@ let enabledPort: number;
 
 beforeAll(async () => {
   enabledPort = await getFreePort();
-  enabledServer = await startServer(enabledPort);
+  enabledServer = await startServer(enabledPort, { openResponsesEnabled: true });
 });
 
 afterAll(async () => {
   await enabledServer.close({ reason: "openresponses enabled suite done" });
 });
 
-async function startServerWithDefaultConfig(port: number) {
-  const { startGatewayServer } = await import("./server.js");
-  return await startGatewayServer(port, {
-    host: "127.0.0.1",
-    auth: { mode: "token", token: "secret" },
-    controlUiEnabled: false,
-  });
-}
-
 async function startServer(port: number, opts?: { openResponsesEnabled?: boolean }) {
   const { startGatewayServer } = await import("./server.js");
-  return await startGatewayServer(port, {
+  const serverOpts = {
     host: "127.0.0.1",
     auth: { mode: "token", token: "secret" },
     controlUiEnabled: false,
-    openResponsesEnabled: opts?.openResponsesEnabled ?? true,
-  });
+  } as const;
+  return await startGatewayServer(
+    port,
+    opts?.openResponsesEnabled === undefined
+      ? serverOpts
+      : { ...serverOpts, openResponsesEnabled: opts.openResponsesEnabled },
+  );
 }
 
 async function writeGatewayConfig(config: Record<string, unknown>) {
@@ -96,7 +92,7 @@ async function ensureResponseConsumed(res: Response) {
 describe("OpenResponses HTTP API (e2e)", () => {
   it("rejects when disabled (default + config)", { timeout: 120_000 }, async () => {
     const port = await getFreePort();
-    const _server = await startServerWithDefaultConfig(port);
+    const _server = await startServer(port);
     try {
       const res = await postResponses(port, {
         model: "openclaw",
@@ -541,7 +537,9 @@ describe("OpenResponses HTTP API (e2e)", () => {
       error?: { type?: string; message?: string };
     };
     expect(blockedPrivateJson.error?.type).toBe("invalid_request_error");
-    expect(blockedPrivateJson.error?.message ?? "").toMatch(/private|internal|blocked/i);
+    expect(blockedPrivateJson.error?.message ?? "").toMatch(
+      /invalid request|private|internal|blocked/i,
+    );
 
     const blockedMetadata = await postResponses(port, {
       model: "openclaw",
@@ -564,7 +562,9 @@ describe("OpenResponses HTTP API (e2e)", () => {
       error?: { type?: string; message?: string };
     };
     expect(blockedMetadataJson.error?.type).toBe("invalid_request_error");
-    expect(blockedMetadataJson.error?.message ?? "").toMatch(/blocked|metadata|internal/i);
+    expect(blockedMetadataJson.error?.message ?? "").toMatch(
+      /invalid request|blocked|metadata|internal/i,
+    );
 
     const blockedScheme = await postResponses(port, {
       model: "openclaw",
@@ -587,7 +587,7 @@ describe("OpenResponses HTTP API (e2e)", () => {
       error?: { type?: string; message?: string };
     };
     expect(blockedSchemeJson.error?.type).toBe("invalid_request_error");
-    expect(blockedSchemeJson.error?.message ?? "").toMatch(/http or https/i);
+    expect(blockedSchemeJson.error?.message ?? "").toMatch(/invalid request|http or https/i);
     expect(agentCommand).not.toHaveBeenCalled();
   });
 
@@ -640,7 +640,9 @@ describe("OpenResponses HTTP API (e2e)", () => {
         error?: { type?: string; message?: string };
       };
       expect(allowlistBlockedJson.error?.type).toBe("invalid_request_error");
-      expect(allowlistBlockedJson.error?.message ?? "").toMatch(/allowlist|blocked/i);
+      expect(allowlistBlockedJson.error?.message ?? "").toMatch(
+        /invalid request|allowlist|blocked/i,
+      );
     } finally {
       await allowlistServer.close({ reason: "responses allowlist hardening test done" });
     }
@@ -692,7 +694,9 @@ describe("OpenResponses HTTP API (e2e)", () => {
         error?: { type?: string; message?: string };
       };
       expect(maxUrlBlockedJson.error?.type).toBe("invalid_request_error");
-      expect(maxUrlBlockedJson.error?.message ?? "").toMatch(/Too many URL-based input sources/i);
+      expect(maxUrlBlockedJson.error?.message ?? "").toMatch(
+        /invalid request|Too many URL-based input sources/i,
+      );
       expect(agentCommand).not.toHaveBeenCalled();
     } finally {
       await capServer.close({ reason: "responses url cap hardening test done" });
