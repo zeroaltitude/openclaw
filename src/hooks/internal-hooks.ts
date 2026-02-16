@@ -49,21 +49,19 @@ export interface InternalHookEvent {
 
 export type InternalHookHandler = (event: InternalHookEvent) => Promise<void> | void;
 
-/** Hook handler with priority (higher priority runs first) */
-type PrioritizedHandler = {
-  handler: InternalHookHandler;
-  priority: number;
-};
-
-/** Registry of hook handlers by event key */
-const handlers = new Map<string, PrioritizedHandler[]>();
+/** Registry of hook handlers by event key (FIFO — registration order) */
+const handlers = new Map<string, InternalHookHandler[]>();
 
 /**
- * Register a hook handler for a specific event type or event:action combination
+ * Register a hook handler for a specific event type or event:action combination.
+ *
+ * Handlers run in registration order (FIFO).  Plugins register during
+ * loadGatewayPlugins() and bundled hooks register later during
+ * loadInternalHooks(), so plugin handlers naturally run first for the
+ * same event key.
  *
  * @param eventKey - Event type (e.g., 'command') or specific action (e.g., 'command:new')
  * @param handler - Function to call when the event is triggered
- * @param options - Optional configuration (priority: higher runs first, default 0)
  *
  * @example
  * ```ts
@@ -72,25 +70,17 @@ const handlers = new Map<string, PrioritizedHandler[]>();
  *   console.log('Command:', event.action);
  * });
  *
- * // Listen only to /new commands with high priority (runs before other handlers)
+ * // Listen only to /new commands
  * registerInternalHook('command:new', async (event) => {
- *   await checkSessionBeforeSave(event);
- * }, { priority: 100 });
+ *   await saveSessionToMemory(event);
+ * });
  * ```
  */
-export function registerInternalHook(
-  eventKey: string,
-  handler: InternalHookHandler,
-  options?: { priority?: number },
-): void {
+export function registerInternalHook(eventKey: string, handler: InternalHookHandler): void {
   if (!handlers.has(eventKey)) {
     handlers.set(eventKey, []);
   }
-  const priority = options?.priority ?? 0;
-  const handlerList = handlers.get(eventKey)!;
-  handlerList.push({ handler, priority });
-  // Sort by priority descending (higher priority runs first)
-  handlerList.sort((a, b) => b.priority - a.priority);
+  handlers.get(eventKey)!.push(handler);
 }
 
 /**
@@ -105,7 +95,7 @@ export function unregisterInternalHook(eventKey: string, handler: InternalHookHa
     return;
   }
 
-  const index = eventHandlers.findIndex((h) => h.handler === handler);
+  const index = eventHandlers.indexOf(handler);
   if (index !== -1) {
     eventHandlers.splice(index, 1);
   }
@@ -137,7 +127,7 @@ export function getRegisteredEventKeys(): string[] {
  * 1. The general event type (e.g., 'command')
  * 2. The specific event:action combination (e.g., 'command:new')
  *
- * Handlers are called in priority order (highest first). Errors are caught and logged
+ * Handlers are called in registration order (FIFO). Errors are caught and logged
  * but don't prevent other handlers from running.
  *
  * @param event - The event to trigger
@@ -146,16 +136,16 @@ export async function triggerInternalHook(event: InternalHookEvent): Promise<voi
   const typeHandlers = handlers.get(event.type) ?? [];
   const specificHandlers = handlers.get(`${event.type}:${event.action}`) ?? [];
 
-  // Merge and sort by priority (already sorted within each list, but need to merge them)
-  const allHandlers = [...typeHandlers, ...specificHandlers].toSorted(
-    (a, b) => b.priority - a.priority,
-  );
+  // Handlers run in registration order (FIFO).  Plugin hooks registered
+  // during loadGatewayPlugins() appear before bundled hooks registered
+  // during loadInternalHooks().
+  const allHandlers = [...typeHandlers, ...specificHandlers];
 
   if (allHandlers.length === 0) {
     return;
   }
 
-  for (const { handler } of allHandlers) {
+  for (const handler of allHandlers) {
     try {
       await handler(event);
     } catch (err) {

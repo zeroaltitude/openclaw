@@ -80,8 +80,6 @@ export type OpenClawPluginHookOptions = {
   name?: string;
   description?: string;
   register?: boolean;
-  /** Hook priority (higher runs first, default 0) */
-  priority?: number;
 };
 
 export type ProviderAuthKind = "oauth" | "api_key" | "token" | "device_code" | "custom";
@@ -280,7 +278,7 @@ export type OpenClawPluginApi = {
   on: <K extends PluginHookName>(
     hookName: K,
     handler: PluginHookHandlerMap[K],
-    opts?: { priority?: number },
+    opts?: OpenClawPluginHookOptions,
   ) => void;
 };
 
@@ -715,6 +713,5 @@ export type PluginHookRegistration<K extends PluginHookName = PluginHookName> = 
   pluginId: string;
   hookName: K;
   handler: PluginHookHandlerMap[K];
-  priority?: number;
   source: string;
 };

@@ -9,11 +9,7 @@ import {
   resolveHooksGmailModel,
 } from "../agents/model-selection.js";
 import { startGmailWatcher } from "../hooks/gmail-watcher.js";
-import {
-  clearInternalHooks,
-  createInternalHookEvent,
-  triggerInternalHook,
-} from "../hooks/internal-hooks.js";
+import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
 import { loadInternalHooks } from "../hooks/loader.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
@@ -99,9 +95,10 @@ export async function startGatewaySidecars(params: {
   }
 
   // Load internal hook handlers from configuration and directory discovery.
+  // NOTE: clearInternalHooks() is called earlier in server.impl.ts, before
+  // plugins register.  Do NOT clear here — plugin hooks are already registered
+  // and must be preserved.
   try {
-    // Clear any previously registered hooks to ensure fresh loading
-    clearInternalHooks();
     const loadedCount = await loadInternalHooks(params.cfg, params.defaultWorkspaceDir);
     if (loadedCount > 0) {
       params.logHooks.info(

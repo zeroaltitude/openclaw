@@ -261,9 +261,8 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       return;
     }
 
-    const priority = opts?.priority;
     for (const event of normalizedEvents) {
-      registerInternalHook(event, handler, priority !== undefined ? { priority } : undefined);
+      registerInternalHook(event, handler);
     }
   };
 
@@ -451,14 +450,13 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     record: PluginRecord,
     hookName: K,
     handler: PluginHookHandlerMap[K],
-    opts?: { priority?: number },
+    _opts?: OpenClawPluginHookOptions,
   ) => {
     record.hookCount += 1;
     registry.typedHooks.push({
       pluginId: record.id,
       hookName,
       handler,
-      priority: opts?.priority,
       source: record.source,
     } as TypedPluginHookRegistration);
   };
