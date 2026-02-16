@@ -261,8 +261,9 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       return;
     }
 
+    const priority = opts?.priority;
     for (const event of normalizedEvents) {
-      registerInternalHook(event, handler);
+      registerInternalHook(event, handler, priority !== undefined ? { priority } : undefined);
     }
   };
 

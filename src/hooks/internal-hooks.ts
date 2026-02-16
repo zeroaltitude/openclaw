@@ -32,7 +32,14 @@ export interface InternalHookEvent {
   action: string;
   /** The session key this event relates to */
   sessionKey: string;
-  /** Additional context specific to the event */
+  /**
+   * Additional context specific to the event.
+   *
+   * For command:new events (session saves), hooks can set:
+   * - `blockSessionSave: true` - Prevent session from being saved
+   * - `sessionSaveRedirectPath: string` - Save to alternate location (e.g., pending directory)
+   * - `sessionSaveContent: string` - Override session content to save
+   */
   context: Record<string, unknown>;
   /** Timestamp when the event occurred */
   timestamp: Date;
@@ -42,14 +49,21 @@ export interface InternalHookEvent {
 
 export type InternalHookHandler = (event: InternalHookEvent) => Promise<void> | void;
 
+/** Hook handler with priority (higher priority runs first) */
+type PrioritizedHandler = {
+  handler: InternalHookHandler;
+  priority: number;
+};
+
 /** Registry of hook handlers by event key */
-const handlers = new Map<string, InternalHookHandler[]>();
+const handlers = new Map<string, PrioritizedHandler[]>();
 
 /**
  * Register a hook handler for a specific event type or event:action combination
  *
  * @param eventKey - Event type (e.g., 'command') or specific action (e.g., 'command:new')
  * @param handler - Function to call when the event is triggered
+ * @param options - Optional configuration (priority: higher runs first, default 0)
  *
  * @example
  * ```ts
@@ -58,17 +72,25 @@ const handlers = new Map<string, InternalHookHandler[]>();
  *   console.log('Command:', event.action);
  * });
  *
- * // Listen only to /new commands
+ * // Listen only to /new commands with high priority (runs before other handlers)
  * registerInternalHook('command:new', async (event) => {
- *   await saveSessionToMemory(event);
- * });
+ *   await checkSessionBeforeSave(event);
+ * }, { priority: 100 });
  * ```
  */
-export function registerInternalHook(eventKey: string, handler: InternalHookHandler): void {
+export function registerInternalHook(
+  eventKey: string,
+  handler: InternalHookHandler,
+  options?: { priority?: number },
+): void {
   if (!handlers.has(eventKey)) {
     handlers.set(eventKey, []);
   }
-  handlers.get(eventKey)!.push(handler);
+  const priority = options?.priority ?? 0;
+  const handlerList = handlers.get(eventKey)!;
+  handlerList.push({ handler, priority });
+  // Sort by priority descending (higher priority runs first)
+  handlerList.sort((a, b) => b.priority - a.priority);
 }
 
 /**
@@ -83,7 +105,7 @@ export function unregisterInternalHook(eventKey: string, handler: InternalHookHa
     return;
   }
 
-  const index = eventHandlers.indexOf(handler);
+  const index = eventHandlers.findIndex((h) => h.handler === handler);
   if (index !== -1) {
     eventHandlers.splice(index, 1);
   }
@@ -115,7 +137,7 @@ export function getRegisteredEventKeys(): string[] {
  * 1. The general event type (e.g., 'command')
  * 2. The specific event:action combination (e.g., 'command:new')
  *
- * Handlers are called in registration order. Errors are caught and logged
+ * Handlers are called in priority order (highest first). Errors are caught and logged
  * but don't prevent other handlers from running.
  *
  * @param event - The event to trigger
@@ -124,13 +146,16 @@ export async function triggerInternalHook(event: InternalHookEvent): Promise<voi
   const typeHandlers = handlers.get(event.type) ?? [];
   const specificHandlers = handlers.get(`${event.type}:${event.action}`) ?? [];
 
-  const allHandlers = [...typeHandlers, ...specificHandlers];
+  // Merge and sort by priority (already sorted within each list, but need to merge them)
+  const allHandlers = [...typeHandlers, ...specificHandlers].toSorted(
+    (a, b) => b.priority - a.priority,
+  );
 
   if (allHandlers.length === 0) {
     return;
   }
 
-  for (const handler of allHandlers) {
+  for (const { handler } of allHandlers) {
     try {
       await handler(event);
     } catch (err) {

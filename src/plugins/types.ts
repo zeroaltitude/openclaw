@@ -80,6 +80,8 @@ export type OpenClawPluginHookOptions = {
   name?: string;
   description?: string;
   register?: boolean;
+  /** Hook priority (higher runs first, default 0) */
+  priority?: number;
 };
 
 export type ProviderAuthKind = "oauth" | "api_key" | "token" | "device_code" | "custom";
