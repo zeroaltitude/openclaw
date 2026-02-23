@@ -11,19 +11,19 @@ import {
 } from "@buape/carbon";
 import { ButtonStyle, Routes } from "discord-api-types/v10";
 import type { OpenClawConfig } from "../../config/config.js";
+import { loadSessionStore, resolveStorePath } from "../../config/sessions.js";
 import type { DiscordExecApprovalConfig } from "../../config/types.discord.js";
+import { buildGatewayConnectionDetails } from "../../gateway/call.js";
+import { GatewayClient } from "../../gateway/client.js";
 import type { EventFrame } from "../../gateway/protocol/index.js";
 import type {
   ExecApprovalDecision,
   ExecApprovalRequest,
   ExecApprovalResolved,
 } from "../../infra/exec-approvals.js";
-import type { RuntimeEnv } from "../../runtime.js";
-import { loadSessionStore, resolveStorePath } from "../../config/sessions.js";
-import { buildGatewayConnectionDetails } from "../../gateway/call.js";
-import { GatewayClient } from "../../gateway/client.js";
 import { logDebug, logError } from "../../logger.js";
 import { normalizeAccountId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import type { RuntimeEnv } from "../../runtime.js";
 import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
@@ -223,6 +223,12 @@ function buildExecApprovalPayload(container: DiscordUiContainer): MessagePayload
   return { components };
 }
 
+function formatCommandPreview(commandText: string, maxChars: number): string {
+  const commandRaw =
+    commandText.length > maxChars ? `${commandText.slice(0, maxChars)}...` : commandText;
+  return commandRaw.replace(/`/g, "\u200b`");
+}
+
 function createExecApprovalRequestContainer(params: {
   request: ExecApprovalRequest;
   cfg: OpenClawConfig;
@@ -230,8 +236,7 @@ function createExecApprovalRequestContainer(params: {
   actionRow?: Row<Button>;
 }): ExecApprovalContainer {
   const commandText = params.request.request.command;
-  const commandPreview =
-    commandText.length > 1000 ? `${commandText.slice(0, 1000)}...` : commandText;
+  const commandPreview = formatCommandPreview(commandText, 1000);
   const expiresAtSeconds = Math.max(0, Math.floor(params.request.expiresAtMs / 1000));
 
   return new ExecApprovalContainer({
@@ -255,7 +260,7 @@ function createResolvedContainer(params: {
   accountId: string;
 }): ExecApprovalContainer {
   const commandText = params.request.request.command;
-  const commandPreview = commandText.length > 500 ? `${commandText.slice(0, 500)}...` : commandText;
+  const commandPreview = formatCommandPreview(commandText, 500);
 
   const decisionLabel =
     params.decision === "allow-once"
@@ -288,7 +293,7 @@ function createExpiredContainer(params: {
   accountId: string;
 }): ExecApprovalContainer {
   const commandText = params.request.request.command;
-  const commandPreview = commandText.length > 500 ? `${commandText.slice(0, 500)}...` : commandText;
+  const commandPreview = formatCommandPreview(commandText, 500);
 
   return new ExecApprovalContainer({
     cfg: params.cfg,
@@ -721,7 +726,7 @@ export class DiscordExecApprovalHandler {
   }
 
   /** Return the list of configured approver IDs. */
-  getApprovers(): Array<string | number> {
+  getApprovers(): string[] {
     return this.opts.config.approvers ?? [];
   }
 }
