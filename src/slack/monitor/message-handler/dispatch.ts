@@ -112,6 +112,9 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   const typingCallbacks = createTypingCallbacks({
     start: async () => {
       didSetStatus = true;
+      console.log(
+        `[inbound-timing] slack typing fired at ${Date.now()} (${new Date().toISOString()})`,
+      );
       await ctx.setSlackThreadStatus({
         channelId: message.channel,
         threadTs: statusThreadTs,

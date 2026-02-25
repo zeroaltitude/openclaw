@@ -265,6 +265,7 @@ export async function runPreparedReply(
     : threadStarterBody
       ? `[Thread starter - for context]\n${threadStarterBody}`
       : undefined;
+  console.log(`[inbound-timing] pre-ensureSkillSnapshot at ${Date.now()}`);
   const skillResult = await ensureSkillSnapshot({
     sessionEntry,
     sessionStore,
@@ -380,6 +381,7 @@ export async function runPreparedReply(
     resolvedQueue.mode === "followup" ||
     resolvedQueue.mode === "collect" ||
     resolvedQueue.mode === "steer-backlog";
+  console.log(`[inbound-timing] pre-resolveSessionAuthProfileOverride at ${Date.now()}`);
   const authProfileId = await resolveSessionAuthProfileOverride({
     cfg,
     provider,

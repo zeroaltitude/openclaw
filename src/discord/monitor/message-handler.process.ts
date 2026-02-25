@@ -56,6 +56,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function processDiscordMessage(ctx: DiscordMessagePreflightContext) {
+  console.log(
+    `[inbound-timing] discord processDiscordMessage entered at ${Date.now()} (${new Date().toISOString()})`,
+  );
+
   const {
     cfg,
     discordConfig,
@@ -362,6 +366,9 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   });
   const persistedSessionKey = ctxPayload.SessionKey ?? route.sessionKey;
 
+  console.log(
+    `[inbound-timing] discord pre-recordInboundSession at ${Date.now()} (${new Date().toISOString()})`,
+  );
   await recordInboundSession({
     storePath,
     sessionKey: persistedSessionKey,
@@ -402,7 +409,12 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   const chunkMode = resolveChunkMode(cfg, "discord", accountId);
 
   const typingCallbacks = createTypingCallbacks({
-    start: () => sendTyping({ client, channelId: typingChannelId }),
+    start: () => {
+      console.log(
+        `[inbound-timing] discord typing fired at ${Date.now()} (${new Date().toISOString()})`,
+      );
+      return sendTyping({ client, channelId: typingChannelId });
+    },
     onStartError: (err) => {
       logTypingFailure({
         log: logVerbose,
@@ -651,6 +663,9 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     },
   });
 
+  console.log(
+    `[inbound-timing] discord pre-dispatchInboundMessage at ${Date.now()} (${new Date().toISOString()})`,
+  );
   let dispatchResult: Awaited<ReturnType<typeof dispatchInboundMessage>> | null = null;
   let dispatchError = false;
   try {

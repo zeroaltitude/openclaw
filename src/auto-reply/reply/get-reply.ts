@@ -100,6 +100,7 @@ export async function getReplyFromConfig(
   }
 
   const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, agentId) ?? DEFAULT_AGENT_WORKSPACE_DIR;
+  console.log(`[inbound-timing] getReplyFromConfig entered at ${Date.now()}`);
   const workspace = await ensureAgentWorkspace({
     dir: workspaceDirRaw,
     ensureBootstrapFiles: !agentCfg?.skipBootstrap && !isFastTestEnv,
@@ -123,6 +124,7 @@ export async function getReplyFromConfig(
   const finalized = finalizeInboundContext(ctx);
 
   if (!isFastTestEnv) {
+    console.log(`[inbound-timing] post-workspace post-typing at ${Date.now()}`);
     await applyMediaUnderstanding({
       ctx: finalized,
       cfg,
@@ -141,6 +143,7 @@ export async function getReplyFromConfig(
     cfg,
     commandAuthorized,
   });
+  console.log(`[inbound-timing] pre-initSessionState at ${Date.now()}`);
   const sessionState = await initSessionState({
     ctx: finalized,
     cfg,
@@ -210,6 +213,7 @@ export async function getReplyFromConfig(
     }
   }
 
+  console.log(`[inbound-timing] pre-resolveReplyDirectives at ${Date.now()}`);
   const directiveResult = await resolveReplyDirectives({
     ctx: finalized,
     cfg,
@@ -272,6 +276,7 @@ export async function getReplyFromConfig(
   provider = resolvedProvider;
   model = resolvedModel;
 
+  console.log(`[inbound-timing] pre-handleInlineActions at ${Date.now()}`);
   const inlineActionResult = await handleInlineActions({
     ctx,
     sessionCtx,
@@ -324,6 +329,7 @@ export async function getReplyFromConfig(
     workspaceDir,
   });
 
+  console.log(`[inbound-timing] post-handleInlineActions, pre-runPreparedReply at ${Date.now()}`);
   return runPreparedReply({
     ctx,
     sessionCtx,
