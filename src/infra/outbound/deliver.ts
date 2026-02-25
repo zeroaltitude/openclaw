@@ -506,6 +506,7 @@ async function deliverOutboundPayloadsCore(
             {
               channelId: channel,
               accountId: accountId ?? undefined,
+              sessionKey: params.mirror?.sessionKey,
             },
           );
           if (sendingResult?.cancel) {
