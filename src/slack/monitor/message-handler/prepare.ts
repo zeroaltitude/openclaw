@@ -228,11 +228,26 @@ export async function prepareSlackMessage(params: {
           canResolveExplicit: Boolean(ctx.botUserId),
         },
       }));
+  // Implicit mention: the bot is considered mentioned in a thread reply if:
+  // 1. The bot authored the parent message (original behavior), OR
+  // 2. The bot has previously participated in this thread (session exists)
+  //    This covers the common case where a user @mentions the bot in a channel,
+  //    the bot replies in-thread, and subsequent thread replies should route
+  //    to the bot without requiring repeated @mentions.
+  const botIsParentAuthor = message.parent_user_id === ctx.botUserId;
+  let botParticipatedInThread = false;
+  if (!isDirectMessage && ctx.botUserId && isThreadReply && !botIsParentAuthor) {
+    const threadStorePath = resolveStorePath(ctx.cfg.session?.store, {
+      agentId: route.agentId,
+    });
+    botParticipatedInThread =
+      readSessionUpdatedAt({ storePath: threadStorePath, sessionKey }) !== undefined;
+  }
   const implicitMention = Boolean(
     !isDirectMessage &&
     ctx.botUserId &&
     message.thread_ts &&
-    message.parent_user_id === ctx.botUserId,
+    (botIsParentAuthor || botParticipatedInThread),
   );
 
   const sender = message.user ? await ctx.resolveUserName(message.user) : null;

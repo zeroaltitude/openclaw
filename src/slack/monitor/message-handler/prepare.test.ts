@@ -405,6 +405,105 @@ describe("slack prepareSlackMessage inbound contract", () => {
     expect(prepared!.ctxPayload.Body).not.toContain("thread_ts");
   });
 
+  it("treats thread reply as implicit mention when bot has existing thread session", async () => {
+    // Scenario: user @mentions bot in a channel, bot replies in thread (creating a session),
+    // then user replies in thread WITHOUT @mentioning the bot again.
+    // The bot should still process the message because it already participated.
+    const { storePath } = makeTmpStorePath();
+    const cfg = {
+      session: { store: storePath },
+      channels: { slack: { enabled: true, replyToMode: "all", groupPolicy: "open" } },
+    } as OpenClawConfig;
+
+    // Pre-seed a thread session to simulate the bot having previously replied
+    const route = resolveAgentRoute({
+      cfg,
+      channel: "slack",
+      accountId: "default",
+      teamId: "T1",
+      peer: { kind: "channel", id: "C123" },
+    });
+    const threadKeys = resolveThreadSessionKeys({
+      baseSessionKey: route.sessionKey,
+      threadId: "300.000",
+    });
+    fs.writeFileSync(
+      storePath,
+      JSON.stringify({ [threadKeys.sessionKey]: { updatedAt: Date.now() } }, null, 2),
+    );
+
+    const replies = vi.fn().mockResolvedValue({
+      messages: [
+        { text: "<@B1> help me", user: "U2", ts: "300.000" },
+        { text: "Sure, here's help", bot_id: "B1", user: "B1", ts: "300.500" },
+        { text: "thanks, one more question", user: "U2", ts: "301.000" },
+      ],
+    });
+
+    // requireMention: true, and the message does NOT contain a mention
+    const slackCtx = createInboundSlackCtx({
+      cfg,
+      appClient: { conversations: { replies } } as App["client"],
+      defaultRequireMention: true,
+      replyToMode: "all",
+    });
+    slackCtx.resolveUserName = async () => ({ name: "Alice" });
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    const prepared = await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createThreadAccount(),
+      message: createThreadReplyMessage({
+        text: "thanks, one more question",
+        ts: "301.000",
+        thread_ts: "300.000",
+        parent_user_id: "U2", // User started the thread, NOT the bot
+      }),
+      opts: { source: "message" }, // no wasMentioned override
+    });
+
+    // Should NOT be skipped — implicit mention via thread participation
+    expect(prepared).toBeTruthy();
+    expect(prepared!.ctxPayload.Body).toContain("thanks, one more question");
+  });
+
+  it("skips thread reply when bot has no session and requireMention is true", async () => {
+    // Same scenario but the bot has NOT participated — no session exists
+    const { storePath } = makeTmpStorePath();
+    const cfg = {
+      session: { store: storePath },
+      channels: { slack: { enabled: true, replyToMode: "all", groupPolicy: "open" } },
+    } as OpenClawConfig;
+
+    // Do NOT pre-seed any session
+
+    const replies = vi.fn().mockResolvedValue({ messages: [] });
+
+    const slackCtx = createInboundSlackCtx({
+      cfg,
+      appClient: { conversations: { replies } } as App["client"],
+      defaultRequireMention: true,
+      replyToMode: "all",
+    });
+    slackCtx.resolveUserName = async () => ({ name: "Alice" });
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    const prepared = await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createThreadAccount(),
+      message: createThreadReplyMessage({
+        text: "hey anyone here?",
+        ts: "401.000",
+        thread_ts: "400.000",
+        parent_user_id: "U2", // User started the thread
+      }),
+      opts: { source: "message" },
+    });
+
+    // Should be skipped — no mention, no bot participation
+    expect(prepared).toBeNull();
+  });
+
   it("excludes thread metadata when thread_ts equals ts without parent_user_id", async () => {
     const message = createSlackMessage({
       text: "top level",
