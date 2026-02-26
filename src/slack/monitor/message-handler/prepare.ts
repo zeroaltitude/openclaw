@@ -44,6 +44,7 @@ import { stripSlackMentionsForCommandDetection } from "../commands.js";
 import { normalizeSlackChannelType, type SlackMonitorContext } from "../context.js";
 import {
   resolveSlackAttachmentContent,
+  MAX_SLACK_MEDIA_FILES,
   resolveSlackMedia,
   resolveSlackThreadHistory,
   resolveSlackThreadStarter,
@@ -142,6 +143,7 @@ export async function prepareSlackMessage(params: {
       const allowMatch = resolveSlackAllowListMatch({
         allowList: allowFromLower,
         id: directUserId,
+        allowNameMatching: ctx.allowNameMatching,
       });
       const allowMatchMeta = formatAllowlistMatchMeta(allowMatch);
       if (!allowMatch.allowed) {
@@ -236,12 +238,35 @@ export async function prepareSlackMessage(params: {
   //    to the bot without requiring repeated @mentions.
   const botIsParentAuthor = message.parent_user_id === ctx.botUserId;
   let botParticipatedInThread = false;
-  if (!isDirectMessage && ctx.botUserId && isThreadReply && !botIsParentAuthor) {
+  // Only check thread participation when mention would actually be required,
+  // to avoid unnecessary session reads and API calls in mention-free channels.
+  const wouldRequireMention = isRoom && (channelConfig?.requireMention ?? ctx.defaultRequireMention);
+  if (!isDirectMessage && ctx.botUserId && isThreadReply && !botIsParentAuthor && wouldRequireMention) {
+    // First check if a thread session already exists (cheap file read)
     const threadStorePath = resolveStorePath(ctx.cfg.session?.store, {
       agentId: route.agentId,
     });
     botParticipatedInThread =
       readSessionUpdatedAt({ storePath: threadStorePath, sessionKey }) !== undefined;
+
+    // If no thread session yet, check if the bot replied in this thread via Slack API.
+    // This handles the first follow-up after the bot's initial reply: the bot's own
+    // outbound reply doesn't create a thread session (it's dropped as a self-message),
+    // so the session check above misses it. A lightweight API call confirms participation.
+    if (!botParticipatedInThread && threadTs && ctx.app?.client?.conversations?.replies) {
+      try {
+        const threadReplies = await ctx.app.client.conversations.replies({
+          channel: message.channel,
+          ts: threadTs,
+          limit: 50,
+        });
+        botParticipatedInThread = (threadReplies.messages ?? []).some(
+          (m: { user?: string }) => m.user === ctx.botUserId,
+        );
+      } catch {
+        // If the API call fails, fall through to require explicit mention
+      }
+    }
   }
   const implicitMention = Boolean(
     !isDirectMessage &&
@@ -259,6 +284,7 @@ export async function prepareSlackMessage(params: {
         allowList: channelConfig?.users,
         userId: senderId,
         userName: senderName,
+        allowNameMatching: ctx.allowNameMatching,
       })
     : true;
   if (isRoom && !channelUserAuthorized) {
@@ -278,6 +304,7 @@ export async function prepareSlackMessage(params: {
     allowList: allowFromLower,
     id: senderId,
     name: senderName,
+    allowNameMatching: ctx.allowNameMatching,
   }).allowed;
   const channelUsersAllowlistConfigured =
     isRoom && Array.isArray(channelConfig?.users) && channelConfig.users.length > 0;
@@ -287,6 +314,7 @@ export async function prepareSlackMessage(params: {
           allowList: channelConfig?.users,
           userId: senderId,
           userName: senderName,
+          allowNameMatching: ctx.allowNameMatching,
         })
       : false;
   const commandGate = resolveControlCommandGate({
@@ -373,8 +401,21 @@ export async function prepareSlackMessage(params: {
   const mediaPlaceholder = effectiveDirectMedia
     ? effectiveDirectMedia.map((m) => m.placeholder).join(" ")
     : undefined;
+
+  // When files were attached but all downloads failed, create a fallback
+  // placeholder so the message is still delivered to the agent instead of
+  // being silently dropped (#25064).
+  const fileOnlyFallback =
+    !mediaPlaceholder && (message.files?.length ?? 0) > 0
+      ? message
+          .files!.slice(0, MAX_SLACK_MEDIA_FILES)
+          .map((f) => f.name?.trim() || "file")
+          .join(", ")
+      : undefined;
+  const fileOnlyPlaceholder = fileOnlyFallback ? `[Slack file: ${fileOnlyFallback}]` : undefined;
+
   const rawBody =
-    [(message.text ?? "").trim(), attachmentContent?.text, mediaPlaceholder]
+    [(message.text ?? "").trim(), attachmentContent?.text, mediaPlaceholder, fileOnlyPlaceholder]
       .filter(Boolean)
       .join("\n") || "";
   if (!rawBody) {

@@ -78,10 +78,57 @@ import {
   resolveControlUiAuthPolicy,
   shouldSkipControlUiPairing,
 } from "./connect-policy.js";
+import { isUnauthorizedRoleError, UnauthorizedFloodGuard } from "./unauthorized-flood-guard.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
 const DEVICE_SIGNATURE_SKEW_MS = 2 * 60 * 1000;
+const BROWSER_ORIGIN_LOOPBACK_RATE_LIMIT_IP = "198.18.0.1";
+
+type HandshakeBrowserSecurityContext = {
+  hasBrowserOriginHeader: boolean;
+  enforceOriginCheckForAnyClient: boolean;
+  rateLimitClientIp: string | undefined;
+  authRateLimiter?: AuthRateLimiter;
+};
+
+function resolveHandshakeBrowserSecurityContext(params: {
+  requestOrigin?: string;
+  hasProxyHeaders: boolean;
+  clientIp: string | undefined;
+  rateLimiter?: AuthRateLimiter;
+  browserRateLimiter?: AuthRateLimiter;
+}): HandshakeBrowserSecurityContext {
+  const hasBrowserOriginHeader = Boolean(
+    params.requestOrigin && params.requestOrigin.trim() !== "",
+  );
+  return {
+    hasBrowserOriginHeader,
+    enforceOriginCheckForAnyClient: hasBrowserOriginHeader && !params.hasProxyHeaders,
+    rateLimitClientIp:
+      hasBrowserOriginHeader && isLoopbackAddress(params.clientIp)
+        ? BROWSER_ORIGIN_LOOPBACK_RATE_LIMIT_IP
+        : params.clientIp,
+    authRateLimiter:
+      hasBrowserOriginHeader && params.browserRateLimiter
+        ? params.browserRateLimiter
+        : params.rateLimiter,
+  };
+}
+
+function shouldAllowSilentLocalPairing(params: {
+  isLocalClient: boolean;
+  hasBrowserOriginHeader: boolean;
+  isControlUi: boolean;
+  isWebchat: boolean;
+  reason: "not-paired" | "role-upgrade" | "scope-upgrade";
+}): boolean {
+  return (
+    params.isLocalClient &&
+    (!params.hasBrowserOriginHeader || params.isControlUi || params.isWebchat) &&
+    (params.reason === "not-paired" || params.reason === "scope-upgrade")
+  );
+}
 
 export function attachGatewayWsMessageHandler(params: {
   socket: WebSocket;
@@ -98,6 +145,8 @@ export function attachGatewayWsMessageHandler(params: {
   resolvedAuth: ResolvedGatewayAuth;
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
+  /** Browser-origin fallback limiter (loopback is never exempt). */
+  browserRateLimiter?: AuthRateLimiter;
   gatewayMethods: string[];
   events: string[];
   extraHandlers: GatewayRequestHandlers;
@@ -129,6 +178,7 @@ export function attachGatewayWsMessageHandler(params: {
     connectNonce,
     resolvedAuth,
     rateLimiter,
+    browserRateLimiter,
     gatewayMethods,
     events,
     extraHandlers,
@@ -190,6 +240,20 @@ export function attachGatewayWsMessageHandler(params: {
   }
 
   const isWebchatConnect = (p: ConnectParams | null | undefined) => isWebchatClient(p?.client);
+  const unauthorizedFloodGuard = new UnauthorizedFloodGuard();
+  const browserSecurity = resolveHandshakeBrowserSecurityContext({
+    requestOrigin,
+    hasProxyHeaders,
+    clientIp,
+    rateLimiter,
+    browserRateLimiter,
+  });
+  const {
+    hasBrowserOriginHeader,
+    enforceOriginCheckForAnyClient,
+    rateLimitClientIp: browserRateLimitClientIp,
+    authRateLimiter,
+  } = browserSecurity;
 
   socket.on("message", async (data) => {
     if (isClosed()) {
@@ -327,11 +391,13 @@ export function attachGatewayWsMessageHandler(params: {
 
         const isControlUi = connectParams.client.id === GATEWAY_CLIENT_IDS.CONTROL_UI;
         const isWebchat = isWebchatConnect(connectParams);
-        if (isControlUi || isWebchat) {
+        if (enforceOriginCheckForAnyClient || isControlUi || isWebchat) {
           const originCheck = checkBrowserOrigin({
             requestHost,
             origin: requestOrigin,
             allowedOrigins: configSnapshot.gateway?.controlUi?.allowedOrigins,
+            allowHostHeaderOriginFallback:
+              configSnapshot.gateway?.controlUi?.dangerouslyAllowHostHeaderOriginFallback === true,
           });
           if (!originCheck.ok) {
             const errorMessage =
@@ -373,8 +439,8 @@ export function attachGatewayWsMessageHandler(params: {
           req: upgradeReq,
           trustedProxies,
           allowRealIpFallback,
-          rateLimiter,
-          clientIp,
+          rateLimiter: authRateLimiter,
+          clientIp: browserRateLimitClientIp,
         });
         const rejectUnauthorized = (failedAuth: GatewayAuthResult) => {
           markHandshakeFailure("unauthorized", {
@@ -423,11 +489,18 @@ export function attachGatewayWsMessageHandler(params: {
           if (!device) {
             clearUnboundScopes();
           }
+          const trustedProxyAuthOk =
+            isControlUi &&
+            role === "operator" &&
+            resolvedAuth.mode === "trusted-proxy" &&
+            authOk &&
+            authMethod === "trusted-proxy";
           const decision = evaluateMissingDeviceIdentity({
             hasDeviceIdentity: Boolean(device),
             role,
             isControlUi,
             controlUiAuthPolicy,
+            trustedProxyAuthOk,
             sharedAuthOk,
             authOk,
             hasSharedAuth,
@@ -546,8 +619,8 @@ export function attachGatewayWsMessageHandler(params: {
           deviceId: device?.id,
           role,
           scopes,
-          rateLimiter,
-          clientIp,
+          rateLimiter: authRateLimiter,
+          clientIp: browserRateLimitClientIp,
           verifyDeviceToken,
         }));
         if (!authOk) {
@@ -555,13 +628,17 @@ export function attachGatewayWsMessageHandler(params: {
           return;
         }
 
-        // Shared token/password auth is already gateway-level trust for operator clients.
-        // In that case, don't force device pairing on first connect.
-        const skipPairingForOperatorSharedAuth =
-          role === "operator" && sharedAuthOk && !isControlUi && !isWebchat;
-        const skipPairing =
-          shouldSkipControlUiPairing(controlUiAuthPolicy, sharedAuthOk) ||
-          skipPairingForOperatorSharedAuth;
+        const trustedProxyAuthOk =
+          isControlUi &&
+          role === "operator" &&
+          resolvedAuth.mode === "trusted-proxy" &&
+          authOk &&
+          authMethod === "trusted-proxy";
+        const skipPairing = shouldSkipControlUiPairing(
+          controlUiAuthPolicy,
+          sharedAuthOk,
+          trustedProxyAuthOk,
+        );
         if (device && devicePublicKey && !skipPairing) {
           const formatAuditList = (items: string[] | undefined): string => {
             if (!items || items.length === 0) {
@@ -600,11 +677,18 @@ export function attachGatewayWsMessageHandler(params: {
           const requirePairing = async (
             reason: "not-paired" | "role-upgrade" | "scope-upgrade",
           ) => {
+            const allowSilentLocalPairing = shouldAllowSilentLocalPairing({
+              isLocalClient,
+              hasBrowserOriginHeader,
+              isControlUi,
+              isWebchat,
+              reason,
+            });
             const pairing = await requestDevicePairing({
               deviceId: device.id,
               publicKey: devicePublicKey,
               ...clientAccessMetadata,
-              silent: isLocalClient && (reason === "not-paired" || reason === "scope-upgrade"),
+              silent: allowSilentLocalPairing,
             });
             const context = buildRequestContext();
             if (pairing.request.silent === true) {
@@ -908,6 +992,33 @@ export function attachGatewayWsMessageHandler(params: {
         meta?: Record<string, unknown>,
       ) => {
         send({ type: "res", id: req.id, ok, payload, error });
+        const unauthorizedRoleError = isUnauthorizedRoleError(error);
+        let logMeta = meta;
+        if (unauthorizedRoleError) {
+          const unauthorizedDecision = unauthorizedFloodGuard.registerUnauthorized();
+          if (unauthorizedDecision.suppressedSinceLastLog > 0) {
+            logMeta = {
+              ...logMeta,
+              suppressedUnauthorizedResponses: unauthorizedDecision.suppressedSinceLastLog,
+            };
+          }
+          if (!unauthorizedDecision.shouldLog) {
+            return;
+          }
+          if (unauthorizedDecision.shouldClose) {
+            setCloseCause("repeated-unauthorized-requests", {
+              unauthorizedCount: unauthorizedDecision.count,
+              method: req.method,
+            });
+            queueMicrotask(() => close(1008, "repeated unauthorized calls"));
+          }
+          logMeta = {
+            ...logMeta,
+            unauthorizedCount: unauthorizedDecision.count,
+          };
+        } else {
+          unauthorizedFloodGuard.reset();
+        }
         logWs("out", "res", {
           connId,
           id: req.id,
@@ -915,7 +1026,7 @@ export function attachGatewayWsMessageHandler(params: {
           method: req.method,
           errorCode: error?.code,
           errorMessage: error?.message,
-          ...meta,
+          ...logMeta,
         });
       };
 
