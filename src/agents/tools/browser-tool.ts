@@ -657,7 +657,7 @@ export function createBrowserTool(opts?: {
                 level,
                 targetId,
               },
-            })) as { ok?: boolean; targetId?: string; messages?: unknown[] };
+            })) as { ok?: boolean; targetId?: string; url?: string; messages?: unknown[] };
             const wrapped = wrapBrowserExternalJson({
               kind: "console",
               payload: result,
@@ -668,6 +668,7 @@ export function createBrowserTool(opts?: {
               details: {
                 ...wrapped.safeDetails,
                 targetId: typeof result.targetId === "string" ? result.targetId : undefined,
+                url: typeof result.url === "string" ? result.url : undefined,
                 messageCount: Array.isArray(result.messages) ? result.messages.length : undefined,
               },
             };
@@ -684,6 +685,7 @@ export function createBrowserTool(opts?: {
               details: {
                 ...wrapped.safeDetails,
                 targetId: result.targetId,
+                url: result.url,
                 messageCount: result.messages.length,
               },
             };
