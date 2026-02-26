@@ -25,6 +25,9 @@ export type RunEmbeddedPiAgentParams = {
   agentId?: string;
   messageChannel?: string;
   messageProvider?: string;
+  /** Original message source (e.g. "heartbeat", "cron-event") before delivery
+   *  channel resolution. Used by security plugins for trust classification. */
+  sourceProvider?: string;
   agentAccountId?: string;
   /** Delivery target (e.g. telegram:group:123:topic:456) for topic/thread routing. */
   messageTo?: string;

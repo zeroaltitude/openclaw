@@ -467,6 +467,7 @@ export async function runPreparedReply(
         originatingChannel: sessionCtx.OriginatingChannel,
         provider: sessionCtx.Provider,
       }),
+      sourceProvider: sessionCtx.Provider?.trim().toLowerCase() || undefined,
       agentAccountId: sessionCtx.AccountId,
       groupId: resolveGroupSessionKey(sessionCtx)?.id ?? undefined,
       groupChannel: sessionCtx.GroupChannel?.trim() ?? sessionCtx.GroupSubject?.trim(),

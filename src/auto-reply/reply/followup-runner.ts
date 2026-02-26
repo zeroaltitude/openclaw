@@ -158,6 +158,7 @@ export function createFollowupRunner(params: {
               sessionKey: queued.run.sessionKey,
               agentId: queued.run.agentId,
               messageProvider: queued.run.messageProvider,
+              sourceProvider: queued.run.sourceProvider,
               agentAccountId: queued.run.agentAccountId,
               messageTo: queued.originatingTo,
               messageThreadId: queued.originatingThreadId,

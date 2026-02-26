@@ -845,6 +845,7 @@ export async function runEmbeddedAttempt(
         sessionId: params.sessionId,
         workspaceDir: params.workspaceDir,
         messageProvider: params.messageProvider ?? undefined,
+        sourceProvider: params.sourceProvider ?? undefined,
         senderId: params.senderId ?? undefined,
         senderName: params.senderName ?? undefined,
         senderIsOwner: params.senderIsOwner ?? undefined,

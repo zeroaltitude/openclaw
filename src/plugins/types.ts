@@ -335,6 +335,10 @@ export type PluginHookAgentContext = {
   sessionId?: string;
   workspaceDir?: string;
   messageProvider?: string;
+  /** Original message source (e.g. "heartbeat", "cron-event", "exec-event").
+   *  Unlike messageProvider (which may reflect the delivery channel), this
+   *  preserves the true origin for security classification. */
+  sourceProvider?: string;
   /** Sender's platform-specific ID (e.g. Discord user ID, Slack user ID). */
   senderId?: string | null;
   /** Sender's display name. */
