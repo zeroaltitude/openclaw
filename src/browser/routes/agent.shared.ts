@@ -104,6 +104,31 @@ export async function withRouteTabContext<T>(
   }
   try {
     const tab = await profileCtx.ensureTabAvailable(params.targetId);
+
+    // Enrich every successful tab-targeting response with the resolved tab's
+    // current page URL.  This gives downstream consumers (security plugins,
+    // audit loggers, etc.) a consistent way to know which page was targeted
+    // without issuing a separate tabs query.  Existing explicit values win;
+    // the wrapper only fills in missing fields.
+    const originalJson = params.res.json.bind(params.res);
+    params.res.json = (body: unknown) => {
+      if (
+        body &&
+        typeof body === "object" &&
+        !Array.isArray(body) &&
+        (body as Record<string, unknown>).ok === true
+      ) {
+        const record = body as Record<string, unknown>;
+        if (record.targetId === undefined) {
+          record.targetId = tab.targetId;
+        }
+        if (record.url === undefined && tab.url) {
+          record.url = tab.url;
+        }
+      }
+      return originalJson(body);
+    };
+
     return await params.run({
       profileCtx,
       tab,
