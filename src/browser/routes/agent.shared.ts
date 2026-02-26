@@ -110,6 +110,29 @@ export async function withRouteTabContext<T>(
     // audit loggers, etc.) a consistent way to know which page was targeted
     // without issuing a separate tabs query.  Existing explicit values win;
     // the wrapper only fills in missing fields.
+    //
+    // We attempt to resolve the *live* page URL via Playwright (which queries
+    // the actual browser page), falling back to the tab list URL if
+    // Playwright is unavailable.  This corrects stale URL caches when the
+    // user navigates in the browser without triggering a relay metadata
+    // refresh (e.g. Chrome extension relay).
+    let liveUrl: string | undefined;
+    try {
+      const pwMod = await getPwAiModuleBase({ mode: "soft" });
+      if (pwMod?.getPageForTargetId) {
+        const page = await pwMod.getPageForTargetId({
+          cdpUrl: profileCtx.profile.cdpUrl,
+          targetId: tab.targetId,
+        });
+        if (page) {
+          liveUrl = page.url();
+        }
+      }
+    } catch {
+      // Playwright not available or page not found — fall back to tab.url
+    }
+    const resolvedUrl = liveUrl || tab.url;
+
     const originalJson = params.res.json.bind(params.res);
     params.res.json = (body: unknown) => {
       if (
@@ -122,8 +145,10 @@ export async function withRouteTabContext<T>(
         if (record.targetId === undefined) {
           record.targetId = tab.targetId;
         }
-        if (record.url === undefined && tab.url) {
-          record.url = tab.url;
+        if (resolvedUrl) {
+          // Always override url with live value — the route may have used a
+          // stale tab.url from the relay cache.
+          record.url = resolvedUrl;
         }
       }
       return originalJson(body);
