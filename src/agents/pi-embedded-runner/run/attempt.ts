@@ -18,7 +18,7 @@ import type {
   PluginHookBeforeAgentStartResult,
   PluginHookBeforePromptBuildResult,
 } from "../../../plugins/types.js";
-import { isSubagentSessionKey } from "../../../routing/session-key.js";
+import { isSubagentSessionKey, normalizeAgentId } from "../../../routing/session-key.js";
 import { resolveSignalReactionLevel } from "../../../signal/reaction-level.js";
 import { resolveTelegramInlineButtonsScope } from "../../../telegram/inline-buttons.js";
 import { resolveTelegramReactionLevel } from "../../../telegram/reaction-level.js";
@@ -971,6 +971,39 @@ export async function runEmbeddedAttempt(
         );
       }
 
+      // Wrap streamFn for extended security hooks (before_llm_call / context_assembled).
+      // This must be the outermost wrapper so hooks see the full context first.
+      const hookIterationRef = { current: 0 };
+      const hookAgentId =
+        typeof params.agentId === "string" && params.agentId.trim()
+          ? normalizeAgentId(params.agentId)
+          : resolveSessionAgentIds({
+              sessionKey: params.sessionKey,
+              config: params.config,
+            }).sessionAgentId;
+      const hookAgentCtx: import("../../../plugins/hooks.js").PluginHookAgentContext = {
+        agentId: hookAgentId,
+        sessionKey: params.sessionKey,
+        sessionId: params.sessionId,
+        workspaceDir: params.workspaceDir,
+        messageProvider: params.messageProvider ?? undefined,
+        sourceProvider: params.sourceProvider ?? undefined,
+        senderId: params.senderId ?? undefined,
+        senderName: params.senderName ?? undefined,
+        senderIsOwner: params.senderIsOwner ?? undefined,
+        groupId: params.groupId ?? undefined,
+        spawnedBy: params.spawnedBy ?? undefined,
+      };
+      if (hookRunner?.hasHooks("before_llm_call") || hookRunner?.hasHooks("context_assembled")) {
+        const { wrapStreamFnWithHooks } = await import("./hook-stream-wrapper.js");
+        activeSession.agent.streamFn = wrapStreamFnWithHooks(activeSession.agent.streamFn, {
+          hookRunner,
+          agentCtx: hookAgentCtx,
+          iterationRef: hookIterationRef,
+          modelId: params.modelId,
+        });
+      }
+
       try {
         const prior = await sanitizeSessionHistory({
           messages: activeSession.messages,
@@ -1104,6 +1137,82 @@ export async function runEmbeddedAttempt(
         getCompactionCount,
       } = subscription;
 
+      // Subscribe for extended hook events (loop iteration tracking, after_llm_call)
+      let hookTurnIteration = 0;
+      const hookEventUnsub =
+        hookRunner?.hasHooks("loop_iteration_start") ||
+        hookRunner?.hasHooks("loop_iteration_end") ||
+        hookRunner?.hasHooks("after_llm_call")
+          ? activeSession.subscribe((event) => {
+              if (event.type === "turn_start") {
+                hookTurnIteration++;
+                hookIterationRef.current = hookTurnIteration;
+                hookRunner
+                  .runLoopIterationStart(
+                    {
+                      iteration: hookTurnIteration,
+                      // pendingToolResults omitted — not available from event subscription
+                      messageCount: activeSession.messages.length,
+                    },
+                    hookAgentCtx,
+                  )
+                  .catch((err) => log.warn(`loop_iteration_start hook: ${String(err)}`));
+              }
+              if (event.type === "turn_end") {
+                const toolResults = event.toolResults ?? [];
+                hookRunner
+                  .runLoopIterationEnd(
+                    {
+                      iteration: hookTurnIteration,
+                      toolCallsMade: toolResults.length,
+                      // newMessagesAdded omitted — not available from event subscription
+                      willContinue: toolResults.length > 0,
+                    },
+                    hookAgentCtx,
+                  )
+                  .catch((err) => log.warn(`loop_iteration_end hook: ${String(err)}`));
+              }
+              if (event.type === "message_end" && hookRunner.hasHooks("after_llm_call")) {
+                const msg = event.message;
+                // Extract tool calls from assistant message content
+                const toolCalls: Array<{
+                  id: string;
+                  name: string;
+                  arguments: Record<string, unknown>;
+                }> = [];
+                if (
+                  msg &&
+                  typeof msg === "object" &&
+                  "content" in msg &&
+                  Array.isArray((msg as unknown as Record<string, unknown>).content)
+                ) {
+                  for (const part of (msg as unknown as { content: Array<Record<string, unknown>> })
+                    .content) {
+                    if (part && part.type === "toolCall") {
+                      toolCalls.push({
+                        id: (part.id as string) ?? "",
+                        name: (part.name as string) ?? "",
+                        arguments: (part.arguments as Record<string, unknown>) ?? {},
+                      });
+                    }
+                  }
+                }
+                hookRunner
+                  .runAfterLlmCall(
+                    {
+                      response: msg,
+                      toolCalls,
+                      iteration: hookTurnIteration,
+                      model: params.modelId,
+                      // latencyMs omitted — not measurable from event subscription
+                    },
+                    hookAgentCtx,
+                  )
+                  .catch((err) => log.warn(`after_llm_call hook: ${String(err)}`));
+              }
+            })
+          : undefined;
+
       const queueHandle: EmbeddedPiQueueHandle = {
         queueMessage: async (text: string) => {
           await activeSession.steer(text);
@@ -1175,9 +1284,6 @@ export async function runEmbeddedAttempt(
         }
       }
 
-      // Hook runner was already obtained earlier before tool creation
-      const hookAgentId = sessionAgentId;
-
       let promptError: unknown = null;
       let promptErrorSource: "prompt" | "compaction" | null = null;
       try {
@@ -1186,13 +1292,7 @@ export async function runEmbeddedAttempt(
         // Run before_prompt_build hooks to allow plugins to inject prompt context.
         // Legacy compatibility: before_agent_start is also checked for context fields.
         let effectivePrompt = params.prompt;
-        const hookCtx = {
-          agentId: hookAgentId,
-          sessionKey: params.sessionKey,
-          sessionId: params.sessionId,
-          workspaceDir: params.workspaceDir,
-          messageProvider: params.messageProvider ?? undefined,
-        };
+        const hookCtx = hookAgentCtx;
         const hookResult = await resolvePromptBuildHookResult({
           prompt: params.prompt,
           messages: activeSession.messages,
@@ -1397,6 +1497,31 @@ export async function runEmbeddedAttempt(
         messagesSnapshot = snapshotSelection.messagesSnapshot;
         sessionIdUsed = snapshotSelection.sessionIdUsed;
 
+        // Emit before_response_emit hook
+        if (hookRunner?.hasHooks("before_response_emit")) {
+          try {
+            const { applyBeforeResponseEmitHook } = await import("./hook-response-emit.js");
+            const modifiedContent = await applyBeforeResponseEmitHook({
+              hookRunner,
+              agentCtx: hookAgentCtx,
+              assistantTexts,
+              messagesSnapshot,
+              activeSession,
+              channel: params.messageChannel ?? params.messageProvider,
+            });
+            if (modifiedContent !== undefined) {
+              // Update assistantTexts — this is what the delivery pipeline actually uses
+              if (assistantTexts.length > 0) {
+                assistantTexts[assistantTexts.length - 1] = modifiedContent;
+              } else {
+                assistantTexts.push(modifiedContent);
+              }
+            }
+          } catch (err) {
+            log.warn(`before_response_emit hook failed: ${String(err)}`);
+          }
+        }
+
         if (promptError && promptErrorSource === "prompt" && !compactionOccurredThisAttempt) {
           try {
             sessionManager.appendCustomEntry("openclaw:prompt-error", {
@@ -1435,13 +1560,7 @@ export async function runEmbeddedAttempt(
                 error: promptError ? describeUnknownError(promptError) : undefined,
                 durationMs: Date.now() - promptStartedAt,
               },
-              {
-                agentId: hookAgentId,
-                sessionKey: params.sessionKey,
-                sessionId: params.sessionId,
-                workspaceDir: params.workspaceDir,
-                messageProvider: params.messageProvider ?? undefined,
-              },
+              hookAgentCtx,
             )
             .catch((err) => {
               log.warn(`agent_end hook failed: ${err}`);
@@ -1452,6 +1571,7 @@ export async function runEmbeddedAttempt(
         if (abortWarnTimer) {
           clearTimeout(abortWarnTimer);
         }
+        hookEventUnsub?.();
         if (!isProbeSession && (aborted || timedOut) && !timedOutDuringCompaction) {
           log.debug(
             `run cleanup: runId=${params.runId} sessionId=${params.sessionId} aborted=${aborted} timedOut=${timedOut}`,
