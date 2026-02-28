@@ -20,6 +20,7 @@ import {
 } from "../config/config.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
+import { clearInternalHooks } from "../hooks/internal-hooks.js";
 import { clearAgentRunContext, onAgentEvent } from "../infra/agent-events.js";
 import {
   ensureControlUiAssetsBuilt,
@@ -382,6 +383,15 @@ export async function startGatewayServer(
   const defaultWorkspaceDir = resolveAgentWorkspaceDir(cfgAtStart, defaultAgentId);
   const baseMethods = listGatewayMethods();
   const emptyPluginRegistry = createEmptyPluginRegistry();
+
+  // Clear any previously registered internal hooks before plugins or bundled
+  // hooks register.  This ensures a clean slate on restart/reload.
+  // Plugins register first (during loadGatewayPlugins), then bundled hooks
+  // register later (during startGatewaySidecars → loadInternalHooks).
+  // This ordering is the contract: plugin hooks run before bundled hooks
+  // for the same event (e.g., provenance gates session-memory on command:new).
+  clearInternalHooks();
+
   const { pluginRegistry, gatewayMethods: baseGatewayMethods } = minimalTestGateway
     ? { pluginRegistry: emptyPluginRegistry, gatewayMethods: baseMethods }
     : loadGatewayPlugins({

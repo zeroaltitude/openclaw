@@ -1,0 +1,110 @@
+/**
+ * Helper for the before_response_emit hook.
+ *
+ * Extracts text content from the last assistant message, runs the hook,
+ * and returns the modified content (or undefined if no modification).
+ */
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { createSubsystemLogger } from "../../../logging/subsystem.js";
+import type { HookRunner, PluginHookAgentContext } from "../../../plugins/hooks.js";
+
+const log = createSubsystemLogger("hooks/response-emit");
+
+/** Content part with optional type and text fields (assistant message content array element). */
+interface ContentPart {
+  type?: string;
+  text?: string;
+}
+
+export interface ApplyBeforeResponseEmitParams {
+  hookRunner: HookRunner;
+  agentCtx: PluginHookAgentContext;
+  assistantTexts: string[];
+  messagesSnapshot: AgentMessage[];
+  activeSession: { messages: AgentMessage[] };
+  channel?: string;
+}
+
+/**
+ * Extract text content from an assistant message.
+ * Handles both string content and content-part arrays.
+ * Guards against AgentMessage union members that lack `content`.
+ */
+export function extractAssistantText(msg: AgentMessage): string {
+  if (!("content" in msg)) {
+    return "";
+  }
+  const content = (msg as { content: unknown }).content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return (content as ContentPart[])
+      .filter((c) => c?.type === "text")
+      .map((c) => c.text ?? "")
+      .join("");
+  }
+  return "";
+}
+
+/**
+ * Run the before_response_emit hook and apply modifications.
+ *
+ * Returns the modified content string if the hook changed it,
+ * or undefined if no modification was made (or hook blocked/failed).
+ */
+export async function applyBeforeResponseEmitHook(
+  params: ApplyBeforeResponseEmitParams,
+): Promise<string | undefined> {
+  const { hookRunner, agentCtx, messagesSnapshot, activeSession, channel } = params;
+
+  // Find last assistant message
+  const lastAssistantMsg = [...messagesSnapshot].toReversed().find((m) => m.role === "assistant");
+  if (!lastAssistantMsg || !("content" in lastAssistantMsg)) {
+    return undefined;
+  }
+
+  const content = extractAssistantText(lastAssistantMsg);
+  if (!content) {
+    return undefined;
+  }
+
+  const emitResult = await hookRunner.runBeforeResponseEmit(
+    {
+      content,
+      channel,
+      messageCount: messagesSnapshot.length,
+    },
+    agentCtx,
+  );
+
+  if (emitResult?.block) {
+    log.warn(`response blocked: ${emitResult.blockReason ?? "no reason"}`);
+    return undefined;
+  }
+
+  if (!emitResult?.content || emitResult.content === content) {
+    log.debug(`no modification (hasResult=${!!emitResult}, hasContent=${!!emitResult?.content})`);
+    return undefined;
+  }
+
+  log.debug(`applying modified content (len=${emitResult.content.length})`);
+
+  // Update session messages for consistency with the delivery pipeline.
+  // We update in-place because activeSession.messages is a mutable array
+  // shared with the session persistence layer.
+  const sessionMsg = activeSession.messages[activeSession.messages.length - 1];
+  if (sessionMsg?.role === "assistant" && "content" in sessionMsg) {
+    const msgContent = (sessionMsg as { content: unknown }).content;
+    if (typeof msgContent === "string") {
+      (sessionMsg as unknown as Record<string, unknown>).content = emitResult.content;
+    } else if (Array.isArray(msgContent)) {
+      const textParts = (msgContent as ContentPart[]).filter((c) => c?.type === "text");
+      if (textParts.length > 0) {
+        textParts[0].text = emitResult.content;
+      }
+    }
+  }
+
+  return emitResult.content;
+}
