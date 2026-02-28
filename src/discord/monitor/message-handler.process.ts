@@ -376,7 +376,6 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     OriginatingTo: autoThreadContext?.OriginatingTo ?? replyTarget,
   });
   const persistedSessionKey = ctxPayload.SessionKey ?? route.sessionKey;
-
   await recordInboundSession({
     storePath,
     sessionKey: persistedSessionKey,
@@ -676,7 +675,6 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       await statusReactions.setThinking();
     },
   });
-
   let dispatchResult: Awaited<ReturnType<typeof dispatchInboundMessage>> | null = null;
   let dispatchError = false;
   try {
