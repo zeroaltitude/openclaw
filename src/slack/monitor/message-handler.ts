@@ -99,10 +99,6 @@ export function createSlackMessageHandler(params: {
   });
 
   return async (message, opts) => {
-    console.log(
-      `[inbound-timing] slack message received at ${Date.now()} (${new Date().toISOString()})`,
-    );
-
     if (opts.source === "message" && message.type !== "message") {
       return;
     }

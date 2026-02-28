@@ -6,7 +6,9 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
  * over the agent loop: before_llm_call, after_llm_call, context_assembled,
  * loop_iteration_start, loop_iteration_end, before_response_emit.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createHookRunner } from "./hooks.js";
+import type { PluginRegistry } from "./registry.js";
 import type {
   PluginHookAgentContext,
   PluginHookBeforeLlmCallEvent,
@@ -17,14 +19,13 @@ import type {
   PluginHookBeforeResponseEmitEvent,
   PluginHookRegistration,
 } from "./types.js";
-import { createHookRunner } from "./hooks.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function makeRegistry(hooks: PluginHookRegistration[]) {
-  return { typedHooks: hooks } as any;
+  return { typedHooks: hooks } as unknown as PluginRegistry;
 }
 
 const agentCtx: PluginHookAgentContext = {
@@ -53,9 +54,7 @@ describe("before_llm_call hook", () => {
   it("fires handler with correct event shape", async () => {
     const handler = vi.fn().mockResolvedValue(undefined);
     const runner = createHookRunner(
-      makeRegistry([
-        { pluginId: "p1", hookName: "before_llm_call", handler, priority: 0, source: "test" },
-      ]),
+      makeRegistry([{ pluginId: "p1", hookName: "before_llm_call", handler, source: "test" }]),
     );
 
     await runner.runBeforeLlmCall(baseEvent, agentCtx);
@@ -77,9 +76,7 @@ describe("before_llm_call hook", () => {
     const newMsgs = [fakeMsg("user", "modified")];
     const handler = vi.fn().mockResolvedValue({ messages: newMsgs });
     const runner = createHookRunner(
-      makeRegistry([
-        { pluginId: "p1", hookName: "before_llm_call", handler, priority: 0, source: "test" },
-      ]),
+      makeRegistry([{ pluginId: "p1", hookName: "before_llm_call", handler, source: "test" }]),
     );
 
     const result = await runner.runBeforeLlmCall(baseEvent, agentCtx);
@@ -89,9 +86,7 @@ describe("before_llm_call hook", () => {
   it("returns modified systemPrompt when handler provides it", async () => {
     const handler = vi.fn().mockResolvedValue({ systemPrompt: "new prompt" });
     const runner = createHookRunner(
-      makeRegistry([
-        { pluginId: "p1", hookName: "before_llm_call", handler, priority: 0, source: "test" },
-      ]),
+      makeRegistry([{ pluginId: "p1", hookName: "before_llm_call", handler, source: "test" }]),
     );
 
     const result = await runner.runBeforeLlmCall(baseEvent, agentCtx);
@@ -101,9 +96,7 @@ describe("before_llm_call hook", () => {
   it("returns filtered tools when handler provides them", async () => {
     const handler = vi.fn().mockResolvedValue({ tools: [{ name: "read" }] });
     const runner = createHookRunner(
-      makeRegistry([
-        { pluginId: "p1", hookName: "before_llm_call", handler, priority: 0, source: "test" },
-      ]),
+      makeRegistry([{ pluginId: "p1", hookName: "before_llm_call", handler, source: "test" }]),
     );
 
     const result = await runner.runBeforeLlmCall(baseEvent, agentCtx);
@@ -113,9 +106,7 @@ describe("before_llm_call hook", () => {
   it("returns block=true and blockReason when handler blocks", async () => {
     const handler = vi.fn().mockResolvedValue({ block: true, blockReason: "too many tokens" });
     const runner = createHookRunner(
-      makeRegistry([
-        { pluginId: "p1", hookName: "before_llm_call", handler, priority: 0, source: "test" },
-      ]),
+      makeRegistry([{ pluginId: "p1", hookName: "before_llm_call", handler, source: "test" }]),
     );
 
     const result = await runner.runBeforeLlmCall(baseEvent, agentCtx);
@@ -123,38 +114,35 @@ describe("before_llm_call hook", () => {
     expect(result?.blockReason).toBe("too many tokens");
   });
 
-  it("merges results from multiple handlers (higher priority first)", async () => {
-    const lowPri = vi
+  it("merges results from multiple handlers in registration order (FIFO)", async () => {
+    const first = vi
       .fn()
-      .mockResolvedValue({ systemPrompt: "low-pri prompt", tools: [{ name: "exec" }] });
-    const highPri = vi.fn().mockResolvedValue({ systemPrompt: "high-pri prompt" });
+      .mockResolvedValue({ systemPrompt: "first prompt", tools: [{ name: "exec" }] });
+    const second = vi.fn().mockResolvedValue({ systemPrompt: "second prompt" });
     const runner = createHookRunner(
       makeRegistry([
         {
-          pluginId: "low",
+          pluginId: "first",
           hookName: "before_llm_call",
-          handler: lowPri,
-          priority: 1,
+          handler: first,
           source: "test",
         },
         {
-          pluginId: "high",
+          pluginId: "second",
           hookName: "before_llm_call",
-          handler: highPri,
-          priority: 10,
+          handler: second,
           source: "test",
         },
       ]),
     );
 
     const result = await runner.runBeforeLlmCall(baseEvent, agentCtx);
-    // high priority runs first → sets systemPrompt; low priority runs second → overwrites systemPrompt, adds tools
-    // sequential merge: last non-undefined wins for each field
+    // Sequential merge in registration order: last non-undefined wins for each field
     expect(result?.tools).toEqual([{ name: "exec" }]);
-    // low-pri runs last and provides systemPrompt → its value wins
-    expect(result?.systemPrompt).toBe("low-pri prompt");
-    // high-pri ran first (confirmed by call order)
-    expect(highPri).toHaveBeenCalledBefore(lowPri);
+    // second runs last and provides systemPrompt → its value wins
+    expect(result?.systemPrompt).toBe("second prompt");
+    // first ran before second (registration order)
+    expect(first).toHaveBeenCalledBefore(second);
   });
 
   it("continues on handler error when catchErrors=true", async () => {
@@ -166,14 +154,14 @@ describe("before_llm_call hook", () => {
           pluginId: "bad",
           hookName: "before_llm_call",
           handler: badHandler,
-          priority: 10,
+
           source: "test",
         },
         {
           pluginId: "good",
           hookName: "before_llm_call",
           handler: goodHandler,
-          priority: 1,
+
           source: "test",
         },
       ]),
@@ -208,9 +196,7 @@ describe("after_llm_call hook", () => {
   it("fires handler with correct event shape", async () => {
     const handler = vi.fn().mockResolvedValue(undefined);
     const runner = createHookRunner(
-      makeRegistry([
-        { pluginId: "p1", hookName: "after_llm_call", handler, priority: 0, source: "test" },
-      ]),
+      makeRegistry([{ pluginId: "p1", hookName: "after_llm_call", handler, source: "test" }]),
     );
 
     await runner.runAfterLlmCall(baseEvent, agentCtx);
@@ -231,9 +217,7 @@ describe("after_llm_call hook", () => {
     const filtered = [{ id: "tc-1", name: "read", arguments: { path: "/safe" } }];
     const handler = vi.fn().mockResolvedValue({ toolCalls: filtered });
     const runner = createHookRunner(
-      makeRegistry([
-        { pluginId: "p1", hookName: "after_llm_call", handler, priority: 0, source: "test" },
-      ]),
+      makeRegistry([{ pluginId: "p1", hookName: "after_llm_call", handler, source: "test" }]),
     );
 
     const result = await runner.runAfterLlmCall(baseEvent, agentCtx);
@@ -243,9 +227,7 @@ describe("after_llm_call hook", () => {
   it("returns block=true when handler blocks", async () => {
     const handler = vi.fn().mockResolvedValue({ block: true, blockReason: "dangerous tool call" });
     const runner = createHookRunner(
-      makeRegistry([
-        { pluginId: "p1", hookName: "after_llm_call", handler, priority: 0, source: "test" },
-      ]),
+      makeRegistry([{ pluginId: "p1", hookName: "after_llm_call", handler, source: "test" }]),
     );
 
     const result = await runner.runAfterLlmCall(baseEvent, agentCtx);
@@ -258,8 +240,8 @@ describe("after_llm_call hook", () => {
     const h2 = vi.fn().mockResolvedValue({ block: true, blockReason: "nope" });
     const runner = createHookRunner(
       makeRegistry([
-        { pluginId: "p1", hookName: "after_llm_call", handler: h1, priority: 10, source: "test" },
-        { pluginId: "p2", hookName: "after_llm_call", handler: h2, priority: 1, source: "test" },
+        { pluginId: "p1", hookName: "after_llm_call", handler: h1, source: "test" },
+        { pluginId: "p2", hookName: "after_llm_call", handler: h2, source: "test" },
       ]),
     );
 
@@ -291,9 +273,7 @@ describe("context_assembled hook", () => {
   it("fires handler with correct event shape", async () => {
     const handler = vi.fn().mockResolvedValue(undefined);
     const runner = createHookRunner(
-      makeRegistry([
-        { pluginId: "p1", hookName: "context_assembled", handler, priority: 0, source: "test" },
-      ]),
+      makeRegistry([{ pluginId: "p1", hookName: "context_assembled", handler, source: "test" }]),
     );
 
     await runner.runContextAssembled(baseEvent, agentCtx);
@@ -314,8 +294,8 @@ describe("context_assembled hook", () => {
     const h2 = vi.fn().mockResolvedValue(undefined);
     const runner = createHookRunner(
       makeRegistry([
-        { pluginId: "p1", hookName: "context_assembled", handler: h1, priority: 0, source: "test" },
-        { pluginId: "p2", hookName: "context_assembled", handler: h2, priority: 0, source: "test" },
+        { pluginId: "p1", hookName: "context_assembled", handler: h1, source: "test" },
+        { pluginId: "p2", hookName: "context_assembled", handler: h2, source: "test" },
       ]),
     );
 
@@ -334,14 +314,14 @@ describe("context_assembled hook", () => {
           pluginId: "bad",
           hookName: "context_assembled",
           handler: badHandler,
-          priority: 0,
+
           source: "test",
         },
         {
           pluginId: "good",
           hookName: "context_assembled",
           handler: goodHandler,
-          priority: 0,
+
           source: "test",
         },
       ]),
@@ -379,7 +359,7 @@ describe("loop_iteration_start hook", () => {
           pluginId: "p1",
           hookName: "loop_iteration_start",
           handler,
-          priority: 0,
+
           source: "test",
         },
       ]),
@@ -405,14 +385,14 @@ describe("loop_iteration_start hook", () => {
           pluginId: "p1",
           hookName: "loop_iteration_start",
           handler: h1,
-          priority: 0,
+
           source: "test",
         },
         {
           pluginId: "p2",
           hookName: "loop_iteration_start",
           handler: h2,
-          priority: 0,
+
           source: "test",
         },
       ]),
@@ -450,7 +430,7 @@ describe("loop_iteration_end hook", () => {
           pluginId: "p1",
           hookName: "loop_iteration_end",
           handler,
-          priority: 0,
+
           source: "test",
         },
       ]),
@@ -477,14 +457,14 @@ describe("loop_iteration_end hook", () => {
           pluginId: "p1",
           hookName: "loop_iteration_end",
           handler: h1,
-          priority: 0,
+
           source: "test",
         },
         {
           pluginId: "p2",
           hookName: "loop_iteration_end",
           handler: h2,
-          priority: 0,
+
           source: "test",
         },
       ]),
@@ -521,7 +501,7 @@ describe("before_response_emit hook", () => {
           pluginId: "p1",
           hookName: "before_response_emit",
           handler,
-          priority: 0,
+
           source: "test",
         },
       ]),
@@ -547,7 +527,7 @@ describe("before_response_emit hook", () => {
           pluginId: "p1",
           hookName: "before_response_emit",
           handler,
-          priority: 0,
+
           source: "test",
         },
       ]),
@@ -565,7 +545,7 @@ describe("before_response_emit hook", () => {
           pluginId: "p1",
           hookName: "before_response_emit",
           handler,
-          priority: 0,
+
           source: "test",
         },
       ]),
@@ -585,14 +565,14 @@ describe("before_response_emit hook", () => {
           pluginId: "p1",
           hookName: "before_response_emit",
           handler: h1,
-          priority: 10,
+
           source: "test",
         },
         {
           pluginId: "p2",
           hookName: "before_response_emit",
           handler: h2,
-          priority: 1,
+
           source: "test",
         },
       ]),

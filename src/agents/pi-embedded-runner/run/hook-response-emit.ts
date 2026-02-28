@@ -5,8 +5,8 @@
  * and returns the modified content (or undefined if no modification).
  */
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { HookRunner, PluginHookAgentContext } from "../../../plugins/hooks.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
+import type { HookRunner, PluginHookAgentContext } from "../../../plugins/hooks.js";
 
 const log = createSubsystemLogger("hooks/response-emit");
 
@@ -84,11 +84,11 @@ export async function applyBeforeResponseEmitHook(
   }
 
   if (!emitResult?.content || emitResult.content === content) {
-    log.info(`no modification (hasResult=${!!emitResult}, hasContent=${!!emitResult?.content})`);
+    log.debug(`no modification (hasResult=${!!emitResult}, hasContent=${!!emitResult?.content})`);
     return undefined;
   }
 
-  log.info(`applying modified content (len=${emitResult.content.length})`);
+  log.debug(`applying modified content (len=${emitResult.content.length})`);
 
   // Update session messages for consistency with the delivery pipeline.
   // We update in-place because activeSession.messages is a mutable array

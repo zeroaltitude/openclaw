@@ -205,9 +205,6 @@ export async function triggerInternalHook(event: InternalHookEvent): Promise<voi
   const typeHandlers = handlers.get(event.type) ?? [];
   const specificHandlers = handlers.get(`${event.type}:${event.action}`) ?? [];
 
-  // Handlers run in registration order (FIFO).  Plugin hooks registered
-  // during loadGatewayPlugins() appear before bundled hooks registered
-  // during loadInternalHooks().
   const allHandlers = [...typeHandlers, ...specificHandlers];
 
   if (allHandlers.length === 0) {

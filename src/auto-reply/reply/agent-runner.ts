@@ -159,7 +159,6 @@ export async function runReplyAgent(params: {
   let activeSessionEntry = sessionEntry;
   const activeSessionStore = sessionStore;
   let activeIsNewSession = isNewSession;
-  console.log(`[inbound-timing] runReplyAgent entered at ${Date.now()}`);
 
   const isHeartbeat = opts?.isHeartbeat === true;
   const typingSignals = createTypingSignaler({
@@ -256,7 +255,6 @@ export async function runReplyAgent(params: {
     return undefined;
   }
 
-  console.log(`[inbound-timing] pre-signalRunStart at ${Date.now()}`);
   await typingSignals.signalRunStart();
 
   activeSessionEntry = await runMemoryFlushIfNeeded({
@@ -374,7 +372,6 @@ export async function runReplyAgent(params: {
     });
   try {
     const runStartedAt = Date.now();
-    console.log(`[inbound-timing] pre-runAgentTurnWithFallback at ${Date.now()}`);
     const runOutcome = await runAgentTurnWithFallback({
       commandBody,
       followupRun,

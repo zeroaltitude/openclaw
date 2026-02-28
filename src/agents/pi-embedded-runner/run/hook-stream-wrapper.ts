@@ -7,8 +7,8 @@
  */
 import type { AgentMessage, StreamFn } from "@mariozechner/pi-agent-core";
 import type { Context, Message } from "@mariozechner/pi-ai";
-import type { HookRunner, PluginHookAgentContext } from "../../../plugins/hooks.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
+import type { HookRunner, PluginHookAgentContext } from "../../../plugins/hooks.js";
 
 const log = createSubsystemLogger("hooks/stream");
 
@@ -74,12 +74,11 @@ export function wrapStreamFnWithHooks(
 
         // Apply modifications — only create new context if something changed
         if (result?.messages || result?.systemPrompt || result?.tools) {
-          const filteredTools = result.tools
-            ? (() => {
-                const allowedNames = new Set(result.tools!.map((t) => t.name));
-                return (context.tools ?? []).filter((t) => allowedNames.has(t.name));
-              })()
-            : context.tools;
+          let filteredTools = context.tools;
+          if (result.tools) {
+            const allowedNames = new Set(result.tools.map((t) => t.name));
+            filteredTools = (context.tools ?? []).filter((t) => allowedNames.has(t.name));
+          }
           effectiveContext = {
             systemPrompt: result.systemPrompt ?? context.systemPrompt,
             messages: (result.messages ?? context.messages) as Message[],

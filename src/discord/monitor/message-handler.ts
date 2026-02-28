@@ -134,9 +134,6 @@ export function createDiscordMessageHandler(
   });
 
   return async (data, client) => {
-    console.log(
-      `[inbound-timing] discord message received at ${Date.now()} (${new Date().toISOString()})`,
-    );
     try {
       await debouncer.enqueue({ data, client });
     } catch (err) {

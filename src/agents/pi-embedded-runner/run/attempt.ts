@@ -20,11 +20,7 @@ import type {
   PluginHookBeforeAgentStartResult,
   PluginHookBeforePromptBuildResult,
 } from "../../../plugins/types.js";
-import {
-  isCronSessionKey,
-  isSubagentSessionKey,
-  normalizeAgentId,
-} from "../../../routing/session-key.js";
+import { isSubagentSessionKey, normalizeAgentId } from "../../../routing/session-key.js";
 import { resolveSignalReactionLevel } from "../../../signal/reaction-level.js";
 import { resolveTelegramInlineButtonsScope } from "../../../telegram/inline-buttons.js";
 import { resolveTelegramReactionLevel } from "../../../telegram/reaction-level.js";
@@ -560,7 +556,6 @@ export async function runEmbeddedAttempt(
       contextFiles,
       memoryCitationsMode: params.config?.memory?.citations,
     });
-    console.log(`[inbound-timing] post-systemPrompt-build at ${Date.now()}`);
     const systemPromptReport = buildSystemPromptReport({
       source: "run",
       generatedAt: Date.now(),
@@ -613,7 +608,6 @@ export async function runEmbeddedAttempt(
         modelId: params.modelId,
       });
 
-      console.log(`[inbound-timing] pre-prewarmSessionFile at ${Date.now()}`);
       await prewarmSessionFile(params.sessionFile);
       sessionManager = guardSessionManager(SessionManager.open(params.sessionFile), {
         agentId: sessionAgentId,
@@ -1174,7 +1168,6 @@ export async function runEmbeddedAttempt(
           }
         }
 
-        console.log(`[inbound-timing] embedded run prompt start (pre-API-call) at ${Date.now()}`);
         log.debug(`embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`);
         cacheTrace?.recordStage("prompt:before", {
           prompt: effectivePrompt,
