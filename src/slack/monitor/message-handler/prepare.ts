@@ -204,11 +204,69 @@ export async function prepareSlackMessage(params: {
           canResolveExplicit: Boolean(ctx.botUserId),
         },
       }));
+  // Implicit mention: the bot is considered mentioned in a thread reply if:
+  // 1. The bot authored the parent message (original behavior), OR
+  // 2. The bot has previously participated in this thread (session exists)
+  //    This covers the common case where a user @mentions the bot in a channel,
+  //    the bot replies in-thread, and subsequent thread replies should route
+  //    to the bot without requiring repeated @mentions.
+  const botIsParentAuthor = message.parent_user_id === ctx.botUserId;
+  let botParticipatedInThread = false;
+  // Only check thread participation when mention would actually be required,
+  // to avoid unnecessary session reads and API calls in mention-free channels.
+  const wouldRequireMention =
+    isRoom && (channelConfig?.requireMention ?? ctx.defaultRequireMention);
+  if (
+    !isDirectMessage &&
+    !wasMentioned &&
+    ctx.botUserId &&
+    isThreadReply &&
+    !botIsParentAuthor &&
+    wouldRequireMention
+  ) {
+    // First check if a thread session already exists (cheap file read)
+    const threadStorePath = resolveStorePath(ctx.cfg.session?.store, {
+      agentId: route.agentId,
+    });
+    botParticipatedInThread =
+      readSessionUpdatedAt({ storePath: threadStorePath, sessionKey }) !== undefined;
+
+    // If no thread session yet, check if the bot replied in this thread via Slack API.
+    // This handles the first follow-up after the bot's initial reply: the bot's own
+    // outbound reply doesn't create a thread session (it's dropped as a self-message),
+    // so the session check above misses it. A lightweight API call confirms participation.
+    // Skip if we already know this thread has no bot participation (negative cache).
+    const threadCacheKey = `${message.channel}:${threadTs}`;
+    if (
+      !botParticipatedInThread &&
+      threadTs &&
+      !ctx.nonBotThreads.peek(threadCacheKey) &&
+      ctx.app?.client?.conversations?.replies
+    ) {
+      try {
+        const threadReplies = await ctx.app.client.conversations.replies({
+          channel: message.channel,
+          ts: threadTs,
+          limit: 50,
+        });
+        botParticipatedInThread = (threadReplies.messages ?? []).some(
+          (m: { user?: string; bot_id?: string }) =>
+            m.user === ctx.botUserId ||
+            (m.bot_id !== undefined && !m.user && m.bot_id === ctx.botId),
+        );
+        if (!botParticipatedInThread) {
+          ctx.nonBotThreads.check(threadCacheKey);
+        }
+      } catch {
+        // If the API call fails, fall through to require explicit mention
+      }
+    }
+  }
   const implicitMention = Boolean(
     !isDirectMessage &&
     ctx.botUserId &&
     message.thread_ts &&
-    message.parent_user_id === ctx.botUserId,
+    (botIsParentAuthor || botParticipatedInThread),
   );
 
   const sender = message.user ? await ctx.resolveUserName(message.user) : null;

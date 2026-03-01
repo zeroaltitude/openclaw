@@ -1,4 +1,9 @@
 import {
+  loadSessionStore,
+  resolveMainSessionKey,
+  resolveStorePath,
+} from "../../../config/sessions.js";
+import {
   getThreadBindingManager,
   type ThreadBindingRecord,
 } from "../../../discord/monitor/thread-bindings.js";
@@ -7,9 +12,36 @@ import {
   sendPollDiscord,
   sendWebhookMessageDiscord,
 } from "../../../discord/send.js";
+import { parseDiscordTarget } from "../../../discord/targets.js";
 import type { OutboundIdentity } from "../../../infra/outbound/identity.js";
-import { normalizeDiscordOutboundTarget } from "../normalize/discord.js";
+import { deliveryContextFromSession } from "../../../utils/delivery-context.js";
 import type { ChannelOutboundAdapter } from "../types.js";
+
+/**
+ * Try to resolve a Discord delivery target from the main session's last
+ * delivery context. This handles the case where a cron job or announce flow
+ * specifies a bare user ID but the session already knows the DM channel.
+ */
+function resolveDiscordTargetFromSession(
+  cfg: import("../../../config/config.js").OpenClawConfig | undefined,
+): string | undefined {
+  if (!cfg) {
+    return undefined;
+  }
+  try {
+    const mainKey = resolveMainSessionKey(cfg);
+    const storePath = resolveStorePath(cfg.session?.store);
+    const store = loadSessionStore(storePath);
+    const entry = store[mainKey];
+    const ctx = deliveryContextFromSession(entry);
+    if (ctx?.to && ctx.channel === "discord") {
+      return ctx.to;
+    }
+  } catch {
+    // Session lookup failed — no fallback available
+  }
+  return undefined;
+}
 
 function resolveDiscordOutboundTarget(params: {
   to: string;
@@ -79,7 +111,56 @@ export const discordOutbound: ChannelOutboundAdapter = {
   chunker: null,
   textChunkLimit: 2000,
   pollMaxOptions: 10,
-  resolveTarget: ({ to }) => normalizeDiscordOutboundTarget(to),
+  resolveTarget: ({ cfg, to, allowFrom: _allowFrom, mode }) => {
+    const trimmed = to?.trim() ?? "";
+    if (!trimmed) {
+      // Implicit mode: try to resolve from session's last delivery context
+      if (mode === "implicit" || mode === "heartbeat") {
+        const fallback = resolveDiscordTargetFromSession(cfg);
+        if (fallback) {
+          return { ok: true, to: fallback };
+        }
+      }
+      return {
+        ok: false,
+        error: new Error(
+          'Discord target is required. Use "user:<id>" for DMs or "channel:<id>" for channel messages.',
+        ),
+      };
+    }
+    // Validate the target by parsing it — this catches ambiguous bare numeric IDs early
+    // instead of failing silently at send time.
+    try {
+      const parsed = parseDiscordTarget(trimmed);
+      if (parsed) {
+        // Re-format with the proper prefix so downstream send never sees ambiguous IDs
+        return { ok: true, to: `${parsed.kind}:${parsed.id}` };
+      }
+      // parseDiscordTarget returns undefined only for empty input (handled above)
+      return { ok: true, to: trimmed };
+    } catch (err) {
+      // Only fall back to session context for genuinely ambiguous bare numeric IDs
+      // in implicit/heartbeat modes. Explicit sends should fail fast so callers
+      // are prompted to disambiguate with user:/channel: prefixes.
+      const isAmbiguousNumeric = /^\d+$/.test(trimmed);
+      const allowFallback = mode === "implicit" || mode === "heartbeat";
+      if (isAmbiguousNumeric && allowFallback) {
+        const fallback = resolveDiscordTargetFromSession(cfg);
+        if (fallback) {
+          return { ok: true, to: fallback };
+        }
+      }
+      return {
+        ok: false,
+        error:
+          err instanceof Error
+            ? err
+            : new Error(
+                `Ambiguous Discord recipient "${trimmed}". Use "user:${trimmed}" for DMs or "channel:${trimmed}" for channel messages.`,
+              ),
+      };
+    }
+  },
   sendText: async ({ to, text, accountId, deps, replyToId, threadId, identity, silent }) => {
     if (!silent) {
       const webhookResult = await maybeSendDiscordWebhookText({
