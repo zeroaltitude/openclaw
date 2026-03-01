@@ -5,7 +5,7 @@ import type { OpenClawConfig, SlackReactionNotificationMode } from "../../config
 import { resolveSessionKey, type SessionScope } from "../../config/sessions.js";
 import type { DmPolicy, GroupPolicy } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
-import { createDedupeCache } from "../../infra/dedupe.js";
+import { createDedupeCache, type DedupeCache } from "../../infra/dedupe.js";
 import { getChildLogger } from "../../logging.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import type { SlackMessageEvent } from "../types.js";
@@ -69,8 +69,8 @@ export type SlackMonitorContext = {
 
   historyLimit: number;
   channelHistories: Map<string, HistoryEntry[]>;
-  /** Threads where the API confirmed the bot has NOT participated (negative cache). */
-  nonBotThreads: Set<string>;
+  /** Threads where the API confirmed the bot has NOT participated (bounded negative cache). */
+  nonBotThreads: DedupeCache;
   sessionScope: SessionScope;
   mainKey: string;
 
@@ -399,7 +399,7 @@ export function createSlackMonitorContext(params: {
     apiAppId: params.apiAppId,
     historyLimit: params.historyLimit,
     channelHistories,
-    nonBotThreads: new Set<string>(),
+    nonBotThreads: createDedupeCache({ ttlMs: 10 * 60_000, maxSize: 1_000 }),
     sessionScope: params.sessionScope,
     mainKey: params.mainKey,
     dmEnabled: params.dmEnabled,

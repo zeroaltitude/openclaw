@@ -240,7 +240,7 @@ export async function prepareSlackMessage(params: {
     if (
       !botParticipatedInThread &&
       threadTs &&
-      !ctx.nonBotThreads.has(threadCacheKey) &&
+      !ctx.nonBotThreads.peek(threadCacheKey) &&
       ctx.app?.client?.conversations?.replies
     ) {
       try {
@@ -255,7 +255,7 @@ export async function prepareSlackMessage(params: {
             (m.bot_id !== undefined && !m.user && m.bot_id === ctx.botId),
         );
         if (!botParticipatedInThread) {
-          ctx.nonBotThreads.add(threadCacheKey);
+          ctx.nonBotThreads.check(threadCacheKey);
         }
       } catch {
         // If the API call fails, fall through to require explicit mention
