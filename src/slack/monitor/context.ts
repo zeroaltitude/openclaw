@@ -69,6 +69,8 @@ export type SlackMonitorContext = {
 
   historyLimit: number;
   channelHistories: Map<string, HistoryEntry[]>;
+  /** Threads where the API confirmed the bot has NOT participated (negative cache). */
+  nonBotThreads: Set<string>;
   sessionScope: SessionScope;
   mainKey: string;
 
@@ -397,6 +399,7 @@ export function createSlackMonitorContext(params: {
     apiAppId: params.apiAppId,
     historyLimit: params.historyLimit,
     channelHistories,
+    nonBotThreads: new Set<string>(),
     sessionScope: params.sessionScope,
     mainKey: params.mainKey,
     dmEnabled: params.dmEnabled,

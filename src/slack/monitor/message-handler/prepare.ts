@@ -235,7 +235,14 @@ export async function prepareSlackMessage(params: {
     // This handles the first follow-up after the bot's initial reply: the bot's own
     // outbound reply doesn't create a thread session (it's dropped as a self-message),
     // so the session check above misses it. A lightweight API call confirms participation.
-    if (!botParticipatedInThread && threadTs && ctx.app?.client?.conversations?.replies) {
+    // Skip if we already know this thread has no bot participation (negative cache).
+    const threadCacheKey = `${message.channel}:${threadTs}`;
+    if (
+      !botParticipatedInThread &&
+      threadTs &&
+      !ctx.nonBotThreads.has(threadCacheKey) &&
+      ctx.app?.client?.conversations?.replies
+    ) {
       try {
         const threadReplies = await ctx.app.client.conversations.replies({
           channel: message.channel,
@@ -247,6 +254,9 @@ export async function prepareSlackMessage(params: {
             m.user === ctx.botUserId ||
             (m.bot_id !== undefined && !m.user && m.bot_id === ctx.botId),
         );
+        if (!botParticipatedInThread) {
+          ctx.nonBotThreads.add(threadCacheKey);
+        }
       } catch {
         // If the API call fails, fall through to require explicit mention
       }

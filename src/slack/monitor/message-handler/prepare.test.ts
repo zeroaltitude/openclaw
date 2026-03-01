@@ -747,6 +747,60 @@ describe("slack prepareSlackMessage inbound contract", () => {
     expect(prepared).toBeNull();
   });
 
+  it("does not re-fetch conversations.replies for negatively-cached threads", async () => {
+    // After the first miss, subsequent messages in the same non-bot thread
+    // should skip the API call entirely (negative cache).
+    const { storePath } = makeTmpStorePath();
+    const cfg = {
+      session: { store: storePath },
+      channels: { slack: { enabled: true, replyToMode: "all", groupPolicy: "open" } },
+    } as unknown as OpenClawConfig;
+
+    const replies = vi.fn().mockResolvedValue({
+      messages: [
+        { text: "hey anyone", user: "U2", ts: "600.000" },
+        { text: "yeah", user: "U3", ts: "601.000" },
+      ],
+    });
+
+    const slackCtx = createInboundSlackCtx({
+      cfg,
+      appClient: { conversations: { replies } } as unknown as App["client"],
+      defaultRequireMention: true,
+      replyToMode: "all",
+    });
+    slackCtx.resolveUserName = async () => ({ name: "Alice" });
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    // First message — triggers API call, bot not found, caches negative result
+    await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createThreadAccount(),
+      message: createThreadReplyMessage({
+        text: "first reply",
+        ts: "601.000",
+        thread_ts: "600.000",
+        parent_user_id: "U2",
+      }),
+      opts: { source: "message" },
+    });
+    expect(replies).toHaveBeenCalledOnce();
+
+    // Second message in same thread — should NOT call API again
+    await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createThreadAccount(),
+      message: createThreadReplyMessage({
+        text: "second reply",
+        ts: "602.000",
+        thread_ts: "600.000",
+        parent_user_id: "U2",
+      }),
+      opts: { source: "message" },
+    });
+    expect(replies).toHaveBeenCalledOnce(); // Still just once — cached
+  });
+
   it("excludes thread metadata when thread_ts equals ts without parent_user_id", async () => {
     const message = createSlackMessage({
       text: "top level",
