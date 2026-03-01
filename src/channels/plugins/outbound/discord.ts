@@ -139,10 +139,12 @@ export const discordOutbound: ChannelOutboundAdapter = {
       // parseDiscordTarget returns undefined only for empty input (handled above)
       return { ok: true, to: trimmed };
     } catch (err) {
-      // Only fall back to session context for genuinely ambiguous bare numeric IDs.
-      // Other parse errors (e.g. @invalidUser) should surface immediately.
+      // Only fall back to session context for genuinely ambiguous bare numeric IDs
+      // in implicit/heartbeat modes. Explicit sends should fail fast so callers
+      // are prompted to disambiguate with user:/channel: prefixes.
       const isAmbiguousNumeric = /^\d+$/.test(trimmed);
-      if (isAmbiguousNumeric) {
+      const allowFallback = mode === "implicit" || mode === "heartbeat";
+      if (isAmbiguousNumeric && allowFallback) {
         const fallback = resolveDiscordTargetFromSession(cfg);
         if (fallback) {
           return { ok: true, to: fallback };
