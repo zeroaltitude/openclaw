@@ -136,20 +136,28 @@ export const discordOutbound: ChannelOutboundAdapter = {
         // Re-format with the proper prefix so downstream send never sees ambiguous IDs
         return { ok: true, to: `${parsed.kind}:${parsed.id}` };
       }
-    } catch {
-      // Bare numeric ID — ambiguous. Try the session's lastTo as a fallback.
-      const fallback = resolveDiscordTargetFromSession(cfg);
-      if (fallback) {
-        return { ok: true, to: fallback };
+      // parseDiscordTarget returns undefined only for empty input (handled above)
+      return { ok: true, to: trimmed };
+    } catch (err) {
+      // Only fall back to session context for genuinely ambiguous bare numeric IDs.
+      // Other parse errors (e.g. @invalidUser) should surface immediately.
+      const isAmbiguousNumeric = /^\d+$/.test(trimmed);
+      if (isAmbiguousNumeric) {
+        const fallback = resolveDiscordTargetFromSession(cfg);
+        if (fallback) {
+          return { ok: true, to: fallback };
+        }
       }
       return {
         ok: false,
-        error: new Error(
-          `Ambiguous Discord recipient "${trimmed}". Use "user:${trimmed}" for DMs or "channel:${trimmed}" for channel messages.`,
-        ),
+        error:
+          err instanceof Error
+            ? err
+            : new Error(
+                `Ambiguous Discord recipient "${trimmed}". Use "user:${trimmed}" for DMs or "channel:${trimmed}" for channel messages.`,
+              ),
       };
     }
-    return { ok: true, to: trimmed };
   },
   sendText: async ({ to, text, accountId, deps, replyToId, threadId, identity, silent }) => {
     if (!silent) {
