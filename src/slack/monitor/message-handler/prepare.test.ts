@@ -52,6 +52,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
       app: { client: params.appClient ?? {} } as App,
       runtime: {} as RuntimeEnv,
       botUserId: "B1",
+      botId: "B_BOT1",
       teamId: "T1",
       apiAppId: "A1",
       historyLimit: 0,
@@ -304,6 +305,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
       app: { client: {} } as App,
       runtime: {} as RuntimeEnv,
       botUserId: "B1",
+      botId: "B_BOT1",
       teamId: "T1",
       apiAppId: "A1",
       historyLimit: 0,
@@ -387,6 +389,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
       app: { client: {} } as App,
       runtime: {} as RuntimeEnv,
       botUserId: "B1",
+      botId: "B_BOT1",
       teamId: "T1",
       apiAppId: "A1",
       historyLimit: 0,
@@ -595,6 +598,209 @@ describe("slack prepareSlackMessage inbound contract", () => {
     expect(prepared!.ctxPayload.Body).not.toContain("thread_ts");
   });
 
+  it("treats thread reply as implicit mention when bot has existing thread session", async () => {
+    // Scenario: user @mentions bot in a channel, bot replies in thread (creating a session),
+    // then user replies in thread WITHOUT @mentioning the bot again.
+    // The bot should still process the message because it already participated.
+    const { storePath } = makeTmpStorePath();
+    const cfg = {
+      session: { store: storePath },
+      channels: { slack: { enabled: true, replyToMode: "all", groupPolicy: "open" } },
+    } as OpenClawConfig;
+
+    // Pre-seed a thread session to simulate the bot having previously replied
+    const route = resolveAgentRoute({
+      cfg,
+      channel: "slack",
+      accountId: "default",
+      teamId: "T1",
+      peer: { kind: "channel", id: "C123" },
+    });
+    const threadKeys = resolveThreadSessionKeys({
+      baseSessionKey: route.sessionKey,
+      threadId: "300.000",
+    });
+    fs.writeFileSync(
+      storePath,
+      JSON.stringify({ [threadKeys.sessionKey]: { updatedAt: Date.now() } }, null, 2),
+    );
+
+    const replies = vi.fn().mockResolvedValue({
+      messages: [
+        { text: "<@B1> help me", user: "U2", ts: "300.000" },
+        { text: "Sure, here's help", bot_id: "B1", user: "B1", ts: "300.500" },
+        { text: "thanks, one more question", user: "U2", ts: "301.000" },
+      ],
+    });
+
+    // requireMention: true, and the message does NOT contain a mention
+    const slackCtx = createInboundSlackCtx({
+      cfg,
+      appClient: { conversations: { replies } } as unknown as App["client"],
+      defaultRequireMention: true,
+      replyToMode: "all",
+    });
+    slackCtx.resolveUserName = async () => ({ name: "Alice" });
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    const prepared = await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createThreadAccount(),
+      message: createThreadReplyMessage({
+        text: "thanks, one more question",
+        ts: "301.000",
+        thread_ts: "300.000",
+        parent_user_id: "U2", // User started the thread, NOT the bot
+      }),
+      opts: { source: "message" }, // no wasMentioned override
+    });
+
+    // Should NOT be skipped — implicit mention via thread session
+    expect(prepared).toBeTruthy();
+    expect(prepared!.ctxPayload.Body).toContain("thanks, one more question");
+  });
+
+  it("treats thread reply as implicit mention when bot replied but no thread session exists", async () => {
+    // Scenario: user @mentions bot in channel (parent msg), bot replies in thread,
+    // but the bot's own reply doesn't create a thread session (dropped as self-message).
+    // The next user reply should still be processed by checking Slack API for bot participation.
+    const { storePath } = makeTmpStorePath();
+    const cfg = {
+      session: { store: storePath },
+      channels: { slack: { enabled: true, replyToMode: "all", groupPolicy: "open" } },
+    } as OpenClawConfig;
+
+    // Do NOT pre-seed a thread session — simulates the gap
+
+    const replies = vi.fn().mockResolvedValue({
+      messages: [
+        { text: "<@B1> help me", user: "U2", ts: "500.000" },
+        { text: "Sure, here's help", bot_id: "B_BOT1", ts: "500.500" },
+        { text: "follow up without mention", user: "U2", ts: "501.000" },
+      ],
+    });
+
+    const slackCtx = createInboundSlackCtx({
+      cfg,
+      appClient: { conversations: { replies } } as unknown as App["client"],
+      defaultRequireMention: true,
+      replyToMode: "all",
+    });
+    slackCtx.resolveUserName = async () => ({ name: "Alice" });
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    const prepared = await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createThreadAccount(),
+      message: createThreadReplyMessage({
+        text: "follow up without mention",
+        ts: "501.000",
+        thread_ts: "500.000",
+        parent_user_id: "U2",
+      }),
+      opts: { source: "message" },
+    });
+
+    // Should NOT be skipped — bot participated per Slack API
+    expect(prepared).toBeTruthy();
+    expect(prepared!.ctxPayload.Body).toContain("follow up without mention");
+  });
+
+  it("skips thread reply when bot has no session and did not reply in thread", async () => {
+    // Bot was never involved in this thread
+    const { storePath } = makeTmpStorePath();
+    const cfg = {
+      session: { store: storePath },
+      channels: { slack: { enabled: true, replyToMode: "all", groupPolicy: "open" } },
+    } as OpenClawConfig;
+
+    // conversations.replies returns no bot messages
+    const replies = vi.fn().mockResolvedValue({
+      messages: [
+        { text: "hey anyone", user: "U2", ts: "400.000" },
+        { text: "hey anyone here?", user: "U3", ts: "401.000" },
+      ],
+    });
+
+    const slackCtx = createInboundSlackCtx({
+      cfg,
+      appClient: { conversations: { replies } } as unknown as App["client"],
+      defaultRequireMention: true,
+      replyToMode: "all",
+    });
+    slackCtx.resolveUserName = async () => ({ name: "Alice" });
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    const prepared = await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createThreadAccount(),
+      message: createThreadReplyMessage({
+        text: "hey anyone here?",
+        ts: "401.000",
+        thread_ts: "400.000",
+        parent_user_id: "U2",
+      }),
+      opts: { source: "message" },
+    });
+
+    // Should be skipped — no mention, no bot participation
+    expect(prepared).toBeNull();
+  });
+
+  it("does not re-fetch conversations.replies for negatively-cached threads", async () => {
+    // After the first miss, subsequent messages in the same non-bot thread
+    // should skip the API call entirely (negative cache).
+    const { storePath } = makeTmpStorePath();
+    const cfg = {
+      session: { store: storePath },
+      channels: { slack: { enabled: true, replyToMode: "all", groupPolicy: "open" } },
+    } as unknown as OpenClawConfig;
+
+    const replies = vi.fn().mockResolvedValue({
+      messages: [
+        { text: "hey anyone", user: "U2", ts: "600.000" },
+        { text: "yeah", user: "U3", ts: "601.000" },
+      ],
+    });
+
+    const slackCtx = createInboundSlackCtx({
+      cfg,
+      appClient: { conversations: { replies } } as unknown as App["client"],
+      defaultRequireMention: true,
+      replyToMode: "all",
+    });
+    slackCtx.resolveUserName = async () => ({ name: "Alice" });
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    // First message — triggers API call, bot not found, caches negative result
+    await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createThreadAccount(),
+      message: createThreadReplyMessage({
+        text: "first reply",
+        ts: "601.000",
+        thread_ts: "600.000",
+        parent_user_id: "U2",
+      }),
+      opts: { source: "message" },
+    });
+    expect(replies).toHaveBeenCalledOnce();
+
+    // Second message in same thread — should NOT call API again
+    await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createThreadAccount(),
+      message: createThreadReplyMessage({
+        text: "second reply",
+        ts: "602.000",
+        thread_ts: "600.000",
+        parent_user_id: "U2",
+      }),
+      opts: { source: "message" },
+    });
+    expect(replies).toHaveBeenCalledOnce(); // Still just once — cached
+  });
+
   it("excludes thread metadata when thread_ts equals ts without parent_user_id", async () => {
     const message = createSlackMessage({
       text: "top level",
@@ -633,6 +839,7 @@ describe("prepareSlackMessage sender prefix", () => {
         },
       },
       botUserId: "BOT",
+      botId: "B_BOT",
       teamId: "T1",
       apiAppId: "A1",
       historyLimit: 0,
