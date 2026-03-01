@@ -633,7 +633,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
     // requireMention: true, and the message does NOT contain a mention
     const slackCtx = createInboundSlackCtx({
       cfg,
-      appClient: { conversations: { replies } } as App["client"],
+      appClient: { conversations: { replies } } as unknown as App["client"],
       defaultRequireMention: true,
       replyToMode: "all",
     });
@@ -679,7 +679,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
 
     const slackCtx = createInboundSlackCtx({
       cfg,
-      appClient: { conversations: { replies } } as App["client"],
+      appClient: { conversations: { replies } } as unknown as App["client"],
       defaultRequireMention: true,
       replyToMode: "all",
     });
@@ -721,7 +721,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
 
     const slackCtx = createInboundSlackCtx({
       cfg,
-      appClient: { conversations: { replies } } as App["client"],
+      appClient: { conversations: { replies } } as unknown as App["client"],
       defaultRequireMention: true,
       replyToMode: "all",
     });
