@@ -218,6 +218,7 @@ export async function prepareSlackMessage(params: {
     isRoom && (channelConfig?.requireMention ?? ctx.defaultRequireMention);
   if (
     !isDirectMessage &&
+    !wasMentioned &&
     ctx.botUserId &&
     isThreadReply &&
     !botIsParentAuthor &&
