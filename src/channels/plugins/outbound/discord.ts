@@ -1,6 +1,6 @@
 import {
   loadSessionStore,
-  resolveAgentMainSessionKey,
+  resolveMainSessionKey,
   resolveStorePath,
 } from "../../../config/sessions.js";
 import {
@@ -29,8 +29,8 @@ function resolveDiscordTargetFromSession(
     return undefined;
   }
   try {
-    const mainKey = resolveAgentMainSessionKey({ cfg, agentId: "main" });
-    const storePath = resolveStorePath(cfg.session?.store, { agentId: "main" });
+    const mainKey = resolveMainSessionKey(cfg);
+    const storePath = resolveStorePath(cfg.session?.store);
     const store = loadSessionStore(storePath);
     const entry = store[mainKey];
     const ctx = deliveryContextFromSession(entry);
