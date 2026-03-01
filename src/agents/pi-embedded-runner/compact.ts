@@ -101,7 +101,7 @@ export type CompactEmbeddedPiSessionParams = {
   groupSpace?: string | null;
   /** Parent session key for subagent policy inheritance. */
   spawnedBy?: string | null;
-  /** Sender identity for plugin hooks (provenance, trust classification). */
+  /** Sender identity for plugin hooks (e.g. trust classification). */
   senderId?: string | null;
   /** Sender display name for plugin hooks. */
   senderName?: string | null;

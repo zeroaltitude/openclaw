@@ -389,7 +389,8 @@ export async function startGatewayServer(
   // Plugins register first (during loadGatewayPlugins), then bundled hooks
   // register later (during startGatewaySidecars → loadInternalHooks).
   // This ordering is the contract: plugin hooks run before bundled hooks
-  // for the same event (e.g., provenance gates session-memory on command:new).
+  // for the same event (e.g., a plugin that gates session-memory on
+  // command:new will run its hook before any bundled hook for that event).
   clearInternalHooks();
 
   const { pluginRegistry, gatewayMethods: baseGatewayMethods } = minimalTestGateway
