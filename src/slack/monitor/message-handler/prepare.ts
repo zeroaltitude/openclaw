@@ -242,7 +242,9 @@ export async function prepareSlackMessage(params: {
           limit: 50,
         });
         botParticipatedInThread = (threadReplies.messages ?? []).some(
-          (m: { user?: string }) => m.user === ctx.botUserId,
+          (m: { user?: string; bot_id?: string }) =>
+            m.user === ctx.botUserId ||
+            (m.bot_id !== undefined && !m.user && m.bot_id === ctx.botId),
         );
       } catch {
         // If the API call fails, fall through to require explicit mention

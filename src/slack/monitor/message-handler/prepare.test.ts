@@ -52,6 +52,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
       app: { client: params.appClient ?? {} } as App,
       runtime: {} as RuntimeEnv,
       botUserId: "B1",
+      botId: "B_BOT1",
       teamId: "T1",
       apiAppId: "A1",
       historyLimit: 0,
@@ -304,6 +305,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
       app: { client: {} } as App,
       runtime: {} as RuntimeEnv,
       botUserId: "B1",
+      botId: "B_BOT1",
       teamId: "T1",
       apiAppId: "A1",
       historyLimit: 0,
@@ -387,6 +389,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
       app: { client: {} } as App,
       runtime: {} as RuntimeEnv,
       botUserId: "B1",
+      botId: "B_BOT1",
       teamId: "T1",
       apiAppId: "A1",
       historyLimit: 0,
@@ -672,7 +675,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
     const replies = vi.fn().mockResolvedValue({
       messages: [
         { text: "<@B1> help me", user: "U2", ts: "500.000" },
-        { text: "Sure, here's help", user: "B1", ts: "500.500" },
+        { text: "Sure, here's help", bot_id: "B_BOT1", ts: "500.500" },
         { text: "follow up without mention", user: "U2", ts: "501.000" },
       ],
     });
@@ -782,6 +785,7 @@ describe("prepareSlackMessage sender prefix", () => {
         },
       },
       botUserId: "BOT",
+      botId: "B_BOT",
       teamId: "T1",
       apiAppId: "A1",
       historyLimit: 0,
