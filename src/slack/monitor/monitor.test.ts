@@ -90,6 +90,7 @@ const baseParams = () => ({
   app: { client: {} } as App,
   runtime: {} as RuntimeEnv,
   botUserId: "B1",
+  botId: "B_BOT1",
   teamId: "T1",
   apiAppId: "A1",
   historyLimit: 0,
