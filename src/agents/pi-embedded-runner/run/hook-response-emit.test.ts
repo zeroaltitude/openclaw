@@ -114,7 +114,7 @@ describe("applyBeforeResponseEmitHook", () => {
 
     expect(result).toBe("modified!");
     // Session message should also be updated
-    expect(activeSession.messages[0].content).toBe("modified!");
+    expect((activeSession.messages[0] as { content: unknown }).content).toBe("modified!");
   });
 
   it("updates content-part-array session messages", async () => {
@@ -132,7 +132,10 @@ describe("applyBeforeResponseEmitHook", () => {
     });
 
     expect(result).toBe("modified!");
-    expect((sessionMsg.content as Array<{ type: string; text: string }>)[0].text).toBe("modified!");
+    expect(
+      ((sessionMsg as { content: unknown }).content as Array<{ type: string; text: string }>)[0]
+        .text,
+    ).toBe("modified!");
   });
 
   it("returns undefined when hook blocks", async () => {

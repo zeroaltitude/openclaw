@@ -1,4 +1,5 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage, StreamFn } from "@mariozechner/pi-agent-core";
+import type { Model, Api, Context } from "@mariozechner/pi-ai";
 /**
  * Integration tests for wrapStreamFnWithHooks().
  *
@@ -76,17 +77,17 @@ describe("wrapStreamFnWithHooks", () => {
   it("context_assembled fires on first call only", async () => {
     const hookRunner = makeMockHookRunner();
     const iterationRef = { current: 0 };
-    const wrapped = wrapStreamFnWithHooks(streamFn, {
+    const wrapped = wrapStreamFnWithHooks(streamFn as unknown as StreamFn, {
       hookRunner,
       agentCtx,
       iterationRef,
       modelId: "gpt-4",
     });
 
-    const context = makeBaseContext();
-    await wrapped("gpt-4", context, {});
+    const context = makeBaseContext() as unknown as Context;
+    await wrapped("gpt-4" as unknown as Model<Api>, context, {});
     iterationRef.current = 1;
-    await wrapped("gpt-4", context, {});
+    await wrapped("gpt-4" as unknown as Model<Api>, context, {});
 
     expect(hookRunner.runContextAssembled).toHaveBeenCalledOnce();
     const [event, ctx] = (hookRunner.runContextAssembled as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -102,17 +103,17 @@ describe("wrapStreamFnWithHooks", () => {
   it("before_llm_call fires on every call", async () => {
     const hookRunner = makeMockHookRunner();
     const iterationRef = { current: 0 };
-    const wrapped = wrapStreamFnWithHooks(streamFn, {
+    const wrapped = wrapStreamFnWithHooks(streamFn as unknown as StreamFn, {
       hookRunner,
       agentCtx,
       iterationRef,
       modelId: "gpt-4",
     });
 
-    const context = makeBaseContext();
-    await wrapped("gpt-4", context, {});
+    const context = makeBaseContext() as unknown as Context;
+    await wrapped("gpt-4" as unknown as Model<Api>, context, {});
     iterationRef.current = 1;
-    await wrapped("gpt-4", context, {});
+    await wrapped("gpt-4" as unknown as Model<Api>, context, {});
 
     expect(hookRunner.runBeforeLlmCall).toHaveBeenCalledTimes(2);
 
@@ -140,14 +141,14 @@ describe("wrapStreamFnWithHooks", () => {
         messages: modifiedMessages,
       }),
     });
-    const wrapped = wrapStreamFnWithHooks(streamFn, {
+    const wrapped = wrapStreamFnWithHooks(streamFn as unknown as StreamFn, {
       hookRunner,
       agentCtx,
       iterationRef: { current: 0 },
       modelId: "gpt-4",
     });
 
-    await wrapped("gpt-4", makeBaseContext(), {});
+    await wrapped("gpt-4" as unknown as Model<Api>, makeBaseContext() as unknown as Context, {});
 
     expect(streamFn).toHaveBeenCalledOnce();
     const passedContext = streamFn.mock.calls[0][1];
@@ -161,14 +162,14 @@ describe("wrapStreamFnWithHooks", () => {
         tools: [{ name: "read" }],
       }),
     });
-    const wrapped = wrapStreamFnWithHooks(streamFn, {
+    const wrapped = wrapStreamFnWithHooks(streamFn as unknown as StreamFn, {
       hookRunner,
       agentCtx,
       iterationRef: { current: 0 },
       modelId: "gpt-4",
     });
 
-    await wrapped("gpt-4", makeBaseContext(), {});
+    await wrapped("gpt-4" as unknown as Model<Api>, makeBaseContext() as unknown as Context, {});
 
     expect(streamFn).toHaveBeenCalledOnce();
     const passedContext = streamFn.mock.calls[0][1];
@@ -184,16 +185,16 @@ describe("wrapStreamFnWithHooks", () => {
         blockReason: "tainted context",
       }),
     });
-    const wrapped = wrapStreamFnWithHooks(streamFn, {
+    const wrapped = wrapStreamFnWithHooks(streamFn as unknown as StreamFn, {
       hookRunner,
       agentCtx,
       iterationRef: { current: 0 },
       modelId: "gpt-4",
     });
 
-    await expect(wrapped("gpt-4", makeBaseContext(), {})).rejects.toThrow(
-      "LLM call blocked by plugin: tainted context",
-    );
+    await expect(
+      wrapped("gpt-4" as unknown as Model<Api>, makeBaseContext() as unknown as Context, {}),
+    ).rejects.toThrow("LLM call blocked by plugin: tainted context");
     expect(streamFn).not.toHaveBeenCalled();
   });
 
@@ -201,14 +202,18 @@ describe("wrapStreamFnWithHooks", () => {
     const hookRunner = makeMockHookRunner({
       runBeforeLlmCall: vi.fn().mockRejectedValue(new Error("hook kaboom")),
     });
-    const wrapped = wrapStreamFnWithHooks(streamFn, {
+    const wrapped = wrapStreamFnWithHooks(streamFn as unknown as StreamFn, {
       hookRunner,
       agentCtx,
       iterationRef: { current: 0 },
       modelId: "gpt-4",
     });
 
-    const result = await wrapped("gpt-4", makeBaseContext(), {});
+    const result = await wrapped(
+      "gpt-4" as unknown as Model<Api>,
+      makeBaseContext() as unknown as Context,
+      {},
+    );
 
     // Should still call the underlying streamFn and return its result
     expect(streamFn).toHaveBeenCalledOnce();
@@ -219,15 +224,15 @@ describe("wrapStreamFnWithHooks", () => {
     const hookRunner = makeMockHookRunner({
       hasHooks: vi.fn().mockReturnValue(false),
     });
-    const wrapped = wrapStreamFnWithHooks(streamFn, {
+    const wrapped = wrapStreamFnWithHooks(streamFn as unknown as StreamFn, {
       hookRunner,
       agentCtx,
       iterationRef: { current: 0 },
       modelId: "gpt-4",
     });
 
-    const context = makeBaseContext();
-    const result = await wrapped("gpt-4", context, {});
+    const context = makeBaseContext() as unknown as Context;
+    const result = await wrapped("gpt-4" as unknown as Model<Api>, context, {});
 
     // context_assembled and before_llm_call should not be called
     expect(hookRunner.runContextAssembled).not.toHaveBeenCalled();
