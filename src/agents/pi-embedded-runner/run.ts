@@ -252,6 +252,7 @@ export async function runEmbeddedPiAgent(
         sessionId: params.sessionId,
         workspaceDir: resolvedWorkspace,
         messageProvider: params.messageProvider ?? undefined,
+        sourceProvider: params.sourceProvider ?? undefined,
       };
       if (hookRunner?.hasHooks("before_model_resolve")) {
         try {
@@ -577,6 +578,7 @@ export async function runEmbeddedPiAgent(
             sessionKey: params.sessionKey,
             messageChannel: params.messageChannel,
             messageProvider: params.messageProvider,
+            sourceProvider: params.sourceProvider,
             agentAccountId: params.agentAccountId,
             messageTo: params.messageTo,
             messageThreadId: params.messageThreadId,
@@ -584,6 +586,8 @@ export async function runEmbeddedPiAgent(
             groupChannel: params.groupChannel,
             groupSpace: params.groupSpace,
             spawnedBy: params.spawnedBy,
+            senderId: params.senderId,
+            senderName: params.senderName,
             senderIsOwner: params.senderIsOwner,
             currentChannelId: params.currentChannelId,
             currentThreadTs: params.currentThreadTs,
@@ -742,6 +746,8 @@ export async function runEmbeddedPiAgent(
                 agentDir,
                 config: params.config,
                 skillsSnapshot: params.skillsSnapshot,
+                senderId: params.senderId,
+                senderName: params.senderName,
                 senderIsOwner: params.senderIsOwner,
                 provider,
                 model: modelId,

@@ -100,7 +100,14 @@ export interface InternalHookEvent {
   action: string;
   /** The session key this event relates to */
   sessionKey: string;
-  /** Additional context specific to the event */
+  /**
+   * Additional context specific to the event.
+   *
+   * For command:new events (session saves), hooks can set:
+   * - `blockSessionSave: true` - Prevent session from being saved
+   * - `sessionSaveRedirectPath: string` - Save to alternate location (e.g., pending directory)
+   * - `sessionSaveContent: string` - Override session content to save
+   */
   context: Record<string, unknown>;
   /** Timestamp when the event occurred */
   timestamp: Date;
@@ -110,12 +117,17 @@ export interface InternalHookEvent {
 
 export type InternalHookHandler = (event: InternalHookEvent) => Promise<void> | void;
 
-/** Registry of hook handlers by event key */
+/** Registry of hook handlers by event key (FIFO — registration order) */
 const handlers = new Map<string, InternalHookHandler[]>();
 const log = createSubsystemLogger("internal-hooks");
 
 /**
- * Register a hook handler for a specific event type or event:action combination
+ * Register a hook handler for a specific event type or event:action combination.
+ *
+ * Handlers run in registration order (FIFO).  Plugins register during
+ * loadGatewayPlugins() and bundled hooks register later during
+ * loadInternalHooks(), so plugin handlers naturally run first for the
+ * same event key.
  *
  * @param eventKey - Event type (e.g., 'command') or specific action (e.g., 'command:new')
  * @param handler - Function to call when the event is triggered
@@ -184,7 +196,7 @@ export function getRegisteredEventKeys(): string[] {
  * 1. The general event type (e.g., 'command')
  * 2. The specific event:action combination (e.g., 'command:new')
  *
- * Handlers are called in registration order. Errors are caught and logged
+ * Handlers are called in registration order (FIFO). Errors are caught and logged
  * but don't prevent other handlers from running.
  *
  * @param event - The event to trigger
