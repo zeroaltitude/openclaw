@@ -13,6 +13,7 @@ import {
   sendWebhookMessageDiscord,
 } from "../../../discord/send.js";
 import { parseDiscordTarget } from "../../../discord/targets.js";
+import { normalizeDiscordOutboundTarget } from "../normalize/discord.js";
 import type { OutboundIdentity } from "../../../infra/outbound/identity.js";
 import { deliveryContextFromSession } from "../../../utils/delivery-context.js";
 import type { ChannelOutboundAdapter } from "../types.js";
@@ -111,55 +112,39 @@ export const discordOutbound: ChannelOutboundAdapter = {
   chunker: null,
   textChunkLimit: 2000,
   pollMaxOptions: 10,
-  resolveTarget: ({ cfg, to, allowFrom: _allowFrom, mode }) => {
-    const trimmed = to?.trim() ?? "";
-    if (!trimmed) {
-      // Implicit mode: try to resolve from session's last delivery context
-      if (mode === "implicit" || mode === "heartbeat") {
-        const fallback = resolveDiscordTargetFromSession(cfg);
-        if (fallback) {
-          return { ok: true, to: fallback };
-        }
-      }
-      return {
-        ok: false,
-        error: new Error(
-          'Discord target is required. Use "user:<id>" for DMs or "channel:<id>" for channel messages.',
-        ),
-      };
+  resolveTarget: ({ to }) => normalizeDiscordOutboundTarget(to),
+  sendPayload: async (ctx) => {
+    const text = ctx.payload.text ?? "";
+    const urls = ctx.payload.mediaUrls?.length
+      ? ctx.payload.mediaUrls
+      : ctx.payload.mediaUrl
+        ? [ctx.payload.mediaUrl]
+        : [];
+    if (!text && urls.length === 0) {
+      return { channel: "discord", messageId: "" };
     }
-    // Validate the target by parsing it — this catches ambiguous bare numeric IDs early
-    // instead of failing silently at send time.
-    try {
-      const parsed = parseDiscordTarget(trimmed);
-      if (parsed) {
-        // Re-format with the proper prefix so downstream send never sees ambiguous IDs
-        return { ok: true, to: `${parsed.kind}:${parsed.id}` };
+    if (urls.length > 0) {
+      let lastResult = await discordOutbound.sendMedia!({
+        ...ctx,
+        text,
+        mediaUrl: urls[0],
+      });
+      for (let i = 1; i < urls.length; i++) {
+        lastResult = await discordOutbound.sendMedia!({
+          ...ctx,
+          text: "",
+          mediaUrl: urls[i],
+        });
       }
-      // parseDiscordTarget returns undefined only for empty input (handled above)
-      return { ok: true, to: trimmed };
-    } catch (err) {
-      // Only fall back to session context for genuinely ambiguous bare numeric IDs
-      // in implicit/heartbeat modes. Explicit sends should fail fast so callers
-      // are prompted to disambiguate with user:/channel: prefixes.
-      const isAmbiguousNumeric = /^\d+$/.test(trimmed);
-      const allowFallback = mode === "implicit" || mode === "heartbeat";
-      if (isAmbiguousNumeric && allowFallback) {
-        const fallback = resolveDiscordTargetFromSession(cfg);
-        if (fallback) {
-          return { ok: true, to: fallback };
-        }
-      }
-      return {
-        ok: false,
-        error:
-          err instanceof Error
-            ? err
-            : new Error(
-                `Ambiguous Discord recipient "${trimmed}". Use "user:${trimmed}" for DMs or "channel:${trimmed}" for channel messages.`,
-              ),
-      };
+      return lastResult;
     }
+    const limit = discordOutbound.textChunkLimit;
+    const chunks = limit && discordOutbound.chunker ? discordOutbound.chunker(text, limit) : [text];
+    let lastResult: Awaited<ReturnType<NonNullable<typeof discordOutbound.sendText>>>;
+    for (const chunk of chunks) {
+      lastResult = await discordOutbound.sendText!({ ...ctx, text: chunk });
+    }
+    return lastResult!
   },
   sendText: async ({ to, text, accountId, deps, replyToId, threadId, identity, silent }) => {
     if (!silent) {
