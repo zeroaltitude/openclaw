@@ -3,6 +3,7 @@
 import { execSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { sparkleBuildFloorsFromShortVersion, type SparkleBuildFloors } from "./sparkle-build.ts";
 
 type PackFile = { path: string };
@@ -17,6 +18,8 @@ const requiredPathGroups = [
 ];
 const forbiddenPrefixes = ["dist/OpenClaw.app/"];
 const appcastPath = resolve("appcast.xml");
+const laneBuildMin = 1_000_000_000;
+const laneFloorAdoptionDateKey = 20260227;
 
 type PackageJson = {
   name?: string;
@@ -95,8 +98,7 @@ function extractTag(item: string, tag: string): string | null {
   return regex.exec(item)?.[1]?.trim() ?? null;
 }
 
-function checkAppcastSparkleVersions() {
-  const xml = readFileSync(appcastPath, "utf8");
+export function collectAppcastSparkleVersionErrors(xml: string): string[] {
   const itemMatches = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
   const errors: string[] = [];
   const calverItems: Array<{ title: string; sparkleBuild: number; floors: SparkleBuildFloors }> =
@@ -131,15 +133,18 @@ function checkAppcastSparkleVersions() {
     calverItems.push({ title, sparkleBuild: Number(sparkleVersion), floors });
   }
 
-  const adoptionDateKey = calverItems
-    .filter((item) => item.sparkleBuild >= 1_000_000_000)
+  const observedLaneAdoptionDateKey = calverItems
+    .filter((item) => item.sparkleBuild >= laneBuildMin)
     .map((item) => item.floors.dateKey)
     .toSorted((a, b) => a - b)[0];
+  const effectiveLaneAdoptionDateKey =
+    typeof observedLaneAdoptionDateKey === "number"
+      ? Math.min(observedLaneAdoptionDateKey, laneFloorAdoptionDateKey)
+      : laneFloorAdoptionDateKey;
 
   for (const item of calverItems) {
     const expectLaneFloor =
-      item.sparkleBuild >= 1_000_000_000 ||
-      (typeof adoptionDateKey === "number" && item.floors.dateKey >= adoptionDateKey);
+      item.sparkleBuild >= laneBuildMin || item.floors.dateKey >= effectiveLaneAdoptionDateKey;
     const floor = expectLaneFloor ? item.floors.laneFloor : item.floors.legacyFloor;
     if (item.sparkleBuild < floor) {
       const floorLabel = expectLaneFloor ? "lane floor" : "legacy floor";
@@ -149,10 +154,73 @@ function checkAppcastSparkleVersions() {
     }
   }
 
+  return errors;
+}
+
+function checkAppcastSparkleVersions() {
+  const xml = readFileSync(appcastPath, "utf8");
+  const errors = collectAppcastSparkleVersionErrors(xml);
   if (errors.length > 0) {
     console.error("release-check: appcast sparkle version validation failed:");
     for (const error of errors) {
       console.error(`  - ${error}`);
+
+// Critical functions that channel extension plugins import from openclaw/plugin-sdk.
+// If any are missing from the compiled output, plugins crash at runtime (#27569).
+const requiredPluginSdkExports = [
+  "isDangerousNameMatchingEnabled",
+  "createAccountListHelpers",
+  "buildAgentMediaPayload",
+  "createReplyPrefixOptions",
+  "createTypingCallbacks",
+  "logInboundDrop",
+  "logTypingFailure",
+  "buildPendingHistoryContextFromMap",
+  "clearHistoryEntriesIfEnabled",
+  "recordPendingHistoryEntryIfEnabled",
+  "resolveControlCommandGate",
+  "resolveDmGroupAccessWithLists",
+  "resolveAllowlistProviderRuntimeGroupPolicy",
+  "resolveDefaultGroupPolicy",
+  "resolveChannelMediaMaxBytes",
+  "warnMissingProviderGroupPolicyFallbackOnce",
+  "emptyPluginConfigSchema",
+  "normalizePluginHttpPath",
+  "registerPluginHttpRoute",
+  "DEFAULT_ACCOUNT_ID",
+  "DEFAULT_GROUP_HISTORY_LIMIT",
+];
+
+function checkPluginSdkExports() {
+  const distPath = resolve("dist", "plugin-sdk", "index.js");
+  let content: string;
+  try {
+    content = readFileSync(distPath, "utf8");
+  } catch {
+    console.error("release-check: dist/plugin-sdk/index.js not found (build missing?).");
+    process.exit(1);
+    return;
+  }
+
+  const exportMatch = content.match(/export\s*\{([^}]+)\}\s*;?\s*$/);
+  if (!exportMatch) {
+    console.error("release-check: could not find export statement in dist/plugin-sdk/index.js.");
+    process.exit(1);
+    return;
+  }
+
+  const exportedNames = new Set(
+    exportMatch[1].split(",").map((s) => {
+      const parts = s.trim().split(/\s+as\s+/);
+      return (parts[parts.length - 1] || "").trim();
+    }),
+  );
+
+  const missingExports = requiredPluginSdkExports.filter((name) => !exportedNames.has(name));
+  if (missingExports.length > 0) {
+    console.error("release-check: missing critical plugin-sdk exports (#27569):");
+    for (const name of missingExports) {
+      console.error(`  - ${name}`);
     }
     process.exit(1);
   }
@@ -161,6 +229,7 @@ function checkAppcastSparkleVersions() {
 function main() {
   checkPluginVersions();
   checkAppcastSparkleVersions();
+  checkPluginSdkExports();
 
   const results = runPackDry();
   const files = results.flatMap((entry) => entry.files ?? []);
@@ -197,4 +266,6 @@ function main() {
   console.log("release-check: npm pack contents look OK.");
 }
 
-main();
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main();
+}
