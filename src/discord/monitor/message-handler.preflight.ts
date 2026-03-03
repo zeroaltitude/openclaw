@@ -30,13 +30,12 @@ import { DEFAULT_ACCOUNT_ID, resolveAgentIdFromSessionKey } from "../../routing/
 import { fetchPluralKitMessageInfo } from "../pluralkit.js";
 import { sendMessageDiscord } from "../send.js";
 import {
-  allowListMatches,
   isDiscordGroupAllowedByPolicy,
-  normalizeDiscordAllowList,
   normalizeDiscordSlug,
   resolveDiscordChannelConfigWithFallback,
   resolveDiscordGuildEntry,
   resolveDiscordMemberAccessState,
+  resolveDiscordOwnerAccess,
   resolveDiscordShouldRequireMention,
   resolveGroupDmAllow,
 } from "./allow-list.js";
@@ -56,6 +55,7 @@ import {
   resolveDiscordMessageChannelId,
   resolveDiscordMessageText,
 } from "./message-utils.js";
+import { resolveDiscordPreflightAudioMentionContext } from "./preflight-audio.js";
 import { resolveDiscordSenderIdentity, resolveDiscordWebhookId } from "./sender-identity.js";
 import { resolveDiscordSystemEvent } from "./system-events.js";
 import { isRecentlyUnboundThreadWebhookMessage } from "./thread-bindings.js";
@@ -65,6 +65,23 @@ export type {
   DiscordMessagePreflightContext,
   DiscordMessagePreflightParams,
 } from "./message-handler.preflight.types.js";
+
+const DISCORD_BOUND_THREAD_SYSTEM_PREFIXES = ["⚙️", "🤖", "🧰"];
+
+function isBoundThreadBotSystemMessage(params: {
+  isBoundThreadSession: boolean;
+  isBotAuthor: boolean;
+  text?: string;
+}): boolean {
+  if (!params.isBoundThreadSession || !params.isBotAuthor) {
+    return false;
+  }
+  const text = params.text?.trim();
+  if (!text) {
+    return false;
+  }
+  return DISCORD_BOUND_THREAD_SYSTEM_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
 
 export function resolvePreflightMentionRequirement(params: {
   shouldRequireMention: boolean;
@@ -324,6 +341,17 @@ export async function preflightDiscordMessage(
         agentId: boundAgentId ?? route.agentId,
       }
     : route;
+  const isBoundThreadSession = Boolean(boundSessionKey && earlyThreadChannel);
+  if (
+    isBoundThreadBotSystemMessage({
+      isBoundThreadSession,
+      isBotAuthor: Boolean(author.bot),
+      text: messageText,
+    })
+  ) {
+    logVerbose(`discord: drop bound-thread bot system message ${message.id}`);
+    return null;
+  }
   const mentionRegexes = buildMentionRegexes(params.cfg, effectiveRoute.agentId);
   const explicitlyMentioned = Boolean(
     botId && message.mentionedUsers?.some((user: User) => user.id === botId),
@@ -492,59 +520,27 @@ export async function preflightDiscordMessage(
     channelConfig,
     guildInfo,
   });
-  const isBoundThreadSession = Boolean(boundSessionKey && threadChannel);
   const shouldRequireMention = resolvePreflightMentionRequirement({
     shouldRequireMention: shouldRequireMentionByConfig,
     isBoundThreadSession,
   });
 
-  // Preflight audio transcription for mention detection in guilds
-  // This allows voice notes to be checked for mentions before being dropped
-  let preflightTranscript: string | undefined;
-  const hasAudioAttachment = message.attachments?.some((att: { contentType?: string }) =>
-    att.contentType?.startsWith("audio/"),
-  );
-  const needsPreflightTranscription =
-    !isDirectMessage &&
-    shouldRequireMention &&
-    hasAudioAttachment &&
-    !baseText &&
-    mentionRegexes.length > 0;
+  // Preflight audio transcription for mention detection in guilds.
+  // This allows voice notes to be checked for mentions before being dropped.
+  const { hasTypedText, transcript: preflightTranscript } =
+    await resolveDiscordPreflightAudioMentionContext({
+      message,
+      isDirectMessage,
+      shouldRequireMention,
+      mentionRegexes,
+      cfg: params.cfg,
+    });
 
-  if (needsPreflightTranscription) {
-    try {
-      const { transcribeFirstAudio } = await import("../../media-understanding/audio-preflight.js");
-      const audioPaths =
-        message.attachments
-          ?.filter((att: { contentType?: string; url: string }) =>
-            att.contentType?.startsWith("audio/"),
-          )
-          .map((att: { url: string }) => att.url) ?? [];
-      if (audioPaths.length > 0) {
-        const tempCtx = {
-          MediaUrls: audioPaths,
-          MediaTypes: message.attachments
-            ?.filter((att: { contentType?: string; url: string }) =>
-              att.contentType?.startsWith("audio/"),
-            )
-            .map((att: { contentType?: string }) => att.contentType)
-            .filter(Boolean) as string[],
-        };
-        preflightTranscript = await transcribeFirstAudio({
-          ctx: tempCtx,
-          cfg: params.cfg,
-          agentDir: undefined,
-        });
-      }
-    } catch (err) {
-      logVerbose(`discord: audio preflight transcription failed: ${String(err)}`);
-    }
-  }
-
+  const mentionText = hasTypedText ? baseText : "";
   const wasMentioned =
     !isDirectMessage &&
     matchesMentionWithExplicit({
-      text: baseText,
+      text: mentionText,
       mentionRegexes,
       explicit: {
         hasAnyMention,
@@ -579,22 +575,15 @@ export async function preflightDiscordMessage(
   });
 
   if (!isDirectMessage) {
-    const ownerAllowList = normalizeDiscordAllowList(params.allowFrom, [
-      "discord:",
-      "user:",
-      "pk:",
-    ]);
-    const ownerOk = ownerAllowList
-      ? allowListMatches(
-          ownerAllowList,
-          {
-            id: sender.id,
-            name: sender.name,
-            tag: sender.tag,
-          },
-          { allowNameMatching },
-        )
-      : false;
+    const { ownerAllowList, ownerAllowed: ownerOk } = resolveDiscordOwnerAccess({
+      allowFrom: params.allowFrom,
+      sender: {
+        id: sender.id,
+        name: sender.name,
+        tag: sender.tag,
+      },
+      allowNameMatching,
+    });
     const commandGate = resolveControlCommandGate({
       useAccessGroups,
       authorizers: [
