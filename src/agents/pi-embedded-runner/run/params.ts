@@ -29,6 +29,8 @@ export type RunEmbeddedPiAgentParams = {
    *  channel resolution. Used by security plugins for trust classification. */
   sourceProvider?: string;
   agentAccountId?: string;
+  /** What initiated this agent run: "user", "heartbeat", "cron", or "memory". */
+  trigger?: string;
   /** Delivery target (e.g. telegram:group:123:topic:456) for topic/thread routing. */
   messageTo?: string;
   /** Thread/topic identifier for routing replies to the originating thread. */
