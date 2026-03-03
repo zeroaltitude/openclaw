@@ -915,21 +915,26 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => void whenReady(async ()
     } catch { title = '' }
   }
 
-  sendToRelay({
-    method: 'forwardCDPEvent',
-    params: {
-      method: 'Target.targetInfoChanged',
+  try {
+    sendToRelay({
+      method: 'forwardCDPEvent',
       params: {
-        targetInfo: {
-          targetId: tab.targetId,
-          type: 'page',
-          title,
-          url: changeInfo.url,
-          attached: true,
+        method: 'Target.targetInfoChanged',
+        params: {
+          targetInfo: {
+            targetId: tab.targetId,
+            type: 'page',
+            title,
+            url: changeInfo.url,
+            attached: true,
+          },
         },
       },
-    },
-  })
+    })
+  } catch {
+    // WebSocket may have closed between readiness check and send —
+    // swallow to avoid unhandled rejection in the async listener.
+  }
 }))
 
 // Refresh badge when user switches to an attached tab.
