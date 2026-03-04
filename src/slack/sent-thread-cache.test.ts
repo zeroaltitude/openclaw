@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   _flushPersist,
   _resetForTests,
@@ -11,9 +11,23 @@ import {
 } from "./sent-thread-cache.js";
 
 describe("slack sent-thread-cache", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    // Isolate from real $STATE_DIR so clearSlackThreadParticipationCache()
+    // (which calls persistToDisk synchronously) doesn't wipe real state.
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "slack-thread-cache-test-"));
+    _resetForTests(path.join(tempDir, "slack-thread-participation.json"));
+  });
+
   afterEach(() => {
     _resetForTests(undefined);
     vi.restoreAllMocks();
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      /* ignore cleanup errors */
+    }
   });
 
   it("records and checks thread participation", () => {
