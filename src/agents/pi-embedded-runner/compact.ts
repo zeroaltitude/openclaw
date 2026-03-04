@@ -637,6 +637,11 @@ export async function compactEmbeddedPiSessionDirect(
           sessionId: params.sessionId,
           workspaceDir: params.workspaceDir,
           messageProvider: params.messageChannel ?? params.messageProvider,
+          senderId: params.senderId ?? null,
+          senderName: params.senderName ?? null,
+          senderIsOwner: params.senderIsOwner,
+          groupId: params.groupId ?? null,
+          spawnedBy: params.spawnedBy ?? null,
         };
         if (hookRunner?.hasHooks("before_compaction")) {
           hookRunner
