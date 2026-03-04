@@ -1,5 +1,5 @@
 /**
- * Wraps a StreamFn to emit before_llm_call and context_assembled plugin hooks.
+ * Wraps a StreamFn to emit before_llm_call plugin hooks.
  *
  * Uses the same streamFn wrapping pattern as cache-trace.ts and
  * anthropic-payload-log.ts — outermost wrapper sees the full context before
@@ -26,27 +26,7 @@ export function wrapStreamFnWithHooks(
   params: HookStreamWrapperParams,
 ): StreamFn {
   const { hookRunner, agentCtx, iterationRef, modelId } = params;
-  let contextAssembledEmitted = false;
-
   const wrapped: StreamFn = async (model, context, options) => {
-    // --- context_assembled (first LLM call only) ---
-    if (!contextAssembledEmitted && hookRunner.hasHooks("context_assembled")) {
-      contextAssembledEmitted = true;
-      try {
-        await hookRunner.runContextAssembled(
-          {
-            systemPrompt: context.systemPrompt ?? "",
-            messages: context.messages as AgentMessage[],
-            messageCount: context.messages.length,
-            iteration: iterationRef.current,
-          },
-          agentCtx,
-        );
-      } catch (err) {
-        log.warn(`context_assembled hook failed: ${String(err)}`);
-      }
-    }
-
     // --- before_llm_call ---
     let effectiveContext: Context = context;
     if (hookRunner.hasHooks("before_llm_call")) {
