@@ -350,6 +350,7 @@ export async function runAgentTurnWithFallback(params: {
                 groupSpace: params.sessionCtx.GroupSpace?.trim() ?? undefined,
                 ...senderContext,
                 spawnedBy: params.followupRun.run.spawnedBy,
+                sourceProvider: params.followupRun.run.sourceProvider,
                 ...runBaseParams,
                 prompt: params.commandBody,
                 extraSystemPrompt: params.followupRun.run.extraSystemPrompt,

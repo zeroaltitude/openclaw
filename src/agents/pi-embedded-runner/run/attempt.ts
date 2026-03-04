@@ -2690,11 +2690,11 @@ export async function runEmbeddedAttempt(
           sourceProvider: params.sourceProvider ?? undefined,
           trigger: params.trigger,
           channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-          senderId: params.senderId ?? undefined,
-          senderName: params.senderName ?? undefined,
-          senderIsOwner: params.senderIsOwner ?? undefined,
-          groupId: params.groupId ?? undefined,
-          spawnedBy: params.spawnedBy ?? undefined,
+          senderId: params.senderId ?? null,
+          senderName: params.senderName ?? null,
+          senderIsOwner: params.senderIsOwner,
+          groupId: params.groupId ?? null,
+          spawnedBy: params.spawnedBy ?? null,
         };
         const hookResult = await resolvePromptBuildHookResult({
           prompt: params.prompt,
