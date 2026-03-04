@@ -53,7 +53,7 @@ export function wrapStreamFnWithHooks(
         }
 
         // Apply modifications — only create new context if something changed
-        if (result?.messages || result?.systemPrompt || result?.tools) {
+        if (result?.messages || result?.systemPrompt !== undefined || result?.tools) {
           let filteredTools = context.tools;
           if (result.tools) {
             const allowedNames = new Set(result.tools.map((t) => t.name));

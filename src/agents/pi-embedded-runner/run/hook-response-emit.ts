@@ -86,7 +86,7 @@ export async function applyBeforeResponseEmitHook(
     return "";
   }
 
-  if (!emitResult?.content || emitResult.content === content) {
+  if (emitResult?.content === undefined || emitResult.content === content) {
     log.debug(`no modification (hasResult=${!!emitResult}, hasContent=${!!emitResult?.content})`);
     return undefined;
   }
