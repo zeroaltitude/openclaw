@@ -1461,9 +1461,9 @@ export type PluginHookAgentContext = {
   sessionId?: string;
   workspaceDir?: string;
   messageProvider?: string;
-  /** Original message source (e.g. "heartbeat", "cron-event", "exec-event").
-   *  Unlike messageProvider (which may reflect the delivery channel), this
-   *  preserves the true origin for security classification. */
+  /** Original message platform (e.g. "slack", "discord", "telegram", "whatsapp").
+   *  Unlike messageProvider (which may reflect routing or delivery channel), this
+   *  preserves the raw platform origin for security classification. */
   sourceProvider?: string;
   /** What initiated this agent run: "user", "heartbeat", "cron", or "memory". */
   trigger?: string;
