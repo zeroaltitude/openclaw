@@ -1286,6 +1286,10 @@ export async function runEmbeddedAttempt(
               }
               if (event.type === "message_end" && hookRunner.hasHooks("after_llm_call")) {
                 const msg = event.message;
+                // Capture iteration at event time — hookTurnIteration is mutable
+                // and may increment before the async .then() fires. Without this,
+                // a slow handler for turn N could set a gate for turn N+1.
+                const eventIteration = hookTurnIteration;
                 const toolCalls: Array<{
                   id: string;
                   name: string;
@@ -1315,7 +1319,7 @@ export async function runEmbeddedAttempt(
                     {
                       response: msg,
                       toolCalls,
-                      iteration: hookTurnIteration,
+                      iteration: eventIteration,
                       model: params.modelId,
                     },
                     hookCtx,
@@ -1327,6 +1331,15 @@ export async function runEmbeddedAttempt(
                     if (!params.sessionId) {
                       return;
                     }
+                    // Guard against stale results: if the iteration has advanced
+                    // since this event fired, a new turn has started and this
+                    // gate decision is no longer relevant.
+                    if (eventIteration !== hookTurnIteration) {
+                      log.debug(
+                        `after_llm_call: discarding stale gate (event=${eventIteration}, current=${hookTurnIteration})`,
+                      );
+                      return;
+                    }
                     const allowedIds = result.toolCalls
                       ? new Set(result.toolCalls.map((tc: { id: string }) => tc.id))
                       : undefined;
@@ -1334,7 +1347,7 @@ export async function runEmbeddedAttempt(
                       blocked: result.block ?? false,
                       blockReason: result.blockReason,
                       allowedToolCallIds: allowedIds,
-                      iteration: hookTurnIteration,
+                      iteration: eventIteration,
                     });
                   })
                   .catch((err) => log.warn(`after_llm_call hook: ${String(err)}`));
@@ -1643,8 +1656,10 @@ export async function runEmbeddedAttempt(
         messagesSnapshot = snapshotSelection.messagesSnapshot;
         sessionIdUsed = snapshotSelection.sessionIdUsed;
 
-        // Emit before_response_emit hook
-        if (hookRunner?.hasHooks("before_response_emit")) {
+        // Emit before_response_emit hook — only when this turn produced an assistant reply.
+        // Timeout/abort turns with no new assistant message must not trigger the hook,
+        // otherwise it scans messagesSnapshot and finds a stale prior-turn response.
+        if (hookRunner?.hasHooks("before_response_emit") && assistantTexts.length > 0) {
           try {
             const { applyBeforeResponseEmitHook } = await import("./hook-response-emit.js");
             const modifiedContent = await applyBeforeResponseEmitHook({

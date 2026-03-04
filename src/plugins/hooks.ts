@@ -103,6 +103,7 @@ export type {
   PluginHookBeforeLlmCallEvent,
   PluginHookBeforeLlmCallResult,
   PluginHookAfterLlmCallEvent,
+  PluginHookAfterLlmCallResult,
   PluginHookBeforeResponseEmitEvent,
   PluginHookBeforeResponseEmitResult,
 };
