@@ -914,6 +914,8 @@ export async function runEmbeddedPiAgent(
                 senderId: params.senderId,
                 senderName: params.senderName,
                 senderIsOwner: params.senderIsOwner,
+                groupId: params.groupId,
+                spawnedBy: params.spawnedBy,
                 provider,
                 model: modelId,
                 runId: params.runId,
