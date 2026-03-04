@@ -1269,6 +1269,53 @@ export async function runEmbeddedAttempt(
         getCompactionCount,
       } = subscription;
 
+      // Subscribe for after_llm_call hook events
+      let hookTurnIteration = 0;
+      const hookEventUnsub = hookRunner?.hasHooks("after_llm_call")
+        ? activeSession.subscribe((event) => {
+            if (event.type === "turn_start") {
+              hookTurnIteration++;
+              hookIterationRef.current = hookTurnIteration;
+            }
+            if (event.type === "message_end" && hookRunner.hasHooks("after_llm_call")) {
+              const msg = event.message;
+              const toolCalls: Array<{
+                id: string;
+                name: string;
+                arguments: Record<string, unknown>;
+              }> = [];
+              if (
+                msg &&
+                typeof msg === "object" &&
+                "content" in msg &&
+                Array.isArray((msg as unknown as Record<string, unknown>).content)
+              ) {
+                for (const part of (msg as unknown as { content: Array<Record<string, unknown>> })
+                  .content) {
+                  if (part && part.type === "toolCall") {
+                    toolCalls.push({
+                      id: (part.id as string) ?? "",
+                      name: (part.name as string) ?? "",
+                      arguments: (part.arguments as Record<string, unknown>) ?? {},
+                    });
+                  }
+                }
+              }
+              hookRunner
+                .runAfterLlmCall(
+                  {
+                    response: msg,
+                    toolCalls,
+                    iteration: hookTurnIteration,
+                    model: params.modelId,
+                  },
+                  hookCtx,
+                )
+                .catch((err) => log.warn(`after_llm_call hook: ${String(err)}`));
+            }
+          })
+        : undefined;
+
       const queueHandle: EmbeddedPiQueueHandle = {
         queueMessage: async (text: string) => {
           await activeSession.steer(text);
@@ -1342,6 +1389,28 @@ export async function runEmbeddedAttempt(
 
       // Hook runner was already obtained earlier before tool creation
       const hookAgentId = sessionAgentId;
+      const hookIterationRef = { current: 0 };
+      const hookCtx: import("../../../plugins/hooks.js").PluginHookAgentContext = {
+        agentId: hookAgentId,
+        sessionKey: params.sessionKey,
+        sessionId: params.sessionId,
+        workspaceDir: params.workspaceDir,
+        messageProvider: params.messageProvider ?? undefined,
+        trigger: params.trigger,
+        channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+      };
+
+      // Wrap streamFn for before_llm_call hooks — must be the outermost
+      // wrapper so hooks see the full context first.
+      if (hookRunner?.hasHooks("before_llm_call")) {
+        const { wrapStreamFnWithHooks } = await import("./hook-stream-wrapper.js");
+        activeSession.agent.streamFn = wrapStreamFnWithHooks(activeSession.agent.streamFn, {
+          hookRunner,
+          agentCtx: hookCtx,
+          iterationRef: hookIterationRef,
+          modelId: params.modelId,
+        });
+      }
 
       let promptError: unknown = null;
       let promptErrorSource: "prompt" | "compaction" | null = null;
@@ -1351,15 +1420,6 @@ export async function runEmbeddedAttempt(
         // Run before_prompt_build hooks to allow plugins to inject prompt context.
         // Legacy compatibility: before_agent_start is also checked for context fields.
         let effectivePrompt = params.prompt;
-        const hookCtx = {
-          agentId: hookAgentId,
-          sessionKey: params.sessionKey,
-          sessionId: params.sessionId,
-          workspaceDir: params.workspaceDir,
-          messageProvider: params.messageProvider ?? undefined,
-          trigger: params.trigger,
-          channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-        };
         const hookResult = await resolvePromptBuildHookResult({
           prompt: params.prompt,
           messages: activeSession.messages,
@@ -1467,13 +1527,7 @@ export async function runEmbeddedAttempt(
                   historyMessages: activeSession.messages,
                   imagesCount: imageResult.images.length,
                 },
-                {
-                  agentId: hookAgentId,
-                  sessionKey: params.sessionKey,
-                  sessionId: params.sessionId,
-                  workspaceDir: params.workspaceDir,
-                  messageProvider: params.messageProvider ?? undefined,
-                },
+                hookCtx,
               )
               .catch((err) => {
                 log.warn(`llm_input hook failed: ${String(err)}`);
@@ -1564,6 +1618,30 @@ export async function runEmbeddedAttempt(
         messagesSnapshot = snapshotSelection.messagesSnapshot;
         sessionIdUsed = snapshotSelection.sessionIdUsed;
 
+        // Emit before_response_emit hook
+        if (hookRunner?.hasHooks("before_response_emit")) {
+          try {
+            const { applyBeforeResponseEmitHook } = await import("./hook-response-emit.js");
+            const modifiedContent = await applyBeforeResponseEmitHook({
+              hookRunner,
+              agentCtx: hookCtx,
+              assistantTexts,
+              messagesSnapshot,
+              activeSession,
+              channel: params.messageChannel ?? params.messageProvider,
+            });
+            if (modifiedContent !== undefined) {
+              if (assistantTexts.length > 0) {
+                assistantTexts[assistantTexts.length - 1] = modifiedContent;
+              } else {
+                assistantTexts.push(modifiedContent);
+              }
+            }
+          } catch (err) {
+            log.warn(`before_response_emit hook failed: ${String(err)}`);
+          }
+        }
+
         if (promptError && promptErrorSource === "prompt" && !compactionOccurredThisAttempt) {
           try {
             sessionManager.appendCustomEntry("openclaw:prompt-error", {
@@ -1602,13 +1680,7 @@ export async function runEmbeddedAttempt(
                 error: promptError ? describeUnknownError(promptError) : undefined,
                 durationMs: Date.now() - promptStartedAt,
               },
-              {
-                agentId: hookAgentId,
-                sessionKey: params.sessionKey,
-                sessionId: params.sessionId,
-                workspaceDir: params.workspaceDir,
-                messageProvider: params.messageProvider ?? undefined,
-              },
+              hookCtx,
             )
             .catch((err) => {
               log.warn(`agent_end hook failed: ${err}`);
@@ -1625,6 +1697,7 @@ export async function runEmbeddedAttempt(
           );
         }
         try {
+          hookEventUnsub?.();
           unsubscribe();
         } catch (err) {
           // unsubscribe() should never throw; if it does, it indicates a serious bug.
@@ -1662,13 +1735,7 @@ export async function runEmbeddedAttempt(
               lastAssistant,
               usage: getUsageTotals(),
             },
-            {
-              agentId: hookAgentId,
-              sessionKey: params.sessionKey,
-              sessionId: params.sessionId,
-              workspaceDir: params.workspaceDir,
-              messageProvider: params.messageProvider ?? undefined,
-            },
+            hookCtx,
           )
           .catch((err) => {
             log.warn(`llm_output hook failed: ${String(err)}`);

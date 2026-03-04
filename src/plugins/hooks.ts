@@ -26,6 +26,12 @@ import type {
   PluginHookGatewayContext,
   PluginHookGatewayStartEvent,
   PluginHookGatewayStopEvent,
+  PluginHookBeforeLlmCallEvent,
+  PluginHookBeforeLlmCallResult,
+  PluginHookAfterLlmCallEvent,
+  PluginHookAfterLlmCallResult,
+  PluginHookBeforeResponseEmitEvent,
+  PluginHookBeforeResponseEmitResult,
   PluginHookMessageContext,
   PluginHookMessageReceivedEvent,
   PluginHookMessageSendingEvent,
@@ -93,6 +99,13 @@ export type {
   PluginHookGatewayContext,
   PluginHookGatewayStartEvent,
   PluginHookGatewayStopEvent,
+  // LLM call & response emit hooks
+  PluginHookBeforeLlmCallEvent,
+  PluginHookBeforeLlmCallResult,
+  PluginHookAfterLlmCallEvent,
+  PluginHookAfterLlmCallResult,
+  PluginHookBeforeResponseEmitEvent,
+  PluginHookBeforeResponseEmitResult,
 };
 
 export type HookRunnerLogger = {
@@ -696,6 +709,78 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
   }
 
   // =========================================================================
+  // LLM Call & Response Emit Hooks
+  // =========================================================================
+
+  /**
+   * Run before_llm_call hook.
+   * Fires before every LLM API call within the agent loop.
+   * Allows plugins to inspect/modify context, filter tools, or block the call.
+   * Runs sequentially, merging results across handlers.
+   */
+  async function runBeforeLlmCall(
+    event: PluginHookBeforeLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookBeforeLlmCallResult | undefined> {
+    return runModifyingHook<"before_llm_call", PluginHookBeforeLlmCallResult>(
+      "before_llm_call",
+      event,
+      ctx,
+      (acc, next) => ({
+        messages: next.messages ?? acc?.messages,
+        systemPrompt: next.systemPrompt ?? acc?.systemPrompt,
+        tools: next.tools ?? acc?.tools,
+        block: next.block ?? acc?.block,
+        blockReason: next.blockReason ?? acc?.blockReason,
+      }),
+    );
+  }
+
+  /**
+   * Run after_llm_call hook.
+   * Fires after receiving the LLM response but before executing tool calls.
+   * Allows plugins to filter/modify tool calls or block execution.
+   * Runs sequentially, merging results across handlers.
+   */
+  async function runAfterLlmCall(
+    event: PluginHookAfterLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookAfterLlmCallResult | undefined> {
+    return runModifyingHook<"after_llm_call", PluginHookAfterLlmCallResult>(
+      "after_llm_call",
+      event,
+      ctx,
+      (acc, next) => ({
+        toolCalls: next.toolCalls ?? acc?.toolCalls,
+        block: next.block ?? acc?.block,
+        blockReason: next.blockReason ?? acc?.blockReason,
+      }),
+    );
+  }
+
+  /**
+   * Run before_response_emit hook.
+   * Fires when the agent's final response is ready, before delivery.
+   * Allows plugins to modify content or block emission.
+   * Runs sequentially, merging results across handlers.
+   */
+  async function runBeforeResponseEmit(
+    event: PluginHookBeforeResponseEmitEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookBeforeResponseEmitResult | undefined> {
+    return runModifyingHook<"before_response_emit", PluginHookBeforeResponseEmitResult>(
+      "before_response_emit",
+      event,
+      ctx,
+      (acc, next) => ({
+        content: next.content ?? acc?.content,
+        block: next.block ?? acc?.block,
+        blockReason: next.blockReason ?? acc?.blockReason,
+      }),
+    );
+  }
+
+  // =========================================================================
   // Utility
   // =========================================================================
 
@@ -744,6 +829,10 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     // Gateway hooks
     runGatewayStart,
     runGatewayStop,
+    // LLM call & response emit hooks
+    runBeforeLlmCall,
+    runAfterLlmCall,
+    runBeforeResponseEmit,
     // Utility
     hasHooks,
     getHookCount,

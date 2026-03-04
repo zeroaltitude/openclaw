@@ -331,7 +331,10 @@ export type PluginHookName =
   | "subagent_spawned"
   | "subagent_ended"
   | "gateway_start"
-  | "gateway_stop";
+  | "gateway_stop"
+  | "before_llm_call"
+  | "after_llm_call"
+  | "before_response_emit";
 
 // Agent context shared across agent hooks
 export type PluginHookAgentContext = {
@@ -677,6 +680,58 @@ export type PluginHookGatewayStopEvent = {
   reason?: string;
 };
 
+// ============================================================================
+// LLM Call & Response Emit Hooks
+// ============================================================================
+
+// before_llm_call hook (modifying — sequential)
+export type PluginHookBeforeLlmCallEvent = {
+  messages: AgentMessage[];
+  systemPrompt: string;
+  model: string;
+  iteration: number;
+  tools: Array<{ name: string; description?: string }>;
+  tokenEstimate?: number;
+};
+
+export type PluginHookBeforeLlmCallResult = {
+  messages?: AgentMessage[];
+  systemPrompt?: string;
+  tools?: Array<{ name: string }>;
+  block?: boolean;
+  blockReason?: string;
+};
+
+// after_llm_call hook (modifying — sequential)
+export type PluginHookAfterLlmCallEvent = {
+  response: AgentMessage;
+  toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  iteration: number;
+  model: string;
+  /** Wall-clock LLM call duration. Undefined when not measurable. */
+  latencyMs?: number;
+  tokenUsage?: { input: number; output: number };
+};
+
+export type PluginHookAfterLlmCallResult = {
+  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  block?: boolean;
+  blockReason?: string;
+};
+
+// before_response_emit hook (modifying — sequential)
+export type PluginHookBeforeResponseEmitEvent = {
+  content: string;
+  channel?: string;
+  messageCount: number;
+};
+
+export type PluginHookBeforeResponseEmitResult = {
+  content?: string;
+  block?: boolean;
+  blockReason?: string;
+};
+
 // Hook handler types mapped by hook name
 export type PluginHookHandlerMap = {
   before_model_resolve: (
@@ -775,6 +830,21 @@ export type PluginHookHandlerMap = {
     event: PluginHookGatewayStopEvent,
     ctx: PluginHookGatewayContext,
   ) => Promise<void> | void;
+  before_llm_call: (
+    event: PluginHookBeforeLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<PluginHookBeforeLlmCallResult | void> | PluginHookBeforeLlmCallResult | void;
+  after_llm_call: (
+    event: PluginHookAfterLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<PluginHookAfterLlmCallResult | void> | PluginHookAfterLlmCallResult | void;
+  before_response_emit: (
+    event: PluginHookBeforeResponseEmitEvent,
+    ctx: PluginHookAgentContext,
+  ) =>
+    | Promise<PluginHookBeforeResponseEmitResult | void>
+    | PluginHookBeforeResponseEmitResult
+    | void;
 };
 
 export type PluginHookRegistration<K extends PluginHookName = PluginHookName> = {
