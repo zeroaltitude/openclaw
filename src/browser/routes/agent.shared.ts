@@ -183,11 +183,18 @@ export async function withRouteTabContext<T>(
           }
         }
       }
+      // Restore res.json before flushing so that if originalJson throws
+      // (e.g. BigInt serialization), the outer catch can still send errors.
+      params.res.json = originalJson;
       originalJson(interceptedBody);
     }
 
     return result;
   } catch (err) {
+    // Ensure res.json is always restored for error handling.
+    if (params.res.json !== originalJson) {
+      params.res.json = originalJson;
+    }
     handleRouteError(params.ctx, params.res, err);
     return undefined;
   }
