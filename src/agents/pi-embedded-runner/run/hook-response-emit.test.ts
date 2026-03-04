@@ -195,6 +195,100 @@ describe("applyBeforeResponseEmitHook", () => {
     expect(result).toBeUndefined();
   });
 
+  it("clears blocked content from session history", async () => {
+    const hookRunner = makeMockHookRunner({ block: true, blockReason: "PII detected" });
+    const activeSession = { messages: [makeMsg("assistant", "my SSN is 123-45-6789")] };
+
+    await applyBeforeResponseEmitHook({
+      hookRunner,
+      agentCtx: dummyCtx,
+      assistantTexts: ["my SSN is 123-45-6789"],
+      messagesSnapshot: [makeMsg("assistant", "my SSN is 123-45-6789")],
+      activeSession,
+    });
+
+    // Blocked content must be scrubbed from session history
+    expect((activeSession.messages[0] as { content: unknown }).content).toBe("");
+  });
+
+  it("clears all text parts in multi-part messages on block", async () => {
+    const hookRunner = makeMockHookRunner({ block: true });
+    const sessionMsg = makeMsg("assistant", [
+      { type: "text", text: "part 1 with PII" },
+      { type: "text", text: "part 2 with PII" },
+    ]);
+    const activeSession = { messages: [sessionMsg] };
+
+    await applyBeforeResponseEmitHook({
+      hookRunner,
+      agentCtx: dummyCtx,
+      assistantTexts: ["part 1 with PII"],
+      messagesSnapshot: [
+        makeMsg("assistant", [
+          { type: "text", text: "part 1 with PII" },
+          { type: "text", text: "part 2 with PII" },
+        ]),
+      ],
+      activeSession,
+    });
+
+    const parts = (sessionMsg as { content: unknown }).content as Array<{
+      type: string;
+      text: string;
+    }>;
+    expect(parts[0].text).toBe("");
+    expect(parts[1].text).toBe("");
+  });
+
+  it("rewrites all text parts on modification (not just first)", async () => {
+    const hookRunner = makeMockHookRunner({ content: "redacted" });
+    const sessionMsg = makeMsg("assistant", [
+      { type: "text", text: "sensitive part 1" },
+      { type: "text", text: "sensitive part 2" },
+    ]);
+    const activeSession = { messages: [sessionMsg] };
+
+    await applyBeforeResponseEmitHook({
+      hookRunner,
+      agentCtx: dummyCtx,
+      assistantTexts: ["sensitive part 1sensitive part 2"],
+      messagesSnapshot: [
+        makeMsg("assistant", [
+          { type: "text", text: "sensitive part 1" },
+          { type: "text", text: "sensitive part 2" },
+        ]),
+      ],
+      activeSession,
+    });
+
+    const parts = (sessionMsg as { content: unknown }).content as Array<{
+      type: string;
+      text: string;
+    }>;
+    expect(parts[0].text).toBe("redacted");
+    // Subsequent text parts should be cleared
+    expect(parts[1].text).toBe("");
+  });
+
+  it("finds assistant message even when not the last element", async () => {
+    const hookRunner = makeMockHookRunner({ content: "modified" });
+    const assistantMsg = makeMsg("assistant", "original");
+    const toolResult = makeMsg("tool", "result");
+    const activeSession = { messages: [assistantMsg, toolResult] };
+
+    const result = await applyBeforeResponseEmitHook({
+      hookRunner,
+      agentCtx: dummyCtx,
+      assistantTexts: ["original"],
+      messagesSnapshot: [makeMsg("assistant", "original"), makeMsg("tool", "result")],
+      activeSession,
+    });
+
+    expect(result).toBe("modified");
+    // The assistant message should be updated even though it's not the last element
+    expect((assistantMsg as { content: unknown }).content).toBe("modified");
+  });
+
   it("propagates hook errors to caller", async () => {
     const hookRunner = makeMockHookRunner(undefined);
     (hookRunner.runBeforeResponseEmit as ReturnType<typeof vi.fn>).mockRejectedValue(
