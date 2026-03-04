@@ -1,6 +1,11 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { importFreshModule } from "../../test/helpers/import-fresh.js";
 import {
+  _flushPersist,
+  _resetForTests,
   clearSlackThreadParticipationCache,
   hasSlackThreadParticipation,
   recordSlackThreadParticipation,
@@ -87,5 +92,71 @@ describe("slack sent-thread-cache", () => {
 
     expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000000")).toBe(false);
     expect(hasSlackThreadParticipation("A1", "C123", "1700000000.005000")).toBe(true);
+  });
+});
+
+describe("slack sent-thread-cache persistence", () => {
+  let tempDir: string;
+  let tempFile: string;
+
+  afterEach(() => {
+    _resetForTests(undefined);
+    vi.restoreAllMocks();
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  function setup() {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "slack-thread-cache-test-"));
+    tempFile = path.join(tempDir, "slack-thread-participation.json");
+    _resetForTests(tempFile);
+  }
+
+  it("persists entries to disk and reloads on restart", () => {
+    setup();
+    recordSlackThreadParticipation("A1", "C123", "1700000000.000001");
+    _flushPersist();
+
+    // Verify file exists and is valid JSON
+    const raw = fs.readFileSync(tempFile, "utf8");
+    const data = JSON.parse(raw) as Record<string, number>;
+    expect(Object.keys(data)).toHaveLength(1);
+    expect(data["A1:C123:1700000000.000001"]).toBeTypeOf("number");
+
+    // Simulate restart — clear in-memory and reload from disk
+    _resetForTests(tempFile);
+    expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000001")).toBe(true);
+  });
+
+  it("does not load expired entries from disk", () => {
+    setup();
+    // Write a file with an expired timestamp
+    const expired: Record<string, number> = {
+      "A1:C123:1700000000.000001": Date.now() - 25 * 60 * 60 * 1000,
+    };
+    fs.writeFileSync(tempFile, JSON.stringify(expired), "utf8");
+
+    _resetForTests(tempFile);
+    expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000001")).toBe(false);
+  });
+
+  it("handles missing persist file gracefully", () => {
+    setup();
+    // No file written — should just start empty
+    expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000001")).toBe(false);
+  });
+
+  it("handles corrupt persist file gracefully", () => {
+    setup();
+    fs.writeFileSync(tempFile, "not json!!!", "utf8");
+
+    _resetForTests(tempFile);
+    expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000001")).toBe(false);
+    // Should still be able to record new entries
+    recordSlackThreadParticipation("A1", "C123", "1700000000.000001");
+    expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000001")).toBe(true);
   });
 });
