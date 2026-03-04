@@ -23,6 +23,7 @@ export type CanonicalInboundMessageHookContext = {
   channelId: string;
   accountId?: string;
   conversationId?: string;
+  sessionKey?: string;
   messageId?: string;
   senderId?: string;
   senderName?: string;
@@ -144,6 +145,7 @@ export function toPluginMessageContext(
     channelId: canonical.channelId,
     accountId: canonical.accountId,
     conversationId: canonical.conversationId,
+    sessionKey: "sessionKey" in canonical ? canonical.sessionKey : undefined,
   };
 }
 
