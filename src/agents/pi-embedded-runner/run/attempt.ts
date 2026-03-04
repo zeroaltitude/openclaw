@@ -110,6 +110,7 @@ import { installToolResultContextGuard } from "../tool-result-context-guard.js";
 import { splitSdkTools } from "../tool-split.js";
 import { describeUnknownError, mapThinkingLevel } from "../utils.js";
 import { flushPendingToolResultsAfterIdle } from "../wait-for-idle-before-flush.js";
+import { clearAfterLlmCallGate, setAfterLlmCallGate } from "./after-llm-call-gate.js";
 import {
   selectCompactionTimeoutSnapshot,
   shouldFlagCompactionTimeout,
@@ -1278,6 +1279,10 @@ export async function runEmbeddedAttempt(
               if (event.type === "turn_start") {
                 hookTurnIteration++;
                 hookIterationRefEarly.current = hookTurnIteration;
+                // Clear stale gate decisions from the previous turn
+                if (params.sessionId) {
+                  clearAfterLlmCallGate(params.sessionId);
+                }
               }
               if (event.type === "message_end" && hookRunner.hasHooks("after_llm_call")) {
                 const msg = event.message;
@@ -1303,6 +1308,8 @@ export async function runEmbeddedAttempt(
                     }
                   }
                 }
+                // Await the hook result and store block/filter decisions in
+                // the gate ref so before_tool_call can enforce them.
                 hookRunner
                   .runAfterLlmCall(
                     {
@@ -1313,6 +1320,23 @@ export async function runEmbeddedAttempt(
                     },
                     hookCtx,
                   )
+                  .then((result) => {
+                    if (!result || (!result.block && !result.toolCalls)) {
+                      return;
+                    }
+                    if (!params.sessionId) {
+                      return;
+                    }
+                    const allowedIds = result.toolCalls
+                      ? new Set(result.toolCalls.map((tc: { id: string }) => tc.id))
+                      : undefined;
+                    setAfterLlmCallGate(params.sessionId, {
+                      blocked: result.block ?? false,
+                      blockReason: result.blockReason,
+                      allowedToolCallIds: allowedIds,
+                      iteration: hookTurnIteration,
+                    });
+                  })
                   .catch((err) => log.warn(`after_llm_call hook: ${String(err)}`));
               }
             })
@@ -1699,6 +1723,10 @@ export async function runEmbeddedAttempt(
         }
         try {
           hookEventUnsub?.();
+          // Clean up after_llm_call gate to prevent stale decisions leaking
+          if (params.sessionId) {
+            clearAfterLlmCallGate(params.sessionId);
+          }
           unsubscribe();
         } catch (err) {
           // unsubscribe() should never throw; if it does, it indicates a serious bug.
