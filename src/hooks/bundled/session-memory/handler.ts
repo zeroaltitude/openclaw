@@ -283,16 +283,29 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // Create filename with date and slug
     const filename = `${dateStr}-${slug}.md`;
 
-    // Check if another hook (e.g., security plugin) provided a redirect path
+    // Check if another hook (e.g., security plugin) provided a redirect path.
+    // Resolve relative paths against workspace and validate containment.
+    let resolvedRedirect: string | undefined;
     const redirectPath = event.context.sessionSaveRedirectPath;
-    const memoryFilePath =
-      typeof redirectPath === "string" && redirectPath.length > 0
+    if (typeof redirectPath === "string" && redirectPath.length > 0) {
+      const abs = path.isAbsolute(redirectPath)
         ? redirectPath
-        : path.join(memoryDir, filename);
+        : path.resolve(workspaceDir, redirectPath);
+      const normalized = path.normalize(abs);
+      if (!normalized.startsWith(workspaceDir + path.sep) && normalized !== workspaceDir) {
+        log.warn("sessionSaveRedirectPath escapes workspace, ignoring", {
+          redirectPath,
+          workspaceDir,
+        });
+      } else {
+        resolvedRedirect = normalized;
+      }
+    }
+    const memoryFilePath = resolvedRedirect ?? path.join(memoryDir, filename);
 
     log.debug("Memory file path resolved", {
       filename,
-      redirected: Boolean(redirectPath),
+      redirected: resolvedRedirect !== undefined,
       path: memoryFilePath.replace(os.homedir(), "~"),
     });
 
@@ -333,7 +346,7 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // Write session memory — always use writeFileWithinRoot for path
     // traversal protection. When redirected, shift the root directory
     // to the redirect target's parent.
-    const isRedirected = typeof redirectPath === "string" && redirectPath.length > 0;
+    const isRedirected = resolvedRedirect !== undefined;
     const targetDir = isRedirected ? path.dirname(memoryFilePath) : memoryDir;
     const targetFilename = isRedirected ? path.basename(memoryFilePath) : filename;
     // Ensure target directory exists — memoryDir is created earlier,

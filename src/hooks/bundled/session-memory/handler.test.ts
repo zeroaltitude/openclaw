@@ -580,6 +580,60 @@ describe("session-memory hook", () => {
     expect(content).toContain("redirected content");
   });
 
+  it("sessionSaveRedirectPath resolves relative paths against workspace", async () => {
+    const tempDir = await createCaseWorkspace("redirect-rel");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "relative redirect" }]),
+    });
+
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+    // Relative path — should resolve against workspace
+    event.context.sessionSaveRedirectPath = "quarantine/redirected.md";
+
+    await handler(event);
+
+    const content = await fs.readFile(path.join(tempDir, "quarantine", "redirected.md"), "utf-8");
+    expect(content).toContain("relative redirect");
+  });
+
+  it("sessionSaveRedirectPath rejects paths outside workspace", async () => {
+    const tempDir = await createCaseWorkspace("redirect-escape");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "escape attempt" }]),
+    });
+
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+    // Path traversal — should be rejected, falls back to normal memory dir
+    event.context.sessionSaveRedirectPath = "/tmp/evil/stolen-session.md";
+
+    await handler(event);
+
+    // Should NOT write to /tmp/evil
+    const exists = await fs.stat("/tmp/evil/stolen-session.md").then(
+      () => true,
+      () => false,
+    );
+    expect(exists).toBe(false);
+    // Should fall back to normal memory dir
+    const memoryDir = path.join(tempDir, "memory");
+    const files = await fs.readdir(memoryDir);
+    expect(files.length).toBeGreaterThan(0);
+  });
+
   it("sessionSaveContent overrides saved content", async () => {
     const tempDir = await createCaseWorkspace("custom-content");
     const sessionsDir = path.join(tempDir, "sessions");
