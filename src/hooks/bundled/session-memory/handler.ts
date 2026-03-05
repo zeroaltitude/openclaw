@@ -362,20 +362,24 @@ const saveSessionToMemory: HookHandler = async (event) => {
         });
         log.debug("Memory file written to redirect path");
       } catch (redirectErr) {
-        // Only fall back to default memory dir for path-validation errors
-        // (outside-workspace, symlink, invalid-path). Operational failures
-        // (ENOSPC, EACCES on a valid path) should fail closed to avoid
-        // silently bypassing security policy intent.
+        // Operational failures (ENOSPC, EACCES) and intentional security rejections
+        // (outside-workspace) fail closed — no fallback to default memory dir.
+        // Only structural path errors (invalid-path, symlink issues) fall back,
+        // since those indicate misconfiguration rather than policy intent.
         if (!(redirectErr instanceof SafeOpenError)) {
           throw redirectErr;
         }
-        // SECURITY NOTE: This fallback means sessionSaveRedirectPath alone is NOT
-        // sufficient for quarantine-or-suppress workflows. If a security plugin
-        // needs to guarantee sessions never land in the default memory directory,
-        // it should ALSO set blockSessionSave=true as a safety net.
+        if (redirectErr.code === "outside-workspace") {
+          // The plugin intentionally pointed to an external path (e.g. quarantine
+          // directory). Falling back would silently defeat the policy intent.
+          log.warn(
+            `sessionSaveRedirectPath rejected as outside-workspace — failing closed. ` +
+              `Session memory not saved. Use an in-workspace path or set blockSessionSave=true.`,
+          );
+          return;
+        }
         log.warn(
-          `sessionSaveRedirectPath rejected (${redirectErr.code}), falling back to default memory dir. ` +
-            `If this redirect was for security quarantine, the upstream hook should also set blockSessionSave=true.`,
+          `sessionSaveRedirectPath rejected (${redirectErr.code}), falling back to default memory dir.`,
         );
         writePath = path.join("memory", filename);
         await writeFileWithinRoot({

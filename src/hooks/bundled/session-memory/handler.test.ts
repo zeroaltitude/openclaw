@@ -617,7 +617,7 @@ describe("session-memory hook", () => {
       cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
       previousSessionEntry: { sessionId: "s1", sessionFile },
     });
-    // Path traversal — should be rejected, falls back to normal memory dir
+    // Path traversal — should fail closed (no fallback to default memory dir)
     event.context.sessionSaveRedirectPath = "/tmp/evil/stolen-session.md";
 
     await handler(event);
@@ -628,10 +628,15 @@ describe("session-memory hook", () => {
       () => false,
     );
     expect(exists).toBe(false);
-    // Should fall back to normal memory dir
-    const memoryDir = path.join(tempDir, "memory");
-    const files = await fs.readdir(memoryDir);
-    expect(files.length).toBeGreaterThan(0);
+    // Should NOT fall back to normal memory dir — outside-workspace fails closed
+    const memoryDirExists = await fs.stat(path.join(tempDir, "memory")).then(
+      () => true,
+      () => false,
+    );
+    if (memoryDirExists) {
+      const files = await fs.readdir(path.join(tempDir, "memory"));
+      expect(files.length).toBe(0);
+    }
   });
 
   it("sessionSaveContent overrides saved content", async () => {
