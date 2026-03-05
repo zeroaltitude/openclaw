@@ -193,9 +193,10 @@ const saveSessionToMemory: HookHandler = async (event) => {
     const workspaceDir = cfg
       ? resolveAgentWorkspaceDir(cfg, agentId)
       : path.join(resolveStateDir(process.env, os.homedir), "workspace");
-    // Note: no unconditional mkdir here — writeFileWithinRoot handles directory
-    // creation internally. This avoids creating an empty memory/ directory
-    // in redirect-only or quarantine workflows.
+    // Ensure workspace root exists — writeFileWithinRoot creates subdirectories
+    // but requires the root to be present (resolvePathWithinRoot calls realpath
+    // on it). This is normally a no-op since the workspace is created at startup.
+    await fs.mkdir(workspaceDir, { recursive: true });
 
     // Get today's date for filename
     const now = new Date(event.timestamp);
