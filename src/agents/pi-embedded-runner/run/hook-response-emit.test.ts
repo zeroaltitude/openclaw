@@ -252,12 +252,9 @@ describe("applyBeforeResponseEmitHook", () => {
       activeSession,
     });
 
-    const parts = (sessionMsg as { content: unknown }).content as Array<{
-      type: string;
-      text: string;
-    }>;
-    expect(parts[0].text).toBe("");
-    expect(parts[1].text).toBe("");
+    // Block clears ALL content (including tool_use blocks) — content set to empty array
+    const content = (sessionMsg as { content: unknown }).content as unknown[];
+    expect(content).toEqual([]);
   });
 
   it("rewrites all text parts on modification (not just first)", async () => {
