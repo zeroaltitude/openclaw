@@ -463,7 +463,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
       (acc, next) => ({
         params: next.params ?? acc?.params,
         block: next.block || acc?.block,
-        blockReason: next.blockReason ?? acc?.blockReason,
+        blockReason: acc?.blockReason ?? next.blockReason,
       }),
     );
   }
@@ -753,7 +753,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
             ? next.tools.filter((t) => acc.tools!.some((a) => a.name === t.name))
             : (next.tools ?? acc?.tools),
         block: next.block || acc?.block,
-        blockReason: next.blockReason ?? acc?.blockReason,
+        blockReason: acc?.blockReason ?? next.blockReason,
       }),
     );
   }
@@ -775,7 +775,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
       ctx,
       (acc, next) => ({
         block: next.block || acc?.block,
-        blockReason: next.blockReason ?? acc?.blockReason,
+        blockReason: acc?.blockReason ?? next.blockReason,
         // Intersection latch: if both handlers filter tool calls, only keep
         // calls present in both lists. Prevents widening the allowlist.
         toolCalls:
@@ -813,7 +813,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
             ? acc?.allContent
             : next.allContent,
         block: next.block || acc?.block,
-        blockReason: next.blockReason ?? acc?.blockReason,
+        blockReason: acc?.blockReason ?? next.blockReason,
       }),
     );
   }
