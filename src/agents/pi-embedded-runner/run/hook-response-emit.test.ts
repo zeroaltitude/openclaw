@@ -488,9 +488,21 @@ describe("getRunScopedMessages", () => {
     expect((result[1] as { content: unknown }).content).toBe("run turn 2");
   });
 
-  it("returns full array when no preRunMessageCount provided", () => {
+  it("returns full array when no preRunMessageCount provided and enough assistants", () => {
     const messages = [makeMsg("assistant", "a"), makeMsg("assistant", "b")];
     const result = getRunScopedMessages(messages, undefined, 2);
     expect(result).toStrictEqual(messages);
+  });
+
+  it("returns empty when not enough assistant messages found (defensive)", () => {
+    const messages = [makeMsg("user", "q")];
+    const result = getRunScopedMessages(messages, 50, 2);
+    expect(result).toHaveLength(0);
+  });
+
+  it("returns empty when assistantTextCount is 0", () => {
+    const messages = [makeMsg("assistant", "a")];
+    const result = getRunScopedMessages(messages, 50, 0);
+    expect(result).toHaveLength(0);
   });
 });

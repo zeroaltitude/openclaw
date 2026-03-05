@@ -101,11 +101,18 @@ export async function applyBeforeResponseEmitHook(
   // Find last assistant message
   const lastAssistantMsg = [...messagesSnapshot].toReversed().find((m) => m.role === "assistant");
   if (!lastAssistantMsg || !("content" in lastAssistantMsg)) {
-    return undefined;
+    // No assistant message at all — only skip if there's also no allContent.
+    // This guards against runs where the only output is in earlier turns.
+    if (assistantTexts.length === 0) {
+      return undefined;
+    }
   }
 
-  const content = extractAssistantText(lastAssistantMsg);
-  if (!content) {
+  const content = lastAssistantMsg ? extractAssistantText(lastAssistantMsg) : "";
+  // Don't skip when content is empty but allContent has entries — policy
+  // plugins need the chance to inspect/block earlier assistant turns even
+  // when the final message is tool-call-only or non-text.
+  if (!content && assistantTexts.length === 0) {
     return undefined;
   }
 
@@ -178,7 +185,8 @@ export function getRunScopedMessages(
   // Fallback: find the last N assistant messages and return everything from
   // the first one onward. This handles compaction safely.
   if (assistantTextCount <= 0) {
-    return messages;
+    // No assistant texts — return empty slice to avoid touching history.
+    return [];
   }
   let assistantsSeen = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -189,7 +197,10 @@ export function getRunScopedMessages(
       }
     }
   }
-  return messages;
+  // Couldn't find enough assistant messages — return empty to avoid
+  // corrupting pre-run history. This is a defensive fallback that
+  // should rarely occur in practice.
+  return [];
 }
 
 /**
