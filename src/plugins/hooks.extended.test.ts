@@ -133,10 +133,10 @@ describe("before_llm_call hook", () => {
     );
 
     const result = await runner.runBeforeLlmCall(baseEvent, agentCtx);
-    // Sequential merge in registration order: last non-undefined wins for each field
+    // First-writer-wins for messages/systemPrompt: first plugin to set wins
     expect(result?.tools).toEqual([{ name: "exec" }]);
-    // second runs last and provides systemPrompt → its value wins
-    expect(result?.systemPrompt).toBe("second prompt");
+    // first runs first and provides systemPrompt → its value wins (security-first)
+    expect(result?.systemPrompt).toBe("first prompt");
     // first ran before second (registration order)
     expect(first).toHaveBeenCalledBefore(second);
   });
