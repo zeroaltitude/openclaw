@@ -1,7 +1,7 @@
 /**
  * Helper for the before_response_emit hook.
  *
- * Extracts text content from the last assistant message, runs the hook,
+ * Extracts text content from assistant messages, runs the hook,
  * and returns the modified content (or undefined if no modification).
  */
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
@@ -23,6 +23,23 @@ export interface ApplyBeforeResponseEmitParams {
   messagesSnapshot: AgentMessage[];
   activeSession: { messages: AgentMessage[] };
   channel?: string;
+}
+
+/** Result from applyBeforeResponseEmitHook. */
+export interface ApplyBeforeResponseEmitResult {
+  /** When true, the response was blocked (assistantTexts should be cleared). */
+  blocked: boolean;
+  /**
+   * Modified content for the last assistant message (single-message modification).
+   * Undefined when no modification was made or when allContent is provided.
+   */
+  content?: string;
+  /**
+   * Modified content for ALL assistant messages in the run (full multi-turn modification).
+   * When present, replaces the entire assistantTexts array. Enables PII redaction
+   * across all tool-loop iterations, not just the final message.
+   */
+  allContent?: string[];
 }
 
 /**
@@ -50,24 +67,21 @@ export function extractAssistantText(msg: AgentMessage): string {
 /**
  * Run the before_response_emit hook and apply modifications.
  *
- * Returns the modified content string if the hook changed it,
- * or undefined if no modification was made (or hook blocked/failed).
+ * Returns a result describing the hook outcome:
+ * - `blocked: true` — response should be suppressed
+ * - `content` — modified last-message content (backward-compatible single-message redaction)
+ * - `allContent` — modified content for ALL assistant turns (full multi-turn redaction)
+ * - `undefined` — no modification was made
  *
- * **Multi-turn visibility limitation:** In tool-loop runs with multiple
- * assistant messages, only the *last* assistant message's content is passed
- * to the hook. Earlier assistant turns in the conversation are not visible
- * to the hook and cannot be modified. Blocking is reliable — it clears all
- * assistant content and suppresses delivery. However, *modification* (e.g.
- * PII redaction) only applies to the final assistant message; content from
- * earlier tool-loop iterations will be delivered unredacted. Plugin authors
- * targeting PII redaction across full multi-turn runs should use
- * `after_llm_call` (which fires per-turn) rather than relying solely on
- * `before_response_emit`.
+ * Plugins receive both `content` (last assistant message) and `allContent`
+ * (all assistant texts from the run) in the hook event. They can return
+ * either `content` for single-message modification or `allContent` for
+ * full-run redaction. `allContent` takes precedence when both are returned.
  */
 export async function applyBeforeResponseEmitHook(
   params: ApplyBeforeResponseEmitParams,
-): Promise<string | undefined> {
-  const { hookRunner, agentCtx, messagesSnapshot, activeSession, channel } = params;
+): Promise<ApplyBeforeResponseEmitResult | undefined> {
+  const { hookRunner, agentCtx, assistantTexts, messagesSnapshot, activeSession, channel } = params;
 
   // Find last assistant message
   const lastAssistantMsg = [...messagesSnapshot].toReversed().find((m) => m.role === "assistant");
@@ -83,6 +97,7 @@ export async function applyBeforeResponseEmitHook(
   const emitResult = await hookRunner.runBeforeResponseEmit(
     {
       content,
+      allContent: [...assistantTexts],
       channel,
       messageCount: messagesSnapshot.length,
     },
@@ -93,11 +108,17 @@ export async function applyBeforeResponseEmitHook(
     log.warn(`response blocked: ${emitResult.blockReason ?? "no reason"}`);
     // Clear blocked content from session history so it doesn't leak to
     // subsequent turns or session persistence.
-    clearAssistantContent(activeSession.messages);
-    // Return empty string to signal the caller that the response was blocked.
-    // The caller checks `modifiedContent !== undefined` — returning undefined
-    // would be indistinguishable from "no modification".
-    return "";
+    clearAllAssistantContent(activeSession.messages);
+    return { blocked: true };
+  }
+
+  // Check for full multi-turn modification (allContent takes precedence)
+  if (emitResult?.allContent !== undefined) {
+    log.debug(
+      `applying allContent modification (${emitResult.allContent.length} entries, original ${assistantTexts.length})`,
+    );
+    rewriteAllAssistantContent(activeSession.messages, emitResult.allContent);
+    return { blocked: false, allContent: emitResult.allContent };
   }
 
   if (emitResult?.content === undefined || emitResult.content === content) {
@@ -110,36 +131,54 @@ export async function applyBeforeResponseEmitHook(
   // Update session messages for consistency with the delivery pipeline.
   // We update in-place because activeSession.messages is a mutable array
   // shared with the session persistence layer.
-  rewriteAssistantContent(activeSession.messages, emitResult.content);
+  rewriteLastAssistantContent(activeSession.messages, emitResult.content);
 
-  return emitResult.content;
+  return { blocked: false, content: emitResult.content };
 }
 
 /**
- * Rewrite all text content in the last assistant message.
+ * Rewrite text content in the last assistant message.
  * Handles both string content and multi-part content arrays.
  * For multi-part arrays, replaces the first text part with the new content
  * and clears all subsequent text parts to prevent stale/unredacted fragments.
  */
-function rewriteAssistantContent(messages: AgentMessage[], newContent: string): void {
-  // Scan backwards for the last assistant message — same strategy as
-  // applyBeforeResponseEmitHook. Don't assume messages[-1] is assistant;
-  // tool results or other entries may have been appended since the snapshot.
+export function rewriteLastAssistantContent(messages: AgentMessage[], newContent: string): void {
   const sessionMsg = [...messages]
     .toReversed()
     .find((m) => m.role === "assistant" && "content" in m);
   if (!sessionMsg) {
-    log.warn("rewriteAssistantContent: no assistant message found in session history");
+    log.warn("rewriteLastAssistantContent: no assistant message found in session history");
     return;
   }
-  const msgContent = (sessionMsg as { content: unknown }).content;
+  rewriteSingleAssistantMessage(sessionMsg, newContent);
+}
+
+/**
+ * Rewrite text content in ALL assistant messages in session history.
+ * Maps each entry in `newContents` to the corresponding assistant message
+ * (in chronological order). If there are more assistant messages than
+ * entries, the extra messages are cleared. If there are fewer, the extra
+ * entries are ignored (defensive).
+ */
+export function rewriteAllAssistantContent(messages: AgentMessage[], newContents: string[]): void {
+  const assistantMsgs = messages.filter((m) => m.role === "assistant" && "content" in m);
+  for (let i = 0; i < assistantMsgs.length; i++) {
+    const replacement = i < newContents.length ? newContents[i] : "";
+    rewriteSingleAssistantMessage(assistantMsgs[i], replacement);
+  }
+}
+
+/**
+ * Rewrite text content of a single assistant message in-place.
+ */
+function rewriteSingleAssistantMessage(msg: AgentMessage, newContent: string): void {
+  const msgContent = (msg as { content: unknown }).content;
   if (typeof msgContent === "string") {
-    (sessionMsg as unknown as Record<string, unknown>).content = newContent;
+    (msg as unknown as Record<string, unknown>).content = newContent;
   } else if (Array.isArray(msgContent)) {
     const textParts = (msgContent as ContentPart[]).filter((c) => c?.type === "text");
     if (textParts.length > 0) {
       textParts[0].text = newContent;
-      // Clear all subsequent text parts to prevent stale/unredacted fragments
       for (let i = 1; i < textParts.length; i++) {
         textParts[i].text = "";
       }
@@ -148,9 +187,12 @@ function rewriteAssistantContent(messages: AgentMessage[], newContent: string): 
 }
 
 /**
- * Clear all text content from the last assistant message in session history.
+ * Clear all text content from ALL assistant messages in session history.
  * Used when before_response_emit blocks delivery to prevent data leaks.
  */
-function clearAssistantContent(messages: AgentMessage[]): void {
-  rewriteAssistantContent(messages, "");
+function clearAllAssistantContent(messages: AgentMessage[]): void {
+  const assistantMsgs = messages.filter((m) => m.role === "assistant" && "content" in m);
+  for (const msg of assistantMsgs) {
+    rewriteSingleAssistantMessage(msg, "");
+  }
 }

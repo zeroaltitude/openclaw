@@ -789,6 +789,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
       ctx,
       (acc, next) => ({
         content: next.content ?? acc?.content,
+        allContent: next.allContent ?? acc?.allContent,
         block: next.block || acc?.block,
         blockReason: next.blockReason ?? acc?.blockReason,
       }),

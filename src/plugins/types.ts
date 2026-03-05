@@ -726,13 +726,27 @@ export type PluginHookAfterLlmCallResult = {
 
 // before_response_emit hook (modifying — sequential)
 export type PluginHookBeforeResponseEmitEvent = {
+  /** Text content of the last assistant message. */
   content: string;
+  /**
+   * Text content of ALL assistant messages from the current run, in chronological
+   * order. Enables full multi-turn PII redaction across tool-loop iterations.
+   * Each entry corresponds to one assistant turn's accumulated text.
+   */
+  allContent: string[];
   channel?: string;
   messageCount: number;
 };
 
 export type PluginHookBeforeResponseEmitResult = {
+  /** Modified content for the last assistant message (single-message modification). */
   content?: string;
+  /**
+   * Modified content for ALL assistant messages. When returned, replaces the
+   * entire assistantTexts array and rewrites all assistant messages in session
+   * history. Takes precedence over `content` when both are provided.
+   */
+  allContent?: string[];
   block?: boolean;
   blockReason?: string;
 };
