@@ -253,12 +253,22 @@ function rewriteSingleAssistantMessage(msg: AgentMessage, newContent: string): v
 }
 
 /**
- * Clear all text content from ALL assistant messages in session history.
+ * Clear ALL content from assistant messages in session history.
  * Used when before_response_emit blocks delivery to prevent data leaks.
+ * Clears both text parts AND tool_use blocks (which may contain sensitive
+ * data in their input arguments) to prevent exfiltration via tool calls.
  */
 function clearAllAssistantContent(messages: AgentMessage[]): void {
   const assistantMsgs = messages.filter((m) => m.role === "assistant" && "content" in m);
   for (const msg of assistantMsgs) {
-    rewriteSingleAssistantMessage(msg, "");
+    const msgContent = (msg as { content: unknown }).content;
+    if (typeof msgContent === "string") {
+      (msg as unknown as Record<string, unknown>).content = "";
+    } else if (Array.isArray(msgContent)) {
+      // Clear ALL content parts — text, tool_use, and any other types.
+      // Setting to empty array removes tool_use blocks entirely, preventing
+      // sensitive data in tool call input arguments from persisting.
+      (msg as unknown as Record<string, unknown>).content = [];
+    }
   }
 }
