@@ -462,7 +462,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
       ctx,
       (acc, next) => ({
         params: next.params ?? acc?.params,
-        block: next.block ?? acc?.block,
+        block: next.block || acc?.block,
         blockReason: next.blockReason ?? acc?.blockReason,
       }),
     );
@@ -743,7 +743,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
         messages: next.messages ?? acc?.messages,
         systemPrompt: next.systemPrompt ?? acc?.systemPrompt,
         tools: next.tools ?? acc?.tools,
-        block: next.block ?? acc?.block,
+        block: next.block || acc?.block,
         blockReason: next.blockReason ?? acc?.blockReason,
       }),
     );
@@ -765,7 +765,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
       event,
       ctx,
       (acc, next) => ({
-        block: next.block ?? acc?.block,
+        block: next.block || acc?.block,
         blockReason: next.blockReason ?? acc?.blockReason,
         toolCalls: next.toolCalls ?? acc?.toolCalls,
       }),
@@ -788,7 +788,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
       ctx,
       (acc, next) => ({
         content: next.content ?? acc?.content,
-        block: next.block ?? acc?.block,
+        block: next.block || acc?.block,
         blockReason: next.blockReason ?? acc?.blockReason,
       }),
     );

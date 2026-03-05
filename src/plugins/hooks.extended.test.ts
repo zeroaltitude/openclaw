@@ -227,6 +227,22 @@ describe("after_llm_call hook", () => {
     expect(result?.blockReason).toBe("tainted context");
   });
 
+  it("block is a one-way latch — later handler cannot unblock", async () => {
+    const h1 = vi.fn().mockResolvedValue({ block: true, blockReason: "security policy" });
+    const h2 = vi.fn().mockResolvedValue({ block: false });
+    const runner = createHookRunner(
+      makeRegistry([
+        { pluginId: "security", hookName: "after_llm_call", handler: h1, source: "test" },
+        { pluginId: "permissive", hookName: "after_llm_call", handler: h2, source: "test" },
+      ]),
+    );
+
+    const result = await runner.runAfterLlmCall(baseEvent, agentCtx);
+    // Once blocked, stays blocked — security plugin's decision cannot be overridden
+    expect(result?.block).toBe(true);
+    expect(result?.blockReason).toBe("security policy");
+  });
+
   it("returns tool call filter from handler", async () => {
     const filtered = [{ id: "tc-1", name: "read", arguments: { path: "/tmp/x" } }];
     const handler = vi.fn().mockResolvedValue({ toolCalls: filtered });
