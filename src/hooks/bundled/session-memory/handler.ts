@@ -11,7 +11,7 @@ import path from "node:path";
 import { resolveAgentWorkspaceDir } from "../../../agents/agent-scope.js";
 import type { OpenClawConfig } from "../../../config/config.js";
 import { resolveStateDir } from "../../../config/paths.js";
-import { writeFileWithinRoot } from "../../../infra/fs-safe.js";
+import { SafeOpenError, writeFileWithinRoot } from "../../../infra/fs-safe.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
 import { hasInterSessionUserProvenance } from "../../../sessions/input-provenance.js";
@@ -356,8 +356,15 @@ const saveSessionToMemory: HookHandler = async (event) => {
         });
         log.debug("Memory file written to redirect path");
       } catch (redirectErr) {
+        // Only fall back to default memory dir for path-validation errors
+        // (outside-workspace, symlink, invalid-path). Operational failures
+        // (ENOSPC, EACCES on a valid path) should fail closed to avoid
+        // silently bypassing security policy intent.
+        if (!(redirectErr instanceof SafeOpenError)) {
+          throw redirectErr;
+        }
         log.warn(
-          `sessionSaveRedirectPath rejected, falling back to memory dir: ${String(redirectErr)}`,
+          `sessionSaveRedirectPath rejected (${redirectErr.code}), falling back to memory dir`,
         );
         writePath = path.join("memory", filename);
         await writeFileWithinRoot({
