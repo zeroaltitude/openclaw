@@ -740,8 +740,12 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
       event,
       ctx,
       (acc, next) => ({
-        messages: next.messages ?? acc?.messages,
-        systemPrompt: next.systemPrompt ?? acc?.systemPrompt,
+        // First-writer-wins for messages/systemPrompt: once a higher-priority
+        // security plugin sanitizes inputs, later plugins cannot override them.
+        // Consistent with first-writer-wins on content/allContent in
+        // before_response_emit and the intersection latch on tools.
+        messages: acc?.messages ?? next.messages,
+        systemPrompt: acc?.systemPrompt ?? next.systemPrompt,
         // Intersection latch: if both handlers provide tools, only keep tools
         // present in both lists. Prevents a later handler from widening the allowlist.
         tools:
