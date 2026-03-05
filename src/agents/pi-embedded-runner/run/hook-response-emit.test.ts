@@ -16,6 +16,7 @@ import type { HookRunner, PluginHookAgentContext } from "../../../plugins/hooks.
 import {
   applyBeforeResponseEmitHook,
   extractAssistantText,
+  getRunScopedMessages,
   rewriteAllAssistantContent,
 } from "./hook-response-emit.js";
 
@@ -455,5 +456,41 @@ describe("rewriteAllAssistantContent", () => {
     }>;
     expect(parts[0].text).toBe("new content");
     expect(parts[1].text).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getRunScopedMessages
+// ---------------------------------------------------------------------------
+
+describe("getRunScopedMessages", () => {
+  it("slices by preRunMessageCount when valid", () => {
+    const messages = [
+      makeMsg("assistant", "old"),
+      makeMsg("user", "new q"),
+      makeMsg("assistant", "new answer"),
+    ];
+    const result = getRunScopedMessages(messages, 1, 1);
+    expect(result).toHaveLength(2);
+    expect((result[1] as { content: unknown }).content).toBe("new answer");
+  });
+
+  it("falls back to tail when compaction invalidates preRunMessageCount", () => {
+    // Simulates compaction: preRunMessageCount was 50 but array is now 3
+    const messages = [
+      makeMsg("user", "compacted q"),
+      makeMsg("assistant", "run turn 1"),
+      makeMsg("assistant", "run turn 2"),
+    ];
+    const result = getRunScopedMessages(messages, 50, 2);
+    expect(result).toHaveLength(2);
+    expect((result[0] as { content: unknown }).content).toBe("run turn 1");
+    expect((result[1] as { content: unknown }).content).toBe("run turn 2");
+  });
+
+  it("returns full array when no preRunMessageCount provided", () => {
+    const messages = [makeMsg("assistant", "a"), makeMsg("assistant", "b")];
+    const result = getRunScopedMessages(messages, undefined, 2);
+    expect(result).toStrictEqual(messages);
   });
 });
