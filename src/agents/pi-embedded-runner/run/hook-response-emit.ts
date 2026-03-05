@@ -22,9 +22,12 @@ export interface ApplyBeforeResponseEmitParams {
   assistantTexts: string[];
   messagesSnapshot: AgentMessage[];
   activeSession: { messages: AgentMessage[] };
-  /** Number of messages in activeSession before this run started. Used to scope
-   *  block/rewrite operations to only current-run assistant messages so that
-   *  previously-delivered history is never corrupted. */
+  /**
+   * Number of messages in activeSession before this run started. Used to scope
+   * block/rewrite operations to only current-run assistant messages so that
+   * previously-delivered history is never corrupted. Falls back to counting
+   * from the tail (using assistantTexts.length) if compaction invalidates this.
+   */
   preRunMessageCount?: number;
   channel?: string;
 }
@@ -116,11 +119,15 @@ export async function applyBeforeResponseEmitHook(
     agentCtx,
   );
 
-  // Slice to only current-run messages so we never corrupt prior history.
-  const runMessages =
-    preRunMessageCount !== undefined
-      ? activeSession.messages.slice(preRunMessageCount)
-      : activeSession.messages;
+  // Scope to only current-run messages so we never corrupt prior history.
+  // If compaction shrunk the message array during the run, preRunMessageCount
+  // may exceed the current length — fall back to extracting the last N
+  // assistant messages (where N = assistantTexts.length) as a safe bound.
+  const runMessages = getRunScopedMessages(
+    activeSession.messages,
+    preRunMessageCount,
+    assistantTexts.length,
+  );
 
   if (emitResult?.block) {
     log.warn(`response blocked: ${emitResult.blockReason ?? "no reason"}`);
@@ -153,6 +160,36 @@ export async function applyBeforeResponseEmitHook(
   rewriteLastAssistantContent(runMessages, emitResult.content);
 
   return { blocked: false, content: emitResult.content };
+}
+
+/**
+ * Get the subset of session messages belonging to the current run.
+ * Uses preRunMessageCount when valid; falls back to tail-based extraction
+ * if compaction invalidated the index (array shrunk below the marker).
+ */
+export function getRunScopedMessages(
+  messages: AgentMessage[],
+  preRunMessageCount: number | undefined,
+  assistantTextCount: number,
+): AgentMessage[] {
+  if (preRunMessageCount !== undefined && preRunMessageCount <= messages.length) {
+    return messages.slice(preRunMessageCount);
+  }
+  // Fallback: find the last N assistant messages and return everything from
+  // the first one onward. This handles compaction safely.
+  if (assistantTextCount <= 0) {
+    return messages;
+  }
+  let assistantsSeen = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant" && "content" in messages[i]) {
+      assistantsSeen++;
+      if (assistantsSeen >= assistantTextCount) {
+        return messages.slice(i);
+      }
+    }
+  }
+  return messages;
 }
 
 /**
