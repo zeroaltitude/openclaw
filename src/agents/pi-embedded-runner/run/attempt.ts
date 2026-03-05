@@ -1653,7 +1653,7 @@ export async function runEmbeddedAttempt(
                     log.warn(`after_llm_call hook: ${String(err)}`);
                     // Clear any stale gate so a failed hook doesn't leave
                     // a previous turn's gate blocking tool calls.
-                    if (params.sessionId) {
+                    if (params.sessionId && !hookRunDisposed) {
                       clearAfterLlmCallGate(params.sessionId);
                     }
                   });
@@ -1989,11 +1989,9 @@ export async function runEmbeddedAttempt(
               channel: params.messageChannel ?? params.messageProvider,
             });
             if (modifiedContent !== undefined) {
-              if (assistantTexts.length > 0) {
-                assistantTexts[assistantTexts.length - 1] = modifiedContent;
-              } else {
-                assistantTexts.push(modifiedContent);
-              }
+              // Replace last assistant text with hook-modified content.
+              // assistantTexts.length > 0 is guaranteed by the outer guard.
+              assistantTexts[assistantTexts.length - 1] = modifiedContent;
               // Refresh messagesSnapshot so downstream consumers (agent_end,
               // llm_output, cache trace) see the post-redaction content, not
               // the original pre-hook text.
