@@ -177,12 +177,6 @@ const saveSessionToMemory: HookHandler = async (event) => {
     return;
   }
 
-  // Check if another hook (e.g., security plugin) blocked the save
-  if (event.context.blockSessionSave === true) {
-    log.debug("Session save blocked by upstream hook");
-    return;
-  }
-
   try {
     log.debug("Hook triggered for reset/new command", { action: event.action });
 
@@ -282,17 +276,9 @@ const saveSessionToMemory: HookHandler = async (event) => {
 
     // Create filename with date and slug
     const filename = `${dateStr}-${slug}.md`;
-
-    // Check if another hook (e.g., security plugin) provided a redirect path
-    const redirectPath = event.context.sessionSaveRedirectPath;
-    const memoryFilePath =
-      typeof redirectPath === "string" && redirectPath.length > 0
-        ? redirectPath
-        : path.join(memoryDir, filename);
-
+    const memoryFilePath = path.join(memoryDir, filename);
     log.debug("Memory file path resolved", {
       filename,
-      redirected: Boolean(redirectPath),
       path: memoryFilePath.replace(os.homedir(), "~"),
     });
 
@@ -303,37 +289,27 @@ const saveSessionToMemory: HookHandler = async (event) => {
     const sessionId = (sessionEntry.sessionId as string) || "unknown";
     const source = (context.commandSource as string) || "unknown";
 
-    // Check if another hook provided custom content
-    const customContent = event.context.sessionSaveContent;
-    let entry: string;
+    // Build Markdown entry
+    const entryParts = [
+      `# Session: ${dateStr} ${timeStr} UTC`,
+      "",
+      `- **Session Key**: ${event.sessionKey}`,
+      `- **Session ID**: ${sessionId}`,
+      `- **Source**: ${source}`,
+      "",
+    ];
 
-    if (typeof customContent === "string" && customContent.length > 0) {
-      // Use custom content provided by upstream hook
-      entry = customContent;
-      log.debug("Using custom session content from upstream hook");
-    } else {
-      // Build Markdown entry
-      const entryParts = [
-        `# Session: ${dateStr} ${timeStr} UTC`,
-        "",
-        `- **Session Key**: ${event.sessionKey}`,
-        `- **Session ID**: ${sessionId}`,
-        `- **Source**: ${source}`,
-        "",
-      ];
-
-      // Include conversation content if available
-      if (sessionContent) {
-        entryParts.push("## Conversation Summary", "", sessionContent, "");
-      }
-
-      entry = entryParts.join("\n");
+    // Include conversation content if available
+    if (sessionContent) {
+      entryParts.push("## Conversation Summary", "", sessionContent, "");
     }
+
+    const entry = entryParts.join("\n");
 
     // Write under memory root with alias-safe file validation.
     await writeFileWithinRoot({
       rootDir: memoryDir,
-      relativePath: typeof redirectPath === "string" ? path.basename(memoryFilePath) : filename,
+      relativePath: filename,
       data: entry,
       encoding: "utf-8",
     });
