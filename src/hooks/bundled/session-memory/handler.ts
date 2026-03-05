@@ -184,7 +184,7 @@ const saveSessionToMemory: HookHandler = async (event) => {
 
     // Check if another hook (e.g., security plugin) blocked the save.
     // Inside the try block for consistent error handling with the rest of the handler.
-    if (context.blockSessionSave) {
+    if (context.blockSessionSave === true) {
       log.debug("Session save blocked by upstream hook");
       return;
     }
@@ -357,7 +357,7 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // Root is always workspaceDir; the relative path encodes the target.
     // If a redirect path fails validation, the handler fails closed
     // (returns without writing) to avoid defeating quarantine intent.
-    let writePath = writeRelativePath;
+    const writePath = writeRelativePath;
     if (isRedirected) {
       try {
         await writeFileWithinRoot({
