@@ -177,16 +177,17 @@ const saveSessionToMemory: HookHandler = async (event) => {
     return;
   }
 
-  // Check if another hook (e.g., security plugin) blocked the save
-  if (event.context.blockSessionSave === true) {
-    log.debug("Session save blocked by upstream hook");
-    return;
-  }
-
   try {
     log.debug("Hook triggered for reset/new command", { action: event.action });
 
     const context = event.context || {};
+
+    // Check if another hook (e.g., security plugin) blocked the save.
+    // Inside the try block for consistent error handling with the rest of the handler.
+    if (context.blockSessionSave === true) {
+      log.debug("Session save blocked by upstream hook");
+      return;
+    }
     const cfg = context.cfg as OpenClawConfig | undefined;
     const agentId = resolveAgentIdFromSessionKey(event.sessionKey);
     const workspaceDir = cfg
@@ -367,8 +368,13 @@ const saveSessionToMemory: HookHandler = async (event) => {
         if (!(redirectErr instanceof SafeOpenError)) {
           throw redirectErr;
         }
+        // SECURITY NOTE: This fallback means sessionSaveRedirectPath alone is NOT
+        // sufficient for quarantine-or-suppress workflows. If a security plugin
+        // needs to guarantee sessions never land in the default memory directory,
+        // it should ALSO set blockSessionSave=true as a safety net.
         log.warn(
-          `sessionSaveRedirectPath rejected (${redirectErr.code}), falling back to memory dir`,
+          `sessionSaveRedirectPath rejected (${redirectErr.code}), falling back to default memory dir. ` +
+            `If this redirect was for security quarantine, the upstream hook should also set blockSessionSave=true.`,
         );
         writePath = path.join("memory", filename);
         await writeFileWithinRoot({
