@@ -289,48 +289,22 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // Create filename with date and slug
     const filename = `${dateStr}-${slug}.md`;
 
-    // Check if another hook (e.g., security plugin) provided a redirect path.
-    // Resolve relative paths against workspace and validate containment.
-    let resolvedRedirect: string | undefined;
+    // Determine write target. Redirect paths are validated by writeFileWithinRoot
+    // which handles path traversal, symlink resolution, and containment checks.
     const redirectPath = event.context.sessionSaveRedirectPath;
-    if (typeof redirectPath === "string" && redirectPath.length > 0) {
-      const abs = path.isAbsolute(redirectPath)
-        ? redirectPath
-        : path.resolve(workspaceDir, redirectPath);
-      // First pass: textual containment check BEFORE touching the filesystem.
-      // This prevents mkdir from creating directories outside the workspace.
-      const normalized = path.normalize(abs);
-      const realWorkspace = await fs.realpath(workspaceDir);
-      if (!normalized.startsWith(realWorkspace + path.sep) && normalized !== realWorkspace) {
-        log.warn("sessionSaveRedirectPath escapes workspace, ignoring", {
-          redirectPath,
-          normalized,
-          workspaceDir: realWorkspace,
-        });
-      } else {
-        // Path passes textual check — safe to create parent directory
-        const parentDir = path.dirname(abs);
-        await fs.mkdir(parentDir, { recursive: true });
-        // Second pass: resolve symlinks for the definitive containment check
-        const realParent = await fs.realpath(parentDir);
-        const realFull = path.join(realParent, path.basename(abs));
-        if (!realFull.startsWith(realWorkspace + path.sep) && realFull !== realWorkspace) {
-          log.warn("sessionSaveRedirectPath escapes workspace (symlink resolution), ignoring", {
-            redirectPath,
-            resolved: realFull,
-            workspaceDir: realWorkspace,
-          });
-        } else {
-          resolvedRedirect = realFull;
-        }
-      }
-    }
-    const memoryFilePath = resolvedRedirect ?? path.join(memoryDir, filename);
+    const isRedirected = typeof redirectPath === "string" && redirectPath.length > 0;
+    // For redirects, compute a workspace-relative path so writeFileWithinRoot
+    // can validate containment. Absolute paths are made relative to workspace.
+    const writeRelativePath = isRedirected
+      ? path.isAbsolute(redirectPath)
+        ? path.relative(workspaceDir, redirectPath)
+        : redirectPath
+      : path.join("memory", filename);
 
     log.debug("Memory file path resolved", {
       filename,
-      redirected: resolvedRedirect !== undefined,
-      path: memoryFilePath.replace(os.homedir(), "~"),
+      redirected: isRedirected,
+      relativePath: writeRelativePath,
     });
 
     // Format time as HH:MM:SS UTC
@@ -366,28 +340,45 @@ const saveSessionToMemory: HookHandler = async (event) => {
       entry = entryParts.join("\n");
     }
 
-    // Write session memory — always use writeFileWithinRoot for path
-    // traversal protection. When redirected, shift the root directory
-    // to the redirect target's parent.
-    const isRedirected = resolvedRedirect !== undefined;
-    const targetDir = isRedirected ? path.dirname(memoryFilePath) : memoryDir;
-    const targetFilename = isRedirected ? path.basename(memoryFilePath) : filename;
-    // Ensure target directory exists — memoryDir is created earlier,
-    // but redirect paths may point to directories that don't exist yet.
+    // Write session memory — writeFileWithinRoot handles path traversal,
+    // symlink resolution, containment validation, and mkdir in one call.
+    // Root is always workspaceDir; the relative path encodes the target.
+    // If a redirect path fails validation (e.g. escapes workspace), fall
+    // back to the default memory directory.
+    let writePath = writeRelativePath;
     if (isRedirected) {
-      await fs.mkdir(targetDir, { recursive: true });
+      try {
+        await writeFileWithinRoot({
+          rootDir: workspaceDir,
+          relativePath: writeRelativePath,
+          data: entry,
+          encoding: "utf-8",
+        });
+        log.debug("Memory file written to redirect path");
+      } catch (redirectErr) {
+        log.warn(
+          `sessionSaveRedirectPath rejected, falling back to memory dir: ${String(redirectErr)}`,
+        );
+        writePath = path.join("memory", filename);
+        await writeFileWithinRoot({
+          rootDir: workspaceDir,
+          relativePath: writePath,
+          data: entry,
+          encoding: "utf-8",
+        });
+        log.debug("Memory file written to fallback path");
+      }
+    } else {
+      await writeFileWithinRoot({
+        rootDir: workspaceDir,
+        relativePath: writePath,
+        data: entry,
+        encoding: "utf-8",
+      });
+      log.debug("Memory file written successfully");
     }
-    await writeFileWithinRoot({
-      rootDir: targetDir,
-      relativePath: targetFilename,
-      data: entry,
-      encoding: "utf-8",
-    });
-    log.debug("Memory file written successfully");
 
-    // Log completion (but don't send user-visible confirmation - it's internal housekeeping)
-    const relPath = memoryFilePath.replace(os.homedir(), "~");
-    log.info(`Session context saved to ${relPath}`);
+    log.info(`Session context saved to ${writeRelativePath}`);
   } catch (err) {
     if (err instanceof Error) {
       log.error("Failed to save session memory", {
