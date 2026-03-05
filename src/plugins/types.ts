@@ -295,7 +295,7 @@ export type OpenClawPluginApi = {
   on: <K extends PluginHookName>(
     hookName: K,
     handler: PluginHookHandlerMap[K],
-    opts?: OpenClawPluginHookOptions,
+    opts?: { priority?: number },
   ) => void;
 };
 
