@@ -261,6 +261,9 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // set it to persist a blank marker while avoiding transcript retention.
     const hasCustomContent = typeof customContent === "string";
 
+    const redirectPath = context.sessionSaveRedirectPath;
+    const isRedirected = typeof redirectPath === "string" && redirectPath.length > 0;
+
     if (sessionFile && !hasCustomContent) {
       // Get recent conversation content, with fallback to rotated reset transcript.
       sessionContent = await getRecentSessionContentWithResetFallback(sessionFile, messageCount);
@@ -299,8 +302,8 @@ const saveSessionToMemory: HookHandler = async (event) => {
 
     // Determine write target. Redirect paths are validated by writeFileWithinRoot
     // which handles path traversal, symlink resolution, and containment checks.
-    const redirectPath = context.sessionSaveRedirectPath;
-    const isRedirected = typeof redirectPath === "string" && redirectPath.length > 0;
+    // (redirectPath and isRedirected are declared above, before slug generation,
+    // to avoid TDZ issues.)
     // For redirects, compute a workspace-relative path so writeFileWithinRoot
     // can validate containment. Both workspace and redirect paths are
     // canonicalized via realpath to avoid symlink aliasing issues.
