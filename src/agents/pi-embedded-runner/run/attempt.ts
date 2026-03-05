@@ -1739,7 +1739,10 @@ export async function runEmbeddedAttempt(
                 assistantTexts.splice(0, assistantTexts.length);
               } else if (emitResult.allContent !== undefined) {
                 // Full multi-turn modification — replace all assistant texts.
-                assistantTexts.splice(0, assistantTexts.length, ...emitResult.allContent);
+                // Truncate to original length to prevent plugins from expanding
+                // the response beyond what was actually produced in this run.
+                const bounded = emitResult.allContent.slice(0, assistantTexts.length);
+                assistantTexts.splice(0, assistantTexts.length, ...bounded);
               } else if (emitResult.content !== undefined) {
                 // Single last-message modification (backward-compatible).
                 // assistantTexts.length > 0 is guaranteed by the outer guard.

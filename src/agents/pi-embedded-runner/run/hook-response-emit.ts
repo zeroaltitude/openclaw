@@ -117,19 +117,20 @@ export async function applyBeforeResponseEmitHook(
 
   if (emitResult?.block) {
     log.warn(`response blocked: ${emitResult.blockReason ?? "no reason"}`);
-    if (runMessages.length === 0) {
+    if (runMessages.length === 0 && activeSession.messages.length > 0) {
       // Compaction edge case: couldn't identify run-scoped messages.
-      // Response delivery is still suppressed, but blocked content may
-      // persist in activeSession.messages and leak into future turns.
+      // Fail closed: clear ALL assistant content in the session to prevent
+      // blocked/sensitive text from leaking into future turns or persistence.
       log.warn(
-        "response blocked but run-scoped messages empty — blocked content may persist in session history. " +
+        "response blocked but run-scoped messages empty — clearing all assistant content as fail-closed fallback. " +
           "This can occur when compaction makes run boundaries unidentifiable.",
       );
+      clearAllAssistantContent(activeSession.messages);
+    } else {
+      // Clear blocked content from current-run session history only so it
+      // doesn't leak to subsequent turns or session persistence.
+      clearAllAssistantContent(runMessages);
     }
-    // Clear blocked content from current-run session history only so it
-    // doesn't leak to subsequent turns or session persistence. Prior turns
-    // that were already delivered are left intact.
-    clearAllAssistantContent(runMessages);
     return { blocked: true };
   }
 
