@@ -229,6 +229,12 @@ export function rewriteLastAssistantContent(messages: AgentMessage[], newContent
  */
 export function rewriteAllAssistantContent(messages: AgentMessage[], newContents: string[]): void {
   const assistantMsgs = messages.filter((m) => m.role === "assistant" && "content" in m);
+  if (newContents.length !== assistantMsgs.length) {
+    log.warn(
+      `rewriteAllAssistantContent: allContent length (${newContents.length}) differs from ` +
+        `assistant message count (${assistantMsgs.length}); extras will be cleared`,
+    );
+  }
   for (let i = 0; i < assistantMsgs.length; i++) {
     const replacement = i < newContents.length ? newContents[i] : "";
     rewriteSingleAssistantMessage(assistantMsgs[i], replacement);

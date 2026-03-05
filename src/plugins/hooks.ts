@@ -797,8 +797,11 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
       event,
       ctx,
       (acc, next) => ({
-        content: next.content ?? acc?.content,
-        allContent: next.allContent ?? acc?.allContent,
+        // First-writer-wins for content/allContent: once a higher-priority
+        // plugin (e.g. security redaction) sets content, later plugins cannot
+        // override it. This matches the one-way latch on block.
+        content: acc?.content ?? next.content,
+        allContent: acc?.allContent ?? next.allContent,
         block: next.block || acc?.block,
         blockReason: next.blockReason ?? acc?.blockReason,
       }),
