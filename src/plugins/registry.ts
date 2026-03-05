@@ -479,13 +479,14 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     record: PluginRecord,
     hookName: K,
     handler: PluginHookHandlerMap[K],
-    _opts?: OpenClawPluginHookOptions,
+    opts?: { priority?: number },
   ) => {
     record.hookCount += 1;
     registry.typedHooks.push({
       pluginId: record.id,
       hookName,
       handler,
+      priority: opts?.priority,
       source: record.source,
     } as TypedPluginHookRegistration);
   };
