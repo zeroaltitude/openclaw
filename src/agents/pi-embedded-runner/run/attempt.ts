@@ -1299,6 +1299,60 @@ export async function runEmbeddedAttempt(
         getCompactionCount,
       } = subscription;
 
+      // Build hook context early so the subscription callback can close over it
+      // without a forward reference.
+      const hookAgentId = sessionAgentId;
+      const hookCtx = {
+        agentId: hookAgentId,
+        sessionKey: params.sessionKey,
+        sessionId: params.sessionId,
+        workspaceDir: params.workspaceDir,
+        messageProvider: params.messageProvider ?? undefined,
+        trigger: params.trigger,
+        channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+      };
+
+      // Subscribe for loop iteration tracking hooks
+      let hookTurnIteration = 0;
+      let hookTurnMessageCount = 0;
+      let hookPendingToolResults = 0;
+      const hookEventUnsub =
+        hookRunner?.hasHooks("loop_iteration_start") || hookRunner?.hasHooks("loop_iteration_end")
+          ? activeSession.subscribe((event) => {
+              if (event.type === "turn_start") {
+                hookTurnIteration++;
+                hookTurnMessageCount = activeSession.messages.length;
+                hookRunner
+                  .runLoopIterationStart(
+                    {
+                      iteration: hookTurnIteration,
+                      messageCount: activeSession.messages.length,
+                      // Tool results from previous turn that triggered this iteration
+                      pendingToolResults: hookPendingToolResults,
+                    },
+                    hookCtx,
+                  )
+                  .catch((err) => log.warn(`loop_iteration_start hook: ${String(err)}`));
+              }
+              if (event.type === "turn_end") {
+                const toolResults = event.toolResults ?? [];
+                // Capture for next turn_start
+                hookPendingToolResults = toolResults.length;
+                hookRunner
+                  .runLoopIterationEnd(
+                    {
+                      iteration: hookTurnIteration,
+                      toolCallsMade: toolResults.length,
+                      newMessagesAdded: activeSession.messages.length - hookTurnMessageCount,
+                      hasToolResults: toolResults.length > 0,
+                    },
+                    hookCtx,
+                  )
+                  .catch((err) => log.warn(`loop_iteration_end hook: ${String(err)}`));
+              }
+            })
+          : undefined;
+
       const queueHandle: EmbeddedPiQueueHandle = {
         queueMessage: async (text: string) => {
           await activeSession.steer(text);
@@ -1369,25 +1423,6 @@ export async function runEmbeddedAttempt(
           });
         }
       }
-
-      // Hook runner was already obtained earlier before tool creation
-      const hookAgentId = sessionAgentId;
-
-      const hookCtx = {
-        agentId: hookAgentId,
-        sessionKey: params.sessionKey,
-        sessionId: params.sessionId,
-        workspaceDir: params.workspaceDir,
-        messageProvider: params.messageProvider ?? undefined,
-        sourceProvider: params.sourceProvider ?? undefined,
-        trigger: params.trigger,
-        channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-        senderId: params.senderId ?? null,
-        senderName: params.senderName ?? null,
-        senderIsOwner: params.senderIsOwner,
-        groupId: params.groupId ?? null,
-        spawnedBy: params.spawnedBy ?? null,
-      };
 
       let promptError: unknown = null;
       let promptErrorSource: "prompt" | "compaction" | null = null;
@@ -1489,6 +1524,29 @@ export async function runEmbeddedAttempt(
                 `promptImages=${imageResult.images.length} ` +
                 `provider=${params.provider}/${params.modelId} sessionFile=${params.sessionFile}`,
             );
+          }
+
+          // Fire context_assembled hook — gives plugins a snapshot of the full
+          // context before the first LLM call. Fires once per run (iteration: 1)
+          // because subsequent turns reuse the same session context with appended
+          // messages; use loop_iteration_start for per-turn tracking.
+          if (hookRunner?.hasHooks("context_assembled")) {
+            // Snapshot messages array to avoid mutation during async hook handling.
+            // Named contextMessagesSnapshot to avoid shadowing the outer messagesSnapshot.
+            const contextMessagesSnapshot = activeSession.messages.slice();
+            hookRunner
+              .runContextAssembled(
+                {
+                  systemPrompt: systemPromptText,
+                  prompt: effectivePrompt,
+                  messages: contextMessagesSnapshot,
+                  messageCount: contextMessagesSnapshot.length,
+                  imageCount: imageResult.images.length,
+                  iteration: 1,
+                },
+                hookCtx,
+              )
+              .catch((err) => log.warn(`context_assembled hook: ${String(err)}`));
           }
 
           if (hookRunner?.hasHooks("llm_input")) {
@@ -1647,6 +1705,13 @@ export async function runEmbeddedAttempt(
         if (!isProbeSession && (aborted || timedOut) && !timedOutDuringCompaction) {
           log.debug(
             `run cleanup: runId=${params.runId} sessionId=${params.sessionId} aborted=${aborted} timedOut=${timedOut}`,
+          );
+        }
+        try {
+          hookEventUnsub?.();
+        } catch (err) {
+          log.error(
+            `CRITICAL: hookEventUnsub failed, possible resource leak: runId=${params.runId} ${String(err)}`,
           );
         }
         try {

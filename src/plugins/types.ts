@@ -331,7 +331,10 @@ export type PluginHookName =
   | "subagent_spawned"
   | "subagent_ended"
   | "gateway_start"
-  | "gateway_stop";
+  | "gateway_stop"
+  | "context_assembled"
+  | "loop_iteration_start"
+  | "loop_iteration_end";
 
 // Agent context shared across agent hooks
 export type PluginHookAgentContext = {
@@ -692,6 +695,47 @@ export type PluginHookGatewayStopEvent = {
   reason?: string;
 };
 
+// ============================================================================
+// Agent Loop Observability Hooks
+// ============================================================================
+
+// context_assembled hook (void — parallel)
+// Fires once per run before the first LLM call with the initial context snapshot.
+// Use loop_iteration_start/end for per-turn tracking within multi-turn runs.
+export type PluginHookContextAssembledEvent = {
+  systemPrompt: string;
+  /** The effective user prompt for this turn (after hook modifications). */
+  prompt: string;
+  messages: AgentMessage[];
+  messageCount: number;
+  /** Number of images attached to the prompt. */
+  imageCount: number;
+  /** Always 1 — this hook fires once per run before the first LLM call.
+   *  Use loop_iteration_start for per-turn iteration tracking. */
+  iteration: number;
+};
+
+// loop_iteration_start hook (void — parallel)
+export type PluginHookLoopIterationStartEvent = {
+  iteration: number;
+  /** Number of pending tool results awaiting processing. Undefined when not available. */
+  pendingToolResults?: number;
+  messageCount: number;
+};
+
+// loop_iteration_end hook (void — parallel)
+export type PluginHookLoopIterationEndEvent = {
+  iteration: number;
+  toolCallsMade: number;
+  /** Number of new messages added this iteration. Undefined when not available. */
+  newMessagesAdded?: number;
+  /** True when the turn produced tool results, suggesting (but not guaranteeing)
+   *  that the loop will continue. Does not account for abort signals, timeouts,
+   *  or max-iteration limits — those are evaluated by the loop controller after
+   *  this event fires. Use `llm_output` for definitive loop-terminal detection. */
+  hasToolResults: boolean;
+};
+
 // Hook handler types mapped by hook name
 export type PluginHookHandlerMap = {
   before_model_resolve: (
@@ -789,6 +833,18 @@ export type PluginHookHandlerMap = {
   gateway_stop: (
     event: PluginHookGatewayStopEvent,
     ctx: PluginHookGatewayContext,
+  ) => Promise<void> | void;
+  context_assembled: (
+    event: PluginHookContextAssembledEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<void> | void;
+  loop_iteration_start: (
+    event: PluginHookLoopIterationStartEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<void> | void;
+  loop_iteration_end: (
+    event: PluginHookLoopIterationEndEvent,
+    ctx: PluginHookAgentContext,
   ) => Promise<void> | void;
 };
 
