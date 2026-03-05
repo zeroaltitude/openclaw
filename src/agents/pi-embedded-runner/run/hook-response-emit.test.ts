@@ -4,7 +4,8 @@
  * Verifies:
  * - Text extraction from string and content-part-array messages
  * - Hook modification applied to assistantTexts and session messages
- * - Block results return undefined
+ * - Block results
+ * - allContent multi-turn modification
  * - No-op when hook returns same content
  * - No-op when no assistant message found
  * - Hook errors propagate (caller catches)
@@ -12,7 +13,11 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { HookRunner, PluginHookAgentContext } from "../../../plugins/hooks.js";
-import { applyBeforeResponseEmitHook, extractAssistantText } from "./hook-response-emit.js";
+import {
+  applyBeforeResponseEmitHook,
+  extractAssistantText,
+  rewriteAllAssistantContent,
+} from "./hook-response-emit.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,6 +32,7 @@ function makeMsg(
 
 function makeMockHookRunner(emitResult?: {
   content?: string;
+  allContent?: string[];
   block?: boolean;
   blockReason?: string;
 }): HookRunner {
@@ -112,7 +118,7 @@ describe("applyBeforeResponseEmitHook", () => {
       channel: "discord",
     });
 
-    expect(result).toBe("modified!");
+    expect(result).toEqual({ blocked: false, content: "modified!" });
     // Session message should also be updated
     expect((activeSession.messages[0] as { content: unknown }).content).toBe("modified!");
   });
@@ -131,14 +137,14 @@ describe("applyBeforeResponseEmitHook", () => {
       channel: "discord",
     });
 
-    expect(result).toBe("modified!");
+    expect(result).toEqual({ blocked: false, content: "modified!" });
     expect(
       ((sessionMsg as { content: unknown }).content as Array<{ type: string; text: string }>)[0]
         .text,
     ).toBe("modified!");
   });
 
-  it("returns empty string when hook blocks", async () => {
+  it("returns blocked result when hook blocks", async () => {
     const hookRunner = makeMockHookRunner({ block: true, blockReason: "policy" });
 
     const result = await applyBeforeResponseEmitHook({
@@ -149,7 +155,7 @@ describe("applyBeforeResponseEmitHook", () => {
       activeSession: { messages: [makeMsg("assistant", "original")] },
     });
 
-    expect(result).toBe("");
+    expect(result).toEqual({ blocked: true });
   });
 
   it("returns undefined when content unchanged", async () => {
@@ -195,20 +201,27 @@ describe("applyBeforeResponseEmitHook", () => {
     expect(result).toBeUndefined();
   });
 
-  it("clears blocked content from session history", async () => {
+  it("clears ALL assistant content on block (multi-turn)", async () => {
     const hookRunner = makeMockHookRunner({ block: true, blockReason: "PII detected" });
-    const activeSession = { messages: [makeMsg("assistant", "my SSN is 123-45-6789")] };
+    const activeSession = {
+      messages: [
+        makeMsg("assistant", "turn 1 with SSN 123-45-6789"),
+        makeMsg("user", "continue"),
+        makeMsg("assistant", "turn 2 with SSN 123-45-6789"),
+      ],
+    };
 
     await applyBeforeResponseEmitHook({
       hookRunner,
       agentCtx: dummyCtx,
-      assistantTexts: ["my SSN is 123-45-6789"],
-      messagesSnapshot: [makeMsg("assistant", "my SSN is 123-45-6789")],
+      assistantTexts: ["turn 1 with SSN 123-45-6789", "turn 2 with SSN 123-45-6789"],
+      messagesSnapshot: activeSession.messages.slice(),
       activeSession,
     });
 
-    // Blocked content must be scrubbed from session history
+    // ALL assistant messages must be cleared, not just the last
     expect((activeSession.messages[0] as { content: unknown }).content).toBe("");
+    expect((activeSession.messages[2] as { content: unknown }).content).toBe("");
   });
 
   it("clears all text parts in multi-part messages on block", async () => {
@@ -284,8 +297,7 @@ describe("applyBeforeResponseEmitHook", () => {
       activeSession,
     });
 
-    expect(result).toBe("modified");
-    // The assistant message should be updated even though it's not the last element
+    expect(result).toEqual({ blocked: false, content: "modified" });
     expect((assistantMsg as { content: unknown }).content).toBe("modified");
   });
 
@@ -304,5 +316,132 @@ describe("applyBeforeResponseEmitHook", () => {
         activeSession: { messages: [makeMsg("assistant", "original")] },
       }),
     ).rejects.toThrow("hook crashed");
+  });
+
+  it("passes allContent to hook event", async () => {
+    const hookRunner = makeMockHookRunner({ content: "modified" });
+
+    await applyBeforeResponseEmitHook({
+      hookRunner,
+      agentCtx: dummyCtx,
+      assistantTexts: ["turn 1", "turn 2", "turn 3"],
+      messagesSnapshot: [makeMsg("assistant", "turn 3")],
+      activeSession: { messages: [makeMsg("assistant", "turn 3")] },
+    });
+
+    const callArgs = (hookRunner.runBeforeResponseEmit as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(callArgs[0].allContent).toEqual(["turn 1", "turn 2", "turn 3"]);
+    expect(callArgs[0].content).toBe("turn 3");
+  });
+
+  it("applies allContent multi-turn modification", async () => {
+    const hookRunner = makeMockHookRunner({
+      allContent: ["[REDACTED turn 1]", "[REDACTED turn 2]"],
+    });
+    const activeSession = {
+      messages: [
+        makeMsg("assistant", "PII in turn 1"),
+        makeMsg("user", "continue"),
+        makeMsg("assistant", "PII in turn 2"),
+      ],
+    };
+
+    const result = await applyBeforeResponseEmitHook({
+      hookRunner,
+      agentCtx: dummyCtx,
+      assistantTexts: ["PII in turn 1", "PII in turn 2"],
+      messagesSnapshot: activeSession.messages.slice(),
+      activeSession,
+    });
+
+    expect(result).toEqual({
+      blocked: false,
+      allContent: ["[REDACTED turn 1]", "[REDACTED turn 2]"],
+    });
+    // Both assistant messages in session should be rewritten
+    expect((activeSession.messages[0] as { content: unknown }).content).toBe("[REDACTED turn 1]");
+    expect((activeSession.messages[2] as { content: unknown }).content).toBe("[REDACTED turn 2]");
+  });
+
+  it("allContent takes precedence over content", async () => {
+    const hookRunner = makeMockHookRunner({
+      content: "single-message mod",
+      allContent: ["full turn 1", "full turn 2"],
+    });
+    const activeSession = {
+      messages: [
+        makeMsg("assistant", "original 1"),
+        makeMsg("user", "continue"),
+        makeMsg("assistant", "original 2"),
+      ],
+    };
+
+    const result = await applyBeforeResponseEmitHook({
+      hookRunner,
+      agentCtx: dummyCtx,
+      assistantTexts: ["original 1", "original 2"],
+      messagesSnapshot: activeSession.messages.slice(),
+      activeSession,
+    });
+
+    // allContent should win
+    expect(result?.allContent).toEqual(["full turn 1", "full turn 2"]);
+    expect(result?.content).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rewriteAllAssistantContent
+// ---------------------------------------------------------------------------
+
+describe("rewriteAllAssistantContent", () => {
+  it("rewrites all assistant messages in order", () => {
+    const messages = [
+      makeMsg("assistant", "turn 1"),
+      makeMsg("user", "question"),
+      makeMsg("assistant", "turn 2"),
+      makeMsg("tool", "result"),
+      makeMsg("assistant", "turn 3"),
+    ];
+
+    rewriteAllAssistantContent(messages, ["new 1", "new 2", "new 3"]);
+
+    expect((messages[0] as { content: unknown }).content).toBe("new 1");
+    expect((messages[2] as { content: unknown }).content).toBe("new 2");
+    expect((messages[4] as { content: unknown }).content).toBe("new 3");
+    // Non-assistant messages untouched
+    expect((messages[1] as { content: unknown }).content).toBe("question");
+  });
+
+  it("clears extra assistant messages when newContents is shorter", () => {
+    const messages = [
+      makeMsg("assistant", "turn 1"),
+      makeMsg("assistant", "turn 2"),
+      makeMsg("assistant", "turn 3"),
+    ];
+
+    rewriteAllAssistantContent(messages, ["only first"]);
+
+    expect((messages[0] as { content: unknown }).content).toBe("only first");
+    expect((messages[1] as { content: unknown }).content).toBe("");
+    expect((messages[2] as { content: unknown }).content).toBe("");
+  });
+
+  it("handles content-part arrays", () => {
+    const messages = [
+      makeMsg("assistant", [
+        { type: "text", text: "old part 1" },
+        { type: "text", text: "old part 2" },
+      ]),
+    ];
+
+    rewriteAllAssistantContent(messages, ["new content"]);
+
+    const parts = (messages[0] as { content: unknown }).content as Array<{
+      type: string;
+      text: string;
+    }>;
+    expect(parts[0].text).toBe("new content");
+    expect(parts[1].text).toBe("");
   });
 });

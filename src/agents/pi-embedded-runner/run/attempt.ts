@@ -1991,7 +1991,7 @@ export async function runEmbeddedAttempt(
         if (hookRunner?.hasHooks("before_response_emit") && assistantTexts.length > 0) {
           try {
             const { applyBeforeResponseEmitHook } = await import("./hook-response-emit.js");
-            const modifiedContent = await applyBeforeResponseEmitHook({
+            const emitResult = await applyBeforeResponseEmitHook({
               hookRunner,
               agentCtx: hookCtx,
               assistantTexts,
@@ -1999,16 +1999,19 @@ export async function runEmbeddedAttempt(
               activeSession,
               channel: params.messageChannel ?? params.messageProvider,
             });
-            if (modifiedContent !== undefined) {
-              if (modifiedContent === "") {
+            if (emitResult !== undefined) {
+              if (emitResult.blocked) {
                 // Blocked — suppress the entire accumulated response, not just
                 // the last chunk. Earlier tool-loop iterations may have added
                 // text that would otherwise escape the hook.
                 assistantTexts.splice(0, assistantTexts.length);
-              } else {
-                // Replace last assistant text with hook-modified content.
+              } else if (emitResult.allContent) {
+                // Full multi-turn modification — replace all assistant texts.
+                assistantTexts.splice(0, assistantTexts.length, ...emitResult.allContent);
+              } else if (emitResult.content !== undefined) {
+                // Single last-message modification (backward-compatible).
                 // assistantTexts.length > 0 is guaranteed by the outer guard.
-                assistantTexts[assistantTexts.length - 1] = modifiedContent;
+                assistantTexts[assistantTexts.length - 1] = emitResult.content;
               }
               // Refresh messagesSnapshot so downstream consumers (agent_end,
               // llm_output, cache trace) see the post-redaction content, not
