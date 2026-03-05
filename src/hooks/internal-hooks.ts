@@ -190,14 +190,7 @@ export interface InternalHookEvent {
   action: string;
   /** The session key this event relates to */
   sessionKey: string;
-  /**
-   * Additional context specific to the event.
-   *
-   * For command:new events (session saves), hooks can set:
-   * - `blockSessionSave: true` - Prevent session from being saved
-   * - `sessionSaveRedirectPath: string` - Save to alternate location (e.g., pending directory)
-   * - `sessionSaveContent: string` - Override session content to save
-   */
+  /** Additional context specific to the event. */
   context: Record<string, unknown>;
   /** Timestamp when the event occurred */
   timestamp: Date;
