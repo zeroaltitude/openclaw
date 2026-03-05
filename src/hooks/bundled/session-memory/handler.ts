@@ -300,11 +300,8 @@ const saveSessionToMemory: HookHandler = async (event) => {
     const redirectPath = context.sessionSaveRedirectPath;
     const isRedirected = typeof redirectPath === "string" && redirectPath.length > 0;
     // For redirects, compute a workspace-relative path so writeFileWithinRoot
-    // can validate containment. Absolute paths are made relative to the
-    // canonical workspace root (realpath) to avoid symlink aliasing issues
-    // where the same physical directory has different path representations.
-    // Canonicalize both workspace and redirect path to avoid symlink aliasing
-    // where the same physical directory has different path representations.
+    // can validate containment. Both workspace and redirect paths are
+    // canonicalized via realpath to avoid symlink aliasing issues.
     const canonicalWorkspace =
       isRedirected && path.isAbsolute(redirectPath)
         ? await fs.realpath(workspaceDir).catch(() => workspaceDir)

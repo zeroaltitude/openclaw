@@ -652,7 +652,7 @@ describe("session-memory hook", () => {
     await handler(event);
 
     const memoryDir = path.join(tempDir, "memory");
-    const files = await fs.readdir(memoryDir);
+    const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
     expect(files.length).toBeGreaterThan(0);
     const content = await fs.readFile(path.join(memoryDir, files[0]), "utf-8");
     expect(content).toContain("Custom summary from upstream hook");
@@ -680,7 +680,7 @@ describe("session-memory hook", () => {
     await handler(event);
 
     const memoryDir = path.join(tempDir, "memory");
-    const files = await fs.readdir(memoryDir);
+    const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
     expect(files.length).toBeGreaterThan(0);
     const content = await fs.readFile(path.join(memoryDir, files[0]), "utf-8");
     // Should NOT contain the original transcript
