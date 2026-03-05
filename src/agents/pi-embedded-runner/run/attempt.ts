@@ -1544,6 +1544,18 @@ export async function runEmbeddedAttempt(
         getCompactionCount,
       } = subscription;
 
+      // Build hook context early so the subscription callback can close over
+      // it without a temporal dead zone forward reference.
+      const hookCtx: import("../../../plugins/hooks.js").PluginHookAgentContext = {
+        agentId: sessionAgentId,
+        sessionKey: params.sessionKey,
+        sessionId: params.sessionId,
+        workspaceDir: params.workspaceDir,
+        messageProvider: params.messageProvider ?? undefined,
+        trigger: params.trigger,
+        channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+      };
+
       // Subscribe for LLM hook events (iteration tracking + after_llm_call)
       const hookIterationRefEarly = { current: 0 };
       let hookTurnIteration = 0;
@@ -1577,7 +1589,7 @@ export async function runEmbeddedAttempt(
                 ) {
                   for (const part of (msg as unknown as { content: Array<Record<string, unknown>> })
                     .content) {
-                    if (part && part.type === "toolCall") {
+                    if (part && isToolCallBlockType(part.type)) {
                       toolCalls.push({
                         id: (part.id as string) ?? "",
                         name: (part.name as string) ?? "",
@@ -1627,7 +1639,14 @@ export async function runEmbeddedAttempt(
                       iteration: eventIteration,
                     });
                   })
-                  .catch((err) => log.warn(`after_llm_call hook: ${String(err)}`));
+                  .catch((err) => {
+                    log.warn(`after_llm_call hook: ${String(err)}`);
+                    // Clear any stale gate so a failed hook doesn't leave
+                    // a previous turn's gate blocking tool calls.
+                    if (params.sessionId) {
+                      clearAfterLlmCallGate(params.sessionId);
+                    }
+                  });
               }
             })
           : undefined;
@@ -1704,17 +1723,6 @@ export async function runEmbeddedAttempt(
       }
 
       // Hook runner was already obtained earlier before tool creation
-      const hookAgentId = sessionAgentId;
-      const hookCtx: import("../../../plugins/hooks.js").PluginHookAgentContext = {
-        agentId: hookAgentId,
-        sessionKey: params.sessionKey,
-        sessionId: params.sessionId,
-        workspaceDir: params.workspaceDir,
-        messageProvider: params.messageProvider ?? undefined,
-        trigger: params.trigger,
-        channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-      };
-
       // Wrap streamFn for before_llm_call hooks — must be the outermost
       // wrapper so hooks see the full context first.
       if (hookRunner?.hasHooks("before_llm_call")) {
