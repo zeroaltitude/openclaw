@@ -1577,7 +1577,7 @@ export async function runEmbeddedAttempt(
                 hookTurnIteration++;
                 hookIterationRefEarly.current = hookTurnIteration;
                 // Clear stale gate decisions from the previous turn
-                if (params.sessionId) {
+                if (params.sessionId && hookRunner.hasHooks("after_llm_call")) {
                   clearAfterLlmCallGate(params.sessionId);
                 }
               }

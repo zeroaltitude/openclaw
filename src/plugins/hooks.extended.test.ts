@@ -222,7 +222,7 @@ describe("after_llm_call hook", () => {
     const result = await runner.runAfterLlmCall(baseEvent, agentCtx);
     expect(h1).toHaveBeenCalledOnce();
     expect(h2).toHaveBeenCalledOnce();
-    // h2 overrides h1's block decision
+    // h1 doesn't block, h2 sets block: true (not a latch override — h1 never blocked)
     expect(result?.block).toBe(true);
     expect(result?.blockReason).toBe("tainted context");
   });

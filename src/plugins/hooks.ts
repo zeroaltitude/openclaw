@@ -806,6 +806,12 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
         // for later plugins. This prevents a lower-priority plugin from bypassing
         // single-message redaction (content) by supplying allContent (which takes
         // precedence in application), or vice versa.
+        //
+        // NOTE for plugin authors: if two security plugins both need to redact,
+        // the higher-priority plugin wins. A lower-priority plugin's content or
+        // allContent is silently dropped when the cross-lock is engaged.
+        // Fix: ensure the higher-priority plugin handles all redaction, or
+        // consolidate into a single plugin.
         content:
           acc?.content !== undefined || acc?.allContent !== undefined ? acc?.content : next.content,
         allContent:
