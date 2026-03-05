@@ -1568,6 +1568,7 @@ export async function runEmbeddedAttempt(
       // event loop to await hooks between message_end and tool dispatch.
       const hookIterationRefEarly = { current: 0 };
       let hookTurnIteration = 0;
+      let hookMessageEndSeq = 0;
       let hookRunDisposed = false;
       const hookEventUnsub =
         hookRunner?.hasHooks("after_llm_call") || hookRunner?.hasHooks("before_llm_call")
@@ -1593,10 +1594,10 @@ export async function runEmbeddedAttempt(
                 if (msgRole !== "assistant") {
                   return;
                 }
-                // Capture iteration at event time — hookTurnIteration is mutable
-                // and may increment before the async .then() fires. Without this,
-                // a slow handler for turn N could set a gate for turn N+1.
+                // Capture iteration and sequence at event time — both are mutable
+                // and may change before the async .then() fires.
                 const eventIteration = hookTurnIteration;
+                const eventSeq = ++hookMessageEndSeq;
                 const toolCalls: Array<{
                   id: string;
                   name: string;
@@ -1646,6 +1647,17 @@ export async function runEmbeddedAttempt(
                       );
                       return;
                     }
+                    // Intra-turn staleness: within the same turn, multiple
+                    // message_end events share the same iteration. A slow handler
+                    // from an earlier message_end could resolve after a later one
+                    // already set the gate. The monotonic sequence counter ensures
+                    // only the latest message_end's result is applied.
+                    if (eventSeq !== hookMessageEndSeq) {
+                      log.debug(
+                        `after_llm_call: discarding stale intra-turn gate (seq=${eventSeq}, current=${hookMessageEndSeq})`,
+                      );
+                      return;
+                    }
                     // If hook returned no filter/block, clear any stale gate from
                     // a previous message_end in the same turn (multi-step tool loops).
                     if (!result || (!result.block && !result.toolCalls)) {
@@ -1665,8 +1677,14 @@ export async function runEmbeddedAttempt(
                   .catch((err) => {
                     log.warn(`after_llm_call hook: ${String(err)}`);
                     // Clear any stale gate so a failed hook doesn't leave
-                    // a previous turn's gate blocking tool calls.
-                    if (params.sessionId && !hookRunDisposed) {
+                    // a previous turn's gate blocking tool calls — but only
+                    // if this is still the latest message_end event.
+                    if (
+                      params.sessionId &&
+                      !hookRunDisposed &&
+                      eventSeq === hookMessageEndSeq &&
+                      eventIteration === hookTurnIteration
+                    ) {
                       clearAfterLlmCallGate(params.sessionId);
                     }
                   });
