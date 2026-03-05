@@ -309,10 +309,16 @@ const saveSessionToMemory: HookHandler = async (event) => {
       isRedirected && path.isAbsolute(redirectPath)
         ? await fs.realpath(workspaceDir).catch(() => workspaceDir)
         : workspaceDir;
-    const canonicalRedirect =
-      isRedirected && path.isAbsolute(redirectPath)
-        ? await fs.realpath(redirectPath).catch(() => redirectPath)
-        : redirectPath;
+    // Canonicalize the redirect path. For new files that don't exist yet,
+    // realpath fails — so canonicalize the parent directory and re-append
+    // the filename. This handles symlink-aliased workspaces correctly.
+    let canonicalRedirect = redirectPath;
+    if (isRedirected && path.isAbsolute(redirectPath)) {
+      const redirectParent = path.dirname(redirectPath);
+      const redirectBase = path.basename(redirectPath);
+      const canonicalParent = await fs.realpath(redirectParent).catch(() => redirectParent);
+      canonicalRedirect = path.join(canonicalParent, redirectBase);
+    }
     const writeRelativePath = isRedirected
       ? path.isAbsolute(redirectPath)
         ? path.relative(canonicalWorkspace, canonicalRedirect)
