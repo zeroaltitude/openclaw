@@ -253,7 +253,10 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // transcript loading and LLM slug generation to avoid leaking raw
     // session text to the model provider in redaction workflows.
     const customContent = event.context.sessionSaveContent;
-    const hasCustomContent = typeof customContent === "string" && customContent.length > 0;
+    // Treat any string value (including empty) as a custom content override.
+    // An empty string is a valid redaction signal — hooks may intentionally
+    // set it to persist a blank marker while avoiding transcript retention.
+    const hasCustomContent = typeof customContent === "string";
 
     if (sessionFile && !hasCustomContent) {
       // Get recent conversation content, with fallback to rotated reset transcript.
