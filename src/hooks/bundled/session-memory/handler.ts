@@ -11,7 +11,7 @@ import path from "node:path";
 import { resolveAgentWorkspaceDir } from "../../../agents/agent-scope.js";
 import type { OpenClawConfig } from "../../../config/config.js";
 import { resolveStateDir } from "../../../config/paths.js";
-import { writeFileWithinRoot } from "../../../infra/fs-safe.js";
+import { SafeOpenError, writeFileWithinRoot } from "../../../infra/fs-safe.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
 import { hasInterSessionUserProvenance } from "../../../sessions/input-provenance.js";
@@ -22,8 +22,28 @@ import { generateSlugViaLLM } from "../../llm-slug-generator.js";
 const log = createSubsystemLogger("hooks/session-memory");
 
 /**
- * Read recent messages from session file for slug generation
+ * Canonicalize an absolute path by walking up to the nearest existing ancestor
+ * and resolving symlinks from there. Handles cases like macOS /tmp → /private/tmp
+ * where the target file (or its parent dirs) don't exist yet.
  */
+async function canonicalizeViaAncestor(absPath: string): Promise<string> {
+  let current = absPath;
+  const suffix: string[] = [];
+  while (true) {
+    try {
+      const real = await fs.realpath(current);
+      return suffix.length > 0 ? path.join(real, ...suffix) : real;
+    } catch {
+      suffix.unshift(path.basename(current));
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return absPath;
+      } // reached filesystem root
+      current = parent;
+    }
+  }
+}
+
 async function getRecentSessionContent(
   sessionFilePath: string,
   messageCount: number = 15,
@@ -181,13 +201,22 @@ const saveSessionToMemory: HookHandler = async (event) => {
     log.debug("Hook triggered for reset/new command", { action: event.action });
 
     const context = event.context || {};
+
+    // Check if another hook (e.g., security plugin) blocked the save.
+    // Inside the try block for consistent error handling with the rest of the handler.
+    if (context.blockSessionSave === true) {
+      log.debug("Session save blocked by upstream hook");
+      return;
+    }
     const cfg = context.cfg as OpenClawConfig | undefined;
     const agentId = resolveAgentIdFromSessionKey(event.sessionKey);
     const workspaceDir = cfg
       ? resolveAgentWorkspaceDir(cfg, agentId)
       : path.join(resolveStateDir(process.env, os.homedir), "workspace");
-    const memoryDir = path.join(workspaceDir, "memory");
-    await fs.mkdir(memoryDir, { recursive: true });
+    // Ensure workspace root exists — writeFileWithinRoot creates subdirectories
+    // but requires the root to be present (resolvePathWithinRoot calls realpath
+    // on it). This is normally a no-op since the workspace is created at startup.
+    await fs.mkdir(workspaceDir, { recursive: true });
 
     // Get today's date for filename
     const now = new Date(event.timestamp);
@@ -243,7 +272,19 @@ const saveSessionToMemory: HookHandler = async (event) => {
     let slug: string | null = null;
     let sessionContent: string | null = null;
 
-    if (sessionFile) {
+    // Check early if upstream hook provided custom content — if so, skip
+    // transcript loading and LLM slug generation to avoid leaking raw
+    // session text to the model provider in redaction workflows.
+    const customContent = context.sessionSaveContent;
+    // Treat any string value (including empty) as a custom content override.
+    // An empty string is a valid redaction signal — hooks may intentionally
+    // set it to persist a blank marker while avoiding transcript retention.
+    const hasCustomContent = typeof customContent === "string";
+
+    const redirectPath = context.sessionSaveRedirectPath;
+    const isRedirected = typeof redirectPath === "string" && redirectPath.length > 0;
+
+    if (sessionFile && !hasCustomContent) {
       // Get recent conversation content, with fallback to rotated reset transcript.
       sessionContent = await getRecentSessionContentWithResetFallback(sessionFile, messageCount);
       log.debug("Session content loaded", {
@@ -259,7 +300,9 @@ const saveSessionToMemory: HookHandler = async (event) => {
         process.env.NODE_ENV === "test";
       const allowLlmSlug = !isTestEnv && hookConfig?.llmSlug !== false;
 
-      if (sessionContent && cfg && allowLlmSlug) {
+      // Skip LLM slug generation when redirect path is set — the slug is only
+      // used for the default filename, which is unused when isRedirected is true.
+      if (sessionContent && cfg && allowLlmSlug && !isRedirected) {
         log.debug("Calling generateSlugViaLLM...");
         // Use LLM to generate a descriptive slug
         slug = await generateSlugViaLLM({ sessionContent, cfg });
@@ -270,16 +313,41 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // If no slug, use timestamp
     if (!slug) {
       const timeSlug = now.toISOString().split("T")[1].split(".")[0].replace(/:/g, "");
-      slug = timeSlug.slice(0, 4); // HHMM
+      slug = timeSlug.slice(0, 6); // HHMMSS — includes seconds to avoid overwrites
       log.debug("Using fallback timestamp slug", { slug });
     }
 
     // Create filename with date and slug
     const filename = `${dateStr}-${slug}.md`;
-    const memoryFilePath = path.join(memoryDir, filename);
+
+    // Determine write target. Redirect paths are validated by writeFileWithinRoot
+    // which handles path traversal, symlink resolution, and containment checks.
+    // (redirectPath and isRedirected are declared above, before slug generation,
+    // to avoid TDZ issues.)
+    // For redirects, compute a workspace-relative path so writeFileWithinRoot
+    // can validate containment. Both workspace and redirect paths are
+    // canonicalized via realpath to avoid symlink aliasing issues.
+    const canonicalWorkspace =
+      isRedirected && path.isAbsolute(redirectPath)
+        ? await fs.realpath(workspaceDir).catch(() => workspaceDir)
+        : workspaceDir;
+    // Canonicalize the redirect path by walking up to the nearest existing
+    // ancestor. This handles macOS /tmp → /private/tmp symlinks and other
+    // cases where the redirect target's parent doesn't exist yet.
+    let canonicalRedirect = redirectPath as string;
+    if (isRedirected && path.isAbsolute(redirectPath)) {
+      canonicalRedirect = await canonicalizeViaAncestor(redirectPath);
+    }
+    const writeRelativePath = isRedirected
+      ? path.isAbsolute(redirectPath)
+        ? path.relative(canonicalWorkspace, canonicalRedirect)
+        : redirectPath
+      : path.join("memory", filename);
+
     log.debug("Memory file path resolved", {
       filename,
-      path: memoryFilePath.replace(os.homedir(), "~"),
+      redirected: isRedirected,
+      relativePath: writeRelativePath,
     });
 
     // Format time as HH:MM:SS UTC
@@ -289,35 +357,98 @@ const saveSessionToMemory: HookHandler = async (event) => {
     const sessionId = (sessionEntry.sessionId as string) || "unknown";
     const source = (context.commandSource as string) || "unknown";
 
-    // Build Markdown entry
-    const entryParts = [
-      `# Session: ${dateStr} ${timeStr} UTC`,
-      "",
-      `- **Session Key**: ${event.sessionKey}`,
-      `- **Session ID**: ${sessionId}`,
-      `- **Source**: ${source}`,
-      "",
-    ];
+    // Use custom content from upstream hook if available (checked earlier)
+    let entry: string;
 
-    // Include conversation content if available
-    if (sessionContent) {
-      entryParts.push("## Conversation Summary", "", sessionContent, "");
+    if (hasCustomContent) {
+      // Use custom content provided by upstream hook
+      entry = customContent;
+      log.debug("Using custom session content from upstream hook");
+    } else {
+      // Build Markdown entry
+      const entryParts = [
+        `# Session: ${dateStr} ${timeStr} UTC`,
+        "",
+        `- **Session Key**: ${event.sessionKey}`,
+        `- **Session ID**: ${sessionId}`,
+        `- **Source**: ${source}`,
+        "",
+      ];
+
+      // Include conversation content if available
+      if (sessionContent) {
+        entryParts.push("## Conversation Summary", "", sessionContent, "");
+      }
+
+      entry = entryParts.join("\n");
     }
 
-    const entry = entryParts.join("\n");
+    // Write session memory — writeFileWithinRoot handles path traversal,
+    // symlink resolution, containment validation, and mkdir in one call.
+    // Root is always workspaceDir; the relative path encodes the target.
+    // If a redirect path fails validation, the handler fails closed
+    // (returns without writing) to avoid defeating quarantine intent.
 
-    // Write under memory root with alias-safe file validation.
-    await writeFileWithinRoot({
-      rootDir: memoryDir,
-      relativePath: filename,
-      data: entry,
-      encoding: "utf-8",
-    });
-    log.debug("Memory file written successfully");
+    // Write scope: redirect paths use workspace/ as root (not memory/) to
+    // support quarantine and custom save locations. This is intentional —
+    // upstream hooks (e.g. provenance) need flexibility to direct saves to
+    // arbitrary workspace subdirs. Security is enforced by writeFileWithinRoot
+    // (path traversal, symlink, containment checks) preventing workspace escape.
+    // Non-redirect writes remain scoped to memory/ via hardcoded path prefix.
+    if (isRedirected) {
+      try {
+        await writeFileWithinRoot({
+          rootDir: workspaceDir,
+          relativePath: writeRelativePath,
+          data: entry,
+          encoding: "utf-8",
+        });
+        log.debug("Memory file written to redirect path");
+      } catch (redirectErr) {
+        // ALL SafeOpenError codes fail closed — no fallback to default memory dir.
+        // This includes outside-workspace, symlink, path-mismatch, invalid-path,
+        // and not-file. Any of these could result from adversarial filesystem state
+        // (e.g. symlink at quarantine path) or policy intent (outside-workspace
+        // redirect). Falling back would silently defeat the upstream plugin's
+        // quarantine/isolation intent. Non-SafeOpenError failures (ENOSPC, EACCES)
+        // also fail closed to avoid bypassing policy on operational errors.
+        const code = redirectErr instanceof SafeOpenError ? redirectErr.code : "io-error";
+        log.warn(
+          `sessionSaveRedirectPath rejected (${code}) — failing closed. ` +
+            `Session memory not saved. Fix the redirect path or set blockSessionSave=true.`,
+        );
+        if (!(redirectErr instanceof SafeOpenError)) {
+          // Log the underlying error for debugging operational failures
+          log.debug(`Redirect write error detail: ${String(redirectErr)}`);
+        }
+        return;
+      }
+    } else {
+      // Non-redirect writes use memory/ as the containment root (narrower than
+      // workspace/) so a misbehaving slug generator can't write outside memory/.
+      const memoryDir = path.join(workspaceDir, "memory");
+      await fs.mkdir(memoryDir, { recursive: true });
+      try {
+        await writeFileWithinRoot({
+          rootDir: memoryDir,
+          relativePath: filename,
+          data: entry,
+          encoding: "utf-8",
+        });
+      } catch (writeErr) {
+        if (writeErr instanceof SafeOpenError) {
+          log.warn("Non-redirect session save rejected by path validation", {
+            errorCode: writeErr.code,
+            filename,
+          });
+          return;
+        }
+        throw writeErr;
+      }
+      log.debug("Memory file written successfully");
+    }
 
-    // Log completion (but don't send user-visible confirmation - it's internal housekeeping)
-    const relPath = memoryFilePath.replace(os.homedir(), "~");
-    log.info(`Session context saved to ${relPath}`);
+    log.info(`Session context saved to ${writeRelativePath}`);
   } catch (err) {
     if (err instanceof Error) {
       log.error("Failed to save session memory", {
