@@ -277,7 +277,9 @@ const saveSessionToMemory: HookHandler = async (event) => {
         process.env.NODE_ENV === "test";
       const allowLlmSlug = !isTestEnv && hookConfig?.llmSlug !== false;
 
-      if (sessionContent && cfg && allowLlmSlug) {
+      // Skip LLM slug generation when redirect path is set — the slug is only
+      // used for the default filename, which is unused when isRedirected is true.
+      if (sessionContent && cfg && allowLlmSlug && !isRedirected) {
         log.debug("Calling generateSlugViaLLM...");
         // Use LLM to generate a descriptive slug
         slug = await generateSlugViaLLM({ sessionContent, cfg });
@@ -308,7 +310,10 @@ const saveSessionToMemory: HookHandler = async (event) => {
         : workspaceDir;
     // Canonicalize the redirect path. For new files that don't exist yet,
     // realpath fails — so canonicalize the parent directory and re-append
-    // the filename. This handles symlink-aliased workspaces correctly.
+    // the filename. NOTE: if the workspace itself is a symlink and the
+    // redirect parent does not yet exist, realpath falls back to the raw
+    // path, which may cause a spurious outside-workspace rejection (fails
+    // closed safely — no data loss, but the redirect is silently dropped).
     let canonicalRedirect = redirectPath;
     if (isRedirected && path.isAbsolute(redirectPath)) {
       const redirectParent = path.dirname(redirectPath);
