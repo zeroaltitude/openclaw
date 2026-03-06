@@ -506,6 +506,7 @@ export async function runPreparedReply(
       senderUsername: sessionCtx.SenderUsername?.trim() || undefined,
       senderE164: sessionCtx.SenderE164?.trim() || undefined,
       senderIsOwner: command.senderIsOwner,
+      spawnedBy: sessionEntry?.spawnedBy ?? undefined,
       sessionFile,
       workspaceDir,
       config: cfg,
