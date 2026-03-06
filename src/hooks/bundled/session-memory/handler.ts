@@ -51,6 +51,10 @@ function resolveDisplaySessionKey(params: {
  * Canonicalize an absolute path by walking up to the nearest existing ancestor
  * and resolving symlinks from there. Handles cases like macOS /tmp → /private/tmp
  * where the target file (or its parent dirs) don't exist yet.
+ *
+ * WARNING: This is a symlink-resolution helper only. The output is NOT guaranteed
+ * to be workspace-confined — callers MUST validate containment separately
+ * (e.g., via writeFileWithinRoot).
  */
 async function canonicalizeViaAncestor(absPath: string): Promise<string> {
   let current = absPath;
@@ -379,7 +383,7 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // canonicalized via realpath to avoid symlink aliasing issues.
     const canonicalWorkspace =
       isRedirected && path.isAbsolute(redirectPath)
-        ? await fs.realpath(workspaceDir).catch(() => workspaceDir)
+        ? await fs.realpath(workspaceDir)
         : workspaceDir;
     // Canonicalize the redirect path by walking up to the nearest existing
     // ancestor. This handles macOS /tmp → /private/tmp symlinks and other
