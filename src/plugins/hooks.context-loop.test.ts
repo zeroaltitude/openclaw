@@ -35,6 +35,7 @@ describe("context_assembled hook", () => {
     messageCount: 1,
     imageCount: 0,
     iteration: 1,
+    attemptIndex: 0,
   };
 
   it("fires handler with correct event shape", async () => {
