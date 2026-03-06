@@ -34,7 +34,6 @@ describe("context_assembled hook", () => {
     messages: [fakeMsg("user", "hi")],
     messageCount: 1,
     imageCount: 0,
-    iteration: 1,
     attemptIndex: 0,
     runId: "test-run-1",
   };
@@ -50,7 +49,7 @@ describe("context_assembled hook", () => {
     expect(event).toMatchObject({
       systemPrompt: "You are helpful.",
       messageCount: 1,
-      iteration: 1,
+      attemptIndex: 0,
     });
     expect(ctx).toBe(agentCtx);
   });

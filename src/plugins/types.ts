@@ -1898,13 +1898,13 @@ export type PluginHookContextAssembledEvent = {
   systemPrompt: string;
   /** The effective user prompt for this turn (after hook modifications). */
   prompt: string;
+  /** Snapshot of messages at context assembly time. The array is shallow-copied
+   *  to prevent handlers from modifying the message list, but message objects
+   *  themselves are shared references. Handlers should treat messages as read-only. */
   messages: AgentMessage[];
   messageCount: number;
   /** Number of images attached to the prompt. */
   imageCount: number;
-  /** Always 1 within an attempt — this hook fires once per attempt before
-   *  the first LLM call. Use loop_iteration_start for per-turn tracking. */
-  iteration: number;
   /** Zero-based attempt index within the outer run loop. 0 = initial attempt,
    *  1+ = retry after overflow compaction, auth refresh, or tool result truncation.
    *  Context (messages, systemPrompt) may differ between attempts due to compaction.

@@ -2600,7 +2600,11 @@ export async function runEmbeddedAttempt(
                     },
                     hookCtx,
                   )
-                  .catch((err) => log.warn(`loop_iteration_start hook: ${String(err)}`));
+                  .catch((err) =>
+                    log.warn(
+                      `loop_iteration_start hook failed: runId=${params.runId} iteration=${hookTurnIteration} ${String(err)}`,
+                    ),
+                  );
               }
               if (event.type === "turn_end") {
                 const toolResults = event.toolResults ?? [];
@@ -2616,7 +2620,11 @@ export async function runEmbeddedAttempt(
                     },
                     hookCtx,
                   )
-                  .catch((err) => log.warn(`loop_iteration_end hook: ${String(err)}`));
+                  .catch((err) =>
+                    log.warn(
+                      `loop_iteration_end hook failed: runId=${params.runId} iteration=${hookTurnIteration} ${String(err)}`,
+                    ),
+                  );
               }
             })
           : undefined;
@@ -2851,13 +2859,14 @@ export async function runEmbeddedAttempt(
             );
           }
 
-          // Fire context_assembled hook — gives plugins a snapshot of the full
-          // context before the first LLM call in this attempt. Fires once per
-          // attempt (not once per run): the outer runner may re-enter
-          // runEmbeddedAttempt after overflow compaction, auth retry, or tool
-          // result truncation, each of which can change the context. Plugins
-          // that need run-level deduplication should use runId.
-          // attemptIndex distinguishes initial assembly (0) from retries (1+).
+          // Fire context_assembled hook once per attempt, before the first LLM call.
+          // Note: A single user-visible "run" may have multiple "attempts" due to:
+          // - Overflow compaction
+          // - Auth retry
+          // - Tool result truncation
+          // Each attempt fires this hook with potentially different context.
+          // Plugins needing run-level deduplication should key on event.runId.
+          // Use attemptIndex to distinguish initial (0) from retries (1+).
           // Use loop_iteration_start for per-turn tracking within an attempt.
           if (hookRunner?.hasHooks("context_assembled")) {
             // Snapshot messages array to avoid mutation during async hook handling.
@@ -2871,12 +2880,15 @@ export async function runEmbeddedAttempt(
                   messages: contextMessagesSnapshot,
                   messageCount: contextMessagesSnapshot.length,
                   imageCount: imageResult.images.length,
-                  iteration: 1,
-                  attemptIndex: params.attemptIndex ?? 0,
+                  attemptIndex: params.attemptIndex,
                 },
                 hookCtx,
               )
-              .catch((err) => log.warn(`context_assembled hook: ${String(err)}`));
+              .catch((err) =>
+                log.warn(
+                  `context_assembled hook failed: runId=${params.runId} attempt=${params.attemptIndex} ${String(err)}`,
+                ),
+              );
           }
 
           if (hookRunner?.hasHooks("llm_input")) {
