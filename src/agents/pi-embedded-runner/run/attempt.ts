@@ -858,7 +858,6 @@ export async function runEmbeddedAttempt(
           senderUsername: params.senderUsername,
           senderE164: params.senderE164,
           senderIsOwner: params.senderIsOwner,
-          sourceProvider: params.sourceProvider,
           sessionKey: sandboxSessionKey,
           sessionId: params.sessionId,
           runId: params.runId,
