@@ -14,17 +14,17 @@ import {
 } from "../../../agents/agent-scope.js";
 import type { OpenClawConfig } from "../../../config/config.js";
 import { resolveStateDir } from "../../../config/paths.js";
-import { writeFileWithinRoot } from "../../../infra/fs-safe.js";
+import { SafeOpenError, writeFileWithinRoot } from "../../../infra/fs-safe.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import {
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
   toAgentStoreSessionKey,
 } from "../../../routing/session-key.js";
+import { hasInterSessionUserProvenance } from "../../../sessions/input-provenance.js";
 import { resolveHookConfig } from "../../config.js";
 import type { HookHandler } from "../../hooks.js";
 import { generateSlugViaLLM } from "../../llm-slug-generator.js";
-import { findPreviousSessionFile, getRecentSessionContentWithResetFallback } from "./transcript.js";
 
 const log = createSubsystemLogger("hooks/session-memory");
 
@@ -45,6 +45,175 @@ function resolveDisplaySessionKey(params: {
     agentId: workspaceAgentId,
     requestKey: parsed.rest,
   });
+}
+
+/**
+ * Canonicalize an absolute path by walking up to the nearest existing ancestor
+ * and resolving symlinks from there. Handles cases like macOS /tmp → /private/tmp
+ * where the target file (or its parent dirs) don't exist yet.
+ */
+async function canonicalizeViaAncestor(absPath: string): Promise<string> {
+  let current = absPath;
+  const suffix: string[] = [];
+  while (true) {
+    try {
+      const real = await fs.realpath(current);
+      return suffix.length > 0 ? path.join(real, ...suffix) : real;
+    } catch {
+      suffix.unshift(path.basename(current));
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return absPath;
+      } // reached filesystem root
+      current = parent;
+    }
+  }
+}
+
+/**
+ * Read recent messages from session file for slug generation
+ */
+async function getRecentSessionContent(
+  sessionFilePath: string,
+  messageCount: number = 15,
+): Promise<string | null> {
+  try {
+    const content = await fs.readFile(sessionFilePath, "utf-8");
+    const lines = content.trim().split("\n");
+
+    // Parse JSONL and extract user/assistant messages first
+    const allMessages: string[] = [];
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        // Session files have entries with type="message" containing a nested message object
+        if (entry.type === "message" && entry.message) {
+          const msg = entry.message;
+          const role = msg.role;
+          if ((role === "user" || role === "assistant") && msg.content) {
+            if (role === "user" && hasInterSessionUserProvenance(msg)) {
+              continue;
+            }
+            // Extract text content
+            const text = Array.isArray(msg.content)
+              ? // oxlint-disable-next-line typescript/no-explicit-any
+                msg.content.find((c: any) => c.type === "text")?.text
+              : msg.content;
+            if (text && !text.startsWith("/")) {
+              allMessages.push(`${role}: ${text}`);
+            }
+          }
+        }
+      } catch {
+        // Skip invalid JSON lines
+      }
+    }
+
+    // Then slice to get exactly messageCount messages
+    const recentMessages = allMessages.slice(-messageCount);
+    return recentMessages.join("\n");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Try the active transcript first; if /new already rotated it,
+ * fallback to the latest .jsonl.reset.* sibling.
+ */
+async function getRecentSessionContentWithResetFallback(
+  sessionFilePath: string,
+  messageCount: number = 15,
+): Promise<string | null> {
+  const primary = await getRecentSessionContent(sessionFilePath, messageCount);
+  if (primary) {
+    return primary;
+  }
+
+  try {
+    const dir = path.dirname(sessionFilePath);
+    const base = path.basename(sessionFilePath);
+    const resetPrefix = `${base}.reset.`;
+    const files = await fs.readdir(dir);
+    const resetCandidates = files.filter((name) => name.startsWith(resetPrefix)).toSorted();
+
+    if (resetCandidates.length === 0) {
+      return primary;
+    }
+
+    const latestResetPath = path.join(dir, resetCandidates[resetCandidates.length - 1]);
+    const fallback = await getRecentSessionContent(latestResetPath, messageCount);
+
+    if (fallback) {
+      log.debug("Loaded session content from reset fallback", {
+        sessionFilePath,
+        latestResetPath,
+      });
+    }
+
+    return fallback || primary;
+  } catch {
+    return primary;
+  }
+}
+
+function stripResetSuffix(fileName: string): string {
+  const resetIndex = fileName.indexOf(".reset.");
+  return resetIndex === -1 ? fileName : fileName.slice(0, resetIndex);
+}
+
+async function findPreviousSessionFile(params: {
+  sessionsDir: string;
+  currentSessionFile?: string;
+  sessionId?: string;
+}): Promise<string | undefined> {
+  try {
+    const files = await fs.readdir(params.sessionsDir);
+    const fileSet = new Set(files);
+
+    const baseFromReset = params.currentSessionFile
+      ? stripResetSuffix(path.basename(params.currentSessionFile))
+      : undefined;
+    if (baseFromReset && fileSet.has(baseFromReset)) {
+      return path.join(params.sessionsDir, baseFromReset);
+    }
+
+    const trimmedSessionId = params.sessionId?.trim();
+    if (trimmedSessionId) {
+      const canonicalFile = `${trimmedSessionId}.jsonl`;
+      if (fileSet.has(canonicalFile)) {
+        return path.join(params.sessionsDir, canonicalFile);
+      }
+
+      const topicVariants = files
+        .filter(
+          (name) =>
+            name.startsWith(`${trimmedSessionId}-topic-`) &&
+            name.endsWith(".jsonl") &&
+            !name.includes(".reset."),
+        )
+        .toSorted()
+        .toReversed();
+      if (topicVariants.length > 0) {
+        return path.join(params.sessionsDir, topicVariants[0]);
+      }
+    }
+
+    if (!params.currentSessionFile) {
+      return undefined;
+    }
+
+    const nonResetJsonl = files
+      .filter((name) => name.endsWith(".jsonl") && !name.includes(".reset."))
+      .toSorted()
+      .toReversed();
+    if (nonResetJsonl.length > 0) {
+      return path.join(params.sessionsDir, nonResetJsonl[0]);
+    }
+  } catch {
+    // Ignore directory read errors.
+  }
+  return undefined;
 }
 
 /**
@@ -85,6 +254,10 @@ const saveSessionToMemory: HookHandler = async (event) => {
       workspaceDir: contextWorkspaceDir,
       sessionKey: event.sessionKey,
     });
+    // Ensure workspace root exists — writeFileWithinRoot creates subdirectories
+    // but requires the root to be present (resolvePathWithinRoot calls realpath
+    // on it). This is normally a no-op since the workspace is created at startup.
+    await fs.mkdir(workspaceDir, { recursive: true });
     const memoryDir = path.join(workspaceDir, "memory");
 
     // Get today's date for filename
@@ -147,6 +320,9 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // or sending it to a model provider when saving is explicitly blocked.
     const blockPreSet = context.blockSessionSave === true;
 
+    const redirectPath = context.sessionSaveRedirectPath;
+    const isRedirected = typeof redirectPath === "string" && redirectPath.length > 0;
+
     // Known limitation: if an earlier hook pre-sets sessionSaveContent and
     // a later hook *clears* it (expecting a revert to the default
     // transcript), the transcript is not available — it was never loaded
@@ -171,7 +347,9 @@ const saveSessionToMemory: HookHandler = async (event) => {
         process.env.NODE_ENV === "test";
       const allowLlmSlug = !isTestEnv && hookConfig?.llmSlug !== false;
 
-      if (sessionContent && cfg && allowLlmSlug) {
+      // Skip LLM slug generation when redirect path is set — the slug is only
+      // used for the default filename, which is unused when isRedirected is true.
+      if (sessionContent && cfg && allowLlmSlug && !isRedirected) {
         log.debug("Calling generateSlugViaLLM...");
         // Use LLM to generate a descriptive slug
         slug = await generateSlugViaLLM({ sessionContent, cfg });
@@ -193,11 +371,36 @@ const saveSessionToMemory: HookHandler = async (event) => {
 
     // Create filename with date and slug
     const filename = `${dateStr}-${slug}.md`;
-    const memoryFilePath = path.join(memoryDir, filename);
+
+    // Determine write target. Redirect paths are validated by writeFileWithinRoot
+    // which handles path traversal, symlink resolution, and containment checks.
+    // For redirects, compute a workspace-relative path so writeFileWithinRoot
+    // can validate containment. Both workspace and redirect paths are
+    // canonicalized via realpath to avoid symlink aliasing issues.
+    const canonicalWorkspace =
+      isRedirected && path.isAbsolute(redirectPath)
+        ? await fs.realpath(workspaceDir).catch(() => workspaceDir)
+        : workspaceDir;
+    // Canonicalize the redirect path by walking up to the nearest existing
+    // ancestor. This handles macOS /tmp → /private/tmp symlinks and other
+    // cases where the redirect target's parent doesn't exist yet.
+    let canonicalRedirect = redirectPath as string;
+    if (isRedirected && path.isAbsolute(redirectPath)) {
+      canonicalRedirect = await canonicalizeViaAncestor(redirectPath);
+    }
+    const writeRelativePath = isRedirected
+      ? path.isAbsolute(redirectPath)
+        ? path.relative(canonicalWorkspace, canonicalRedirect)
+        : redirectPath
+      : path.join("memory", filename);
+
     log.debug("Memory file path resolved", {
       filename,
-      path: memoryFilePath.replace(os.homedir(), "~"),
+      redirected: isRedirected,
+      relativePath: writeRelativePath,
     });
+
+    const memoryFilePath = path.join(memoryDir, filename);
 
     // Format time as HH:MM:SS UTC
     const timeStr = now.toISOString().split("T")[1].split(".")[0];
@@ -238,6 +441,35 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // If blockSessionSave was already set by an upstream hook, skip the write.
     if (context.blockSessionSave === true) {
       log.debug("Session save blocked by upstream hook (inline check)");
+    } else if (isRedirected) {
+      // Write session memory to redirect path — writeFileWithinRoot handles
+      // path traversal, symlink resolution, and containment validation.
+      // If a redirect path fails validation, the handler fails closed
+      // (no fallback to default memory dir — this is a security decision).
+      //
+      // Write scope: redirect paths use workspace/ as root (not memory/) to
+      // allow quarantine directories outside memory/. Non-redirects use memory/.
+      try {
+        await writeFileWithinRoot({
+          rootDir: canonicalWorkspace,
+          relativePath: writeRelativePath,
+          data: entry,
+          encoding: "utf-8",
+        });
+      } catch (err) {
+        if (err instanceof SafeOpenError) {
+          log.warn("Redirect path rejected — failing closed (no fallback)", {
+            redirectPath,
+            reason: err.message,
+          });
+          return;
+        }
+        throw err;
+      }
+      log.debug("Memory file written successfully (redirected)");
+      const writePath = path.resolve(canonicalWorkspace, writeRelativePath);
+      const relPath = writePath.replace(os.homedir(), "~");
+      log.info(`Session context saved to ${relPath}`);
     } else {
       await fs.mkdir(memoryDir, { recursive: true });
       await writeFileWithinRoot({
@@ -255,49 +487,55 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // Defer retraction/replacement to post-hook phase so that hooks
     // registered after this handler can set blockSessionSave or
     // sessionSaveContent and still have them honored.
+    // Note: post-hook retraction/replacement is skipped for redirected writes —
+    // redirect paths are a security mechanism where the hook explicitly chose
+    // an alternative location; overriding that in post-hook would undermine the
+    // redirect contract.
     const writtenEntry = context.blockSessionSave === true ? null : entry;
-    // Post-hook callback — errors propagate to the framework's per-action
-    // catch in triggerInternalHook, which provides consistent log formatting
-    // and per-action isolation.
-    event.postHookActions.push(async () => {
-      // If a later hook blocked the save, retract the file we just wrote.
-      if (event.context.blockSessionSave === true && writtenEntry !== null) {
-        try {
-          await fs.unlink(memoryFilePath);
-          log.debug("Session save retracted by post-hook (blockSessionSave)");
-        } catch (err) {
-          // File may not exist if inline write also didn't happen — that's fine.
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-            throw err;
+    if (!isRedirected) {
+      // Post-hook callback — errors propagate to the framework's per-action
+      // catch in triggerInternalHook, which provides consistent log formatting
+      // and per-action isolation.
+      event.postHookActions.push(async () => {
+        // If a later hook blocked the save, retract the file we just wrote.
+        if (event.context.blockSessionSave === true && writtenEntry !== null) {
+          try {
+            await fs.unlink(memoryFilePath);
+            log.debug("Session save retracted by post-hook (blockSessionSave)");
+          } catch (err) {
+            // File may not exist if inline write also didn't happen — that's fine.
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw err;
+            }
           }
+          return;
         }
-        return;
-      }
 
-      // If a later hook set sessionSaveContent, overwrite with new content.
-      // blockSessionSave takes precedence — never create/overwrite a file that
-      // was blocked, even if sessionSaveContent is also set.
-      const postContent = event.context.sessionSaveContent;
-      if (
-        event.context.blockSessionSave !== true &&
-        typeof postContent === "string" &&
-        postContent !== writtenEntry
-      ) {
-        // Ensure memoryDir exists — the inline write may have been
-        // skipped (e.g. blockSessionSave was true initially) so mkdir
-        // might never have run.
-        await fs.mkdir(memoryDir, { recursive: true });
-        await writeFileWithinRoot({
-          rootDir: memoryDir,
-          relativePath: filename,
-          data: postContent,
-          encoding: "utf-8",
-        });
-        log.debug("Session save content replaced by post-hook (sessionSaveContent)", {
-          length: postContent.length,
-        });
-      }
-    });
+        // If a later hook set sessionSaveContent, overwrite with new content.
+        // blockSessionSave takes precedence — never create/overwrite a file that
+        // was blocked, even if sessionSaveContent is also set.
+        const postContent = event.context.sessionSaveContent;
+        if (
+          event.context.blockSessionSave !== true &&
+          typeof postContent === "string" &&
+          postContent !== writtenEntry
+        ) {
+          // Ensure memoryDir exists — the inline write may have been
+          // skipped (e.g. blockSessionSave was true initially) so mkdir
+          // might never have run.
+          await fs.mkdir(memoryDir, { recursive: true });
+          await writeFileWithinRoot({
+            rootDir: memoryDir,
+            relativePath: filename,
+            data: postContent,
+            encoding: "utf-8",
+          });
+          log.debug("Session save content replaced by post-hook (sessionSaveContent)", {
+            length: postContent.length,
+          });
+        }
+      });
+    }
   } catch (err) {
     if (err instanceof Error) {
       log.error("Failed to save session memory", {
