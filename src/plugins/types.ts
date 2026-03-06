@@ -332,6 +332,9 @@ export type PluginHookName =
   | "subagent_ended"
   | "gateway_start"
   | "gateway_stop"
+  | "before_llm_call"
+  | "after_llm_call"
+  | "before_response_emit"
   | "context_assembled"
   | "loop_iteration_start"
   | "loop_iteration_end";
@@ -696,10 +699,80 @@ export type PluginHookGatewayStopEvent = {
 };
 
 // ============================================================================
-// Agent Loop Observability Hooks
+// LLM Call & Response Emit Hooks
 // ============================================================================
 
+// before_llm_call hook (modifying — sequential)
+export type PluginHookBeforeLlmCallEvent = {
+  messages: AgentMessage[];
+  systemPrompt: string;
+  model: string;
+  iteration: number;
+  tools: Array<{ name: string; description?: string }>;
+  tokenEstimate?: number;
+};
+
+export type PluginHookBeforeLlmCallResult = {
+  messages?: AgentMessage[];
+  systemPrompt?: string;
+  tools?: Array<{ name: string }>;
+  block?: boolean;
+  blockReason?: string;
+};
+
+// after_llm_call hook (modifying — sequential)
+// Runs after the LLM response is received. Plugins can block all tool execution
+// or filter individual tool calls. Decisions are stored in a mutable ref and
+// enforced by before_tool_call via afterLlmCallBlockRef.
+export type PluginHookAfterLlmCallEvent = {
+  response: AgentMessage;
+  toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  iteration: number;
+  model: string;
+  /** Wall-clock LLM call duration. Reserved for future use — not yet populated. */
+  latencyMs?: number;
+  /** Token usage for this call. Reserved for future use — not yet populated. */
+  tokenUsage?: { input: number; output: number };
+};
+
+export type PluginHookAfterLlmCallResult = {
+  /** If true, block ALL tool execution for this turn. */
+  block?: boolean;
+  blockReason?: string;
+  /** Filtered tool calls — only these will be allowed to execute. Omit to allow all. */
+  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+};
+
+// before_response_emit hook (modifying — sequential)
+export type PluginHookBeforeResponseEmitEvent = {
+  /** Text content of the last assistant message. */
+  content: string;
+  /**
+   * Text content of ALL assistant messages from the current run, in chronological
+   * order. Enables full multi-turn PII redaction across tool-loop iterations.
+   * Each entry corresponds to one assistant turn's accumulated text.
+   */
+  allContent: string[];
+  channel?: string;
+  messageCount: number;
+};
+
+export type PluginHookBeforeResponseEmitResult = {
+  /** Modified content for the last assistant message (single-message modification). */
+  content?: string;
+  /**
+   * Modified content for ALL assistant messages. When returned, replaces the
+   * entire assistantTexts array and rewrites all assistant messages in session
+   * history. Takes precedence over `content` when both are provided.
+   */
+  allContent?: string[];
+  block?: boolean;
+  blockReason?: string;
+};
+
+// ============================================================================
 // context_assembled hook (void — parallel)
+// ============================================================================
 // Fires once per run before the first LLM call with the initial context snapshot.
 // Use loop_iteration_start/end for per-turn tracking within multi-turn runs.
 export type PluginHookContextAssembledEvent = {
@@ -834,6 +907,21 @@ export type PluginHookHandlerMap = {
     event: PluginHookGatewayStopEvent,
     ctx: PluginHookGatewayContext,
   ) => Promise<void> | void;
+  before_llm_call: (
+    event: PluginHookBeforeLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<PluginHookBeforeLlmCallResult | void> | PluginHookBeforeLlmCallResult | void;
+  after_llm_call: (
+    event: PluginHookAfterLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<PluginHookAfterLlmCallResult | void> | PluginHookAfterLlmCallResult | void;
+  before_response_emit: (
+    event: PluginHookBeforeResponseEmitEvent,
+    ctx: PluginHookAgentContext,
+  ) =>
+    | Promise<PluginHookBeforeResponseEmitResult | void>
+    | PluginHookBeforeResponseEmitResult
+    | void;
   context_assembled: (
     event: PluginHookContextAssembledEvent,
     ctx: PluginHookAgentContext,

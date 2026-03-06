@@ -2,7 +2,7 @@
  * Plugin Hook Runner
  *
  * Provides utilities for executing plugin lifecycle hooks with proper
- * error handling, priority ordering, and async support.
+ * error handling, priority-sorted, registration-order (FIFO) execution, and async support.
  */
 
 import type { PluginRegistry } from "./registry.js";
@@ -26,6 +26,12 @@ import type {
   PluginHookGatewayContext,
   PluginHookGatewayStartEvent,
   PluginHookGatewayStopEvent,
+  PluginHookBeforeLlmCallEvent,
+  PluginHookBeforeLlmCallResult,
+  PluginHookAfterLlmCallEvent,
+  PluginHookAfterLlmCallResult,
+  PluginHookBeforeResponseEmitEvent,
+  PluginHookBeforeResponseEmitResult,
   PluginHookContextAssembledEvent,
   PluginHookLoopIterationStartEvent,
   PluginHookLoopIterationEndEvent,
@@ -96,10 +102,13 @@ export type {
   PluginHookGatewayContext,
   PluginHookGatewayStartEvent,
   PluginHookGatewayStopEvent,
-  // Agent loop observability hooks
-  PluginHookContextAssembledEvent,
-  PluginHookLoopIterationStartEvent,
-  PluginHookLoopIterationEndEvent,
+  // LLM call & response emit hooks
+  PluginHookBeforeLlmCallEvent,
+  PluginHookBeforeLlmCallResult,
+  PluginHookAfterLlmCallEvent,
+  PluginHookAfterLlmCallResult,
+  PluginHookBeforeResponseEmitEvent,
+  PluginHookBeforeResponseEmitResult,
 };
 
 export type HookRunnerLogger = {
@@ -115,12 +124,16 @@ export type HookRunnerOptions = {
 };
 
 /**
- * Get hooks for a specific hook name, sorted by priority (higher first).
+ * Get hooks for a specific hook name in priority order (higher first), then registration order (FIFO).
  */
 function getHooksForName<K extends PluginHookName>(
   registry: PluginRegistry,
   hookName: K,
 ): PluginHookRegistration<K>[] {
+  // Hooks sorted by priority (higher first), then registration order (FIFO) within the same priority.
+  // Plugins register during loadGatewayPlugins, then bundled hooks register
+  // during loadInternalHooks, so at equal priority plugin handlers naturally
+  // run before bundled handlers.
   return (registry.typedHooks as PluginHookRegistration<K>[])
     .filter((h) => h.hookName === hookName)
     .toSorted((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
@@ -223,7 +236,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
 
   /**
    * Run a hook that can return a modifying result.
-   * Handlers are executed sequentially in priority order, and results are merged.
+   * Handlers are executed sequentially in priority order (higher first), then registration order (FIFO), and results are merged.
    */
   async function runModifyingHook<K extends PluginHookName, TResult>(
     hookName: K,
@@ -443,8 +456,8 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
       ctx,
       (acc, next) => ({
         params: next.params ?? acc?.params,
-        block: next.block ?? acc?.block,
-        blockReason: next.blockReason ?? acc?.blockReason,
+        block: next.block || acc?.block,
+        blockReason: acc?.blockReason ?? next.blockReason,
       }),
     );
   }
@@ -466,7 +479,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
    * This hook is intentionally synchronous: it runs in hot paths where session
    * transcripts are appended synchronously.
    *
-   * Handlers are executed sequentially in priority order (higher first). Each
+   * Handlers are executed sequentially in priority order (higher first), then registration order (FIFO). Each
    * handler may return `{ message }` to replace the message passed to the next
    * handler.
    */
@@ -529,7 +542,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
    * This hook is intentionally synchronous: it runs on the hot path where
    * session transcripts are appended synchronously.
    *
-   * Handlers are executed sequentially in priority order (higher first).
+   * Handlers are executed sequentially in priority order (higher first), then registration order (FIFO).
    * If any handler returns { block: true }, the message is NOT written
    * to the session JSONL and we return immediately.
    * If a handler returns { message }, the modified message replaces the
@@ -703,6 +716,109 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
   }
 
   // =========================================================================
+  // LLM Call & Response Emit Hooks
+  // =========================================================================
+
+  /**
+   * Run before_llm_call hook.
+   * Fires before every LLM API call within the agent loop.
+   * Allows plugins to inspect/modify context, filter tools, or block the call.
+   * Runs sequentially, merging results across handlers.
+   */
+  async function runBeforeLlmCall(
+    event: PluginHookBeforeLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookBeforeLlmCallResult | undefined> {
+    return runModifyingHook<"before_llm_call", PluginHookBeforeLlmCallResult>(
+      "before_llm_call",
+      event,
+      ctx,
+      (acc, next) => ({
+        // First-writer-wins for messages/systemPrompt: once a higher-priority
+        // security plugin sanitizes inputs, later plugins cannot override them.
+        // Consistent with first-writer-wins on content/allContent in
+        // before_response_emit and the intersection latch on tools.
+        messages: acc?.messages ?? next.messages,
+        systemPrompt: acc?.systemPrompt ?? next.systemPrompt,
+        // Intersection latch: if both handlers provide tools, only keep tools
+        // present in both lists. Prevents a later handler from widening the allowlist.
+        tools:
+          acc?.tools !== undefined && next.tools !== undefined
+            ? next.tools.filter((t) => acc.tools!.some((a) => a.name === t.name))
+            : (next.tools ?? acc?.tools),
+        block: next.block || acc?.block,
+        blockReason: acc?.blockReason ?? next.blockReason,
+      }),
+    );
+  }
+
+  /**
+   * Run after_llm_call hook.
+   * Fires after receiving the LLM response. Plugins can block all tool
+   * execution or filter individual tool calls. Decisions are stored in a
+   * mutable ref and enforced by before_tool_call.
+   * Runs sequentially, merging results across handlers.
+   */
+  async function runAfterLlmCall(
+    event: PluginHookAfterLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookAfterLlmCallResult | undefined> {
+    return runModifyingHook<"after_llm_call", PluginHookAfterLlmCallResult>(
+      "after_llm_call",
+      event,
+      ctx,
+      (acc, next) => ({
+        block: next.block || acc?.block,
+        blockReason: acc?.blockReason ?? next.blockReason,
+        // Intersection latch: if both handlers filter tool calls, only keep
+        // calls present in both lists. Prevents widening the allowlist.
+        toolCalls:
+          acc?.toolCalls !== undefined && next.toolCalls !== undefined
+            ? next.toolCalls.filter((tc) => acc.toolCalls!.some((a) => a.id === tc.id))
+            : (next.toolCalls ?? acc?.toolCalls),
+      }),
+    );
+  }
+
+  /**
+   * Run before_response_emit hook.
+   * Fires when the agent's final response is ready, before delivery.
+   * Allows plugins to modify content or block emission.
+   * Runs sequentially, merging results across handlers.
+   */
+  async function runBeforeResponseEmit(
+    event: PluginHookBeforeResponseEmitEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookBeforeResponseEmitResult | undefined> {
+    return runModifyingHook<"before_response_emit", PluginHookBeforeResponseEmitResult>(
+      "before_response_emit",
+      event,
+      ctx,
+      (acc, next) => ({
+        // First-writer-wins for content/allContent, treated as mutually exclusive:
+        // once a higher-priority plugin sets EITHER field, both are locked out
+        // for later plugins. This prevents a lower-priority plugin from bypassing
+        // single-message redaction (content) by supplying allContent (which takes
+        // precedence in application), or vice versa.
+        //
+        // NOTE for plugin authors: if two security plugins both need to redact,
+        // the higher-priority plugin wins. A lower-priority plugin's content or
+        // allContent is silently dropped when the cross-lock is engaged.
+        // Fix: ensure the higher-priority plugin handles all redaction, or
+        // consolidate into a single plugin.
+        content:
+          acc?.content !== undefined || acc?.allContent !== undefined ? acc?.content : next.content,
+        allContent:
+          acc?.allContent !== undefined || acc?.content !== undefined
+            ? acc?.allContent
+            : next.allContent,
+        block: next.block || acc?.block,
+        blockReason: acc?.blockReason ?? next.blockReason,
+      }),
+    );
+  }
+
+  // =========================================================================
   // Agent Loop Observability Hooks
   // =========================================================================
 
@@ -794,7 +910,11 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     // Gateway hooks
     runGatewayStart,
     runGatewayStop,
-    // Agent loop observability hooks
+    // LLM call & response emit hooks
+    runBeforeLlmCall,
+    runAfterLlmCall,
+    runBeforeResponseEmit,
+    // Agent Loop Observability
     runContextAssembled,
     runLoopIterationStart,
     runLoopIterationEnd,

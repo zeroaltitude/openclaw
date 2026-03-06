@@ -29,12 +29,6 @@ import { isReasoningTagProvider } from "../../../utils/provider-utils.js";
 import { resolveOpenClawAgentDir } from "../../agent-paths.js";
 import { resolveSessionAgentIds } from "../../agent-scope.js";
 import { createAnthropicPayloadLogger } from "../../anthropic-payload-log.js";
-import {
-  analyzeBootstrapBudget,
-  buildBootstrapPromptWarning,
-  buildBootstrapTruncationReportMeta,
-  buildBootstrapInjectionStats,
-} from "../../bootstrap-budget.js";
 import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../../bootstrap-files.js";
 import { createCacheTrace } from "../../cache-trace.js";
 import {
@@ -54,7 +48,6 @@ import {
   downgradeOpenAIFunctionCallReasoningPairs,
   isCloudCodeAssistFormatError,
   resolveBootstrapMaxChars,
-  resolveBootstrapPromptTruncationWarningMode,
   resolveBootstrapTotalMaxChars,
   validateAnthropicTurns,
   validateGeminiTurns,
@@ -117,6 +110,7 @@ import { installToolResultContextGuard } from "../tool-result-context-guard.js";
 import { splitSdkTools } from "../tool-split.js";
 import { describeUnknownError, mapThinkingLevel } from "../utils.js";
 import { flushPendingToolResultsAfterIdle } from "../wait-for-idle-before-flush.js";
+import { clearAfterLlmCallGate, setAfterLlmCallGate } from "./after-llm-call-gate.js";
 import {
   selectCompactionTimeoutSnapshot,
   shouldFlagCompactionTimeout,
@@ -610,23 +604,6 @@ export async function runEmbeddedAttempt(
         contextMode: params.bootstrapContextMode,
         runKind: params.bootstrapContextRunKind,
       });
-    const bootstrapMaxChars = resolveBootstrapMaxChars(params.config);
-    const bootstrapTotalMaxChars = resolveBootstrapTotalMaxChars(params.config);
-    const bootstrapAnalysis = analyzeBootstrapBudget({
-      files: buildBootstrapInjectionStats({
-        bootstrapFiles: hookAdjustedBootstrapFiles,
-        injectedFiles: contextFiles,
-      }),
-      bootstrapMaxChars,
-      bootstrapTotalMaxChars,
-    });
-    const bootstrapPromptWarningMode = resolveBootstrapPromptTruncationWarningMode(params.config);
-    const bootstrapPromptWarning = buildBootstrapPromptWarning({
-      analysis: bootstrapAnalysis,
-      mode: bootstrapPromptWarningMode,
-      seenSignatures: params.bootstrapPromptWarningSignaturesSeen,
-      previousSignature: params.bootstrapPromptWarningSignature,
-    });
     const workspaceNotes = hookAdjustedBootstrapFiles.some(
       (file) => file.name === DEFAULT_BOOTSTRAP_FILENAME && !file.missing,
     )
@@ -822,7 +799,6 @@ export async function runEmbeddedAttempt(
       userTime,
       userTimeFormat,
       contextFiles,
-      bootstrapTruncationWarningLines: bootstrapPromptWarning.lines,
       memoryCitationsMode: params.config?.memory?.citations,
     });
     const systemPromptReport = buildSystemPromptReport({
@@ -833,13 +809,8 @@ export async function runEmbeddedAttempt(
       provider: params.provider,
       model: params.modelId,
       workspaceDir: effectiveWorkspace,
-      bootstrapMaxChars,
-      bootstrapTotalMaxChars,
-      bootstrapTruncation: buildBootstrapTruncationReportMeta({
-        analysis: bootstrapAnalysis,
-        warningMode: bootstrapPromptWarningMode,
-        warning: bootstrapPromptWarning,
-      }),
+      bootstrapMaxChars: resolveBootstrapMaxChars(params.config),
+      bootstrapTotalMaxChars: resolveBootstrapTotalMaxChars(params.config),
       sandbox: (() => {
         const runtime = resolveSandboxRuntimeStatus({
           cfg: params.config,
@@ -1299,11 +1270,10 @@ export async function runEmbeddedAttempt(
         getCompactionCount,
       } = subscription;
 
-      // Build hook context early so the subscription callback can close over it
-      // without a forward reference.
-      const hookAgentId = sessionAgentId;
-      const hookCtx = {
-        agentId: hookAgentId,
+      // Build hook context early so the subscription callback can close over
+      // it without a temporal dead zone forward reference.
+      const hookCtx: import("../../../plugins/hooks.js").PluginHookAgentContext = {
+        agentId: sessionAgentId,
         sessionKey: params.sessionKey,
         sessionId: params.sessionId,
         workspaceDir: params.workspaceDir,
@@ -1312,31 +1282,160 @@ export async function runEmbeddedAttempt(
         channelId: params.messageChannel ?? params.messageProvider ?? undefined,
       };
 
-      // Subscribe for loop iteration tracking hooks
+      // Subscribe for LLM hook events (iteration tracking + after_llm_call).
+      //
+      // IMPORTANT: after_llm_call gate is "best-effort" for async hooks.
+      // The gate is populated in a .then() microtask after runAfterLlmCall
+      // resolves. If the hook does async work (e.g. network policy lookup),
+      // tool dispatch may begin before the gate is set. For sync/fast hooks,
+      // the microtask resolves before tool execution in practice.
+      // This is an inherent limitation of the subscription-based architecture;
+      // fully synchronous gating would require restructuring pi-agent-core's
+      // event loop to await hooks between message_end and tool dispatch.
+      const hookIterationRefEarly = { current: 0 };
       let hookTurnIteration = 0;
+      let hookMessageEndSeq = 0;
+      let hookRunDisposed = false;
       let hookTurnMessageCount = 0;
       let hookPendingToolResults = 0;
       const hookEventUnsub =
-        hookRunner?.hasHooks("loop_iteration_start") || hookRunner?.hasHooks("loop_iteration_end")
+        hookRunner?.hasHooks("after_llm_call") ||
+        hookRunner?.hasHooks("before_llm_call") ||
+        hookRunner?.hasHooks("loop_iteration_start") ||
+        hookRunner?.hasHooks("loop_iteration_end")
           ? activeSession.subscribe((event) => {
               if (event.type === "turn_start") {
                 hookTurnIteration++;
+                hookIterationRefEarly.current = hookTurnIteration;
                 hookTurnMessageCount = activeSession.messages.length;
+                // Fire loop_iteration_start hook
+                if (hookRunner.hasHooks("loop_iteration_start")) {
+                  hookRunner
+                    .runLoopIterationStart(
+                      {
+                        iteration: hookTurnIteration,
+                        messageCount: activeSession.messages.length,
+                        pendingToolResults: hookPendingToolResults,
+                      },
+                      hookCtx,
+                    )
+                    .catch((err) => log.warn(`loop_iteration_start hook: ${String(err)}`));
+                }
+                // Clear stale gate decisions from the previous turn
+                if (params.sessionId && hookRunner.hasHooks("after_llm_call")) {
+                  clearAfterLlmCallGate(params.sessionId);
+                }
+              }
+              if (event.type === "message_end" && hookRunner.hasHooks("after_llm_call")) {
+                const msg = event.message;
+                // Only fire for assistant messages — message_end also fires for
+                // user/system messages. Firing on non-assistant messages would
+                // clear the gate (via the "no result" path) and drop any
+                // previously computed allowlist/block for this turn.
+                const msgRole =
+                  msg && typeof msg === "object" && "role" in msg
+                    ? (msg as { role: string }).role
+                    : undefined;
+                if (msgRole !== "assistant") {
+                  return;
+                }
+                // Capture iteration and sequence at event time — both are mutable
+                // and may change before the async .then() fires.
+                const eventIteration = hookTurnIteration;
+                const eventSeq = ++hookMessageEndSeq;
+                const toolCalls: Array<{
+                  id: string;
+                  name: string;
+                  arguments: Record<string, unknown>;
+                }> = [];
+                if (
+                  msg &&
+                  typeof msg === "object" &&
+                  "content" in msg &&
+                  Array.isArray((msg as unknown as Record<string, unknown>).content)
+                ) {
+                  for (const part of (msg as unknown as { content: Array<Record<string, unknown>> })
+                    .content) {
+                    if (part && isToolCallBlockType(part.type)) {
+                      toolCalls.push({
+                        id: (part.id as string) ?? "",
+                        name: (part.name as string) ?? "",
+                        arguments: (part.arguments as Record<string, unknown>) ?? {},
+                      });
+                    }
+                  }
+                }
+                // Await the hook result and store block/filter decisions in
+                // the gate ref so before_tool_call can enforce them.
                 hookRunner
-                  .runLoopIterationStart(
+                  .runAfterLlmCall(
                     {
-                      iteration: hookTurnIteration,
-                      messageCount: activeSession.messages.length,
-                      // Tool results from previous turn that triggered this iteration
-                      pendingToolResults: hookPendingToolResults,
+                      response: msg,
+                      toolCalls,
+                      iteration: eventIteration,
+                      model: params.modelId,
                     },
                     hookCtx,
                   )
-                  .catch((err) => log.warn(`loop_iteration_start hook: ${String(err)}`));
+                  .then((result) => {
+                    if (!params.sessionId || hookRunDisposed) {
+                      return;
+                    }
+                    // Guard against stale results FIRST: if the iteration has
+                    // advanced since this event fired, a new turn has started
+                    // and this gate decision (including "no result" clears) is
+                    // no longer relevant. Without this, a slow turn-N handler
+                    // resolving with no result could erase turn-N+1's gate.
+                    if (eventIteration !== hookTurnIteration) {
+                      log.debug(
+                        `after_llm_call: discarding stale gate (event=${eventIteration}, current=${hookTurnIteration})`,
+                      );
+                      return;
+                    }
+                    // Intra-turn staleness: within the same turn, multiple
+                    // message_end events share the same iteration. A slow handler
+                    // from an earlier message_end could resolve after a later one
+                    // already set the gate. The monotonic sequence counter ensures
+                    // only the latest message_end's result is applied.
+                    if (eventSeq !== hookMessageEndSeq) {
+                      log.debug(
+                        `after_llm_call: discarding stale intra-turn gate (seq=${eventSeq}, current=${hookMessageEndSeq})`,
+                      );
+                      return;
+                    }
+                    // If hook returned no filter/block, clear any stale gate from
+                    // a previous message_end in the same turn (multi-step tool loops).
+                    if (!result || (!result.block && !result.toolCalls)) {
+                      clearAfterLlmCallGate(params.sessionId);
+                      return;
+                    }
+                    const allowedIds = result.toolCalls
+                      ? new Set(result.toolCalls.map((tc: { id: string }) => tc.id))
+                      : undefined;
+                    setAfterLlmCallGate(params.sessionId, {
+                      blocked: result.block ?? false,
+                      blockReason: result.blockReason,
+                      allowedToolCallIds: allowedIds,
+                      iteration: eventIteration,
+                    });
+                  })
+                  .catch((err) => {
+                    log.warn(`after_llm_call hook: ${String(err)}`);
+                    // Clear any stale gate so a failed hook doesn't leave
+                    // a previous turn's gate blocking tool calls — but only
+                    // if this is still the latest message_end event.
+                    if (
+                      params.sessionId &&
+                      !hookRunDisposed &&
+                      eventSeq === hookMessageEndSeq &&
+                      eventIteration === hookTurnIteration
+                    ) {
+                      clearAfterLlmCallGate(params.sessionId);
+                    }
+                  });
               }
-              if (event.type === "turn_end") {
+              if (event.type === "turn_end" && hookRunner.hasHooks("loop_iteration_end")) {
                 const toolResults = event.toolResults ?? [];
-                // Capture for next turn_start
                 hookPendingToolResults = toolResults.length;
                 hookRunner
                   .runLoopIterationEnd(
@@ -1422,6 +1521,19 @@ export async function runEmbeddedAttempt(
             once: true,
           });
         }
+      }
+
+      // Hook runner was already obtained earlier before tool creation
+      // Wrap streamFn for before_llm_call hooks — must be the outermost
+      // wrapper so hooks see the full context first.
+      if (hookRunner?.hasHooks("before_llm_call")) {
+        const { wrapStreamFnWithHooks } = await import("./hook-stream-wrapper.js");
+        activeSession.agent.streamFn = wrapStreamFnWithHooks(activeSession.agent.streamFn, {
+          hookRunner,
+          agentCtx: hookCtx,
+          iterationRef: hookIterationRefEarly,
+          modelId: params.modelId,
+        });
       }
 
       let promptError: unknown = null;
@@ -1531,8 +1643,6 @@ export async function runEmbeddedAttempt(
           // because subsequent turns reuse the same session context with appended
           // messages; use loop_iteration_start for per-turn tracking.
           if (hookRunner?.hasHooks("context_assembled")) {
-            // Snapshot messages array to avoid mutation during async hook handling.
-            // Named contextMessagesSnapshot to avoid shadowing the outer messagesSnapshot.
             const contextMessagesSnapshot = activeSession.messages.slice();
             hookRunner
               .runContextAssembled(
@@ -1577,8 +1687,17 @@ export async function runEmbeddedAttempt(
             await abortable(activeSession.prompt(effectivePrompt));
           }
         } catch (err) {
-          promptError = err;
-          promptErrorSource = "prompt";
+          // BeforeLlmCallBlockError is a graceful security intervention —
+          // the run completes normally without an error, matching
+          // before_response_emit block behavior.
+          const { BeforeLlmCallBlockError } = await import("./hook-stream-wrapper.js");
+          if (err instanceof BeforeLlmCallBlockError) {
+            log.info(`LLM call blocked by before_llm_call hook: ${err.message}`);
+            // Don't set promptError — let the run complete gracefully
+          } else {
+            promptError = err;
+            promptErrorSource = "prompt";
+          }
         } finally {
           log.debug(
             `embedded run prompt end: runId=${params.runId} sessionId=${params.sessionId} durationMs=${Date.now() - promptStartedAt}`,
@@ -1653,6 +1772,47 @@ export async function runEmbeddedAttempt(
         messagesSnapshot = snapshotSelection.messagesSnapshot;
         sessionIdUsed = snapshotSelection.sessionIdUsed;
 
+        // Emit before_response_emit hook — only when this turn produced an assistant reply.
+        // Timeout/abort turns with no new assistant message must not trigger the hook,
+        // otherwise it scans messagesSnapshot and finds a stale prior-turn response.
+        if (hookRunner?.hasHooks("before_response_emit") && assistantTexts.length > 0) {
+          try {
+            const { applyBeforeResponseEmitHook } = await import("./hook-response-emit.js");
+            const emitResult = await applyBeforeResponseEmitHook({
+              hookRunner,
+              agentCtx: hookCtx,
+              assistantTexts,
+              messagesSnapshot,
+              activeSession,
+              channel: params.messageChannel ?? params.messageProvider,
+            });
+            if (emitResult !== undefined) {
+              if (emitResult.blocked) {
+                // Blocked — suppress the entire accumulated response, not just
+                // the last chunk. Earlier tool-loop iterations may have added
+                // text that would otherwise escape the hook.
+                assistantTexts.splice(0, assistantTexts.length);
+              } else if (emitResult.allContent !== undefined) {
+                // Full multi-turn modification — replace all assistant texts.
+                // Truncate to original length to prevent plugins from expanding
+                // the response beyond what was actually produced in this run.
+                const bounded = emitResult.allContent.slice(0, assistantTexts.length);
+                assistantTexts.splice(0, assistantTexts.length, ...bounded);
+              } else if (emitResult.content !== undefined) {
+                // Single last-message modification (backward-compatible).
+                // assistantTexts.length > 0 is guaranteed by the outer guard.
+                assistantTexts[assistantTexts.length - 1] = emitResult.content;
+              }
+              // Refresh messagesSnapshot so downstream consumers (agent_end,
+              // llm_output, cache trace) see the post-redaction content, not
+              // the original pre-hook text.
+              messagesSnapshot = activeSession.messages.slice();
+            }
+          } catch (err) {
+            log.warn(`before_response_emit hook failed: ${String(err)}`);
+          }
+        }
+
         if (promptError && promptErrorSource === "prompt" && !compactionOccurredThisAttempt) {
           try {
             sessionManager.appendCustomEntry("openclaw:prompt-error", {
@@ -1708,13 +1868,14 @@ export async function runEmbeddedAttempt(
           );
         }
         try {
+          // Mark run as disposed BEFORE clearing gate — prevents late-resolving
+          // after_llm_call hooks from repopulating the gate after cleanup.
+          hookRunDisposed = true;
           hookEventUnsub?.();
-        } catch (err) {
-          log.error(
-            `CRITICAL: hookEventUnsub failed, possible resource leak: runId=${params.runId} ${String(err)}`,
-          );
-        }
-        try {
+          // Clean up after_llm_call gate to prevent stale decisions leaking
+          if (params.sessionId) {
+            clearAfterLlmCallGate(params.sessionId);
+          }
           unsubscribe();
         } catch (err) {
           // unsubscribe() should never throw; if it does, it indicates a serious bug.
@@ -1765,8 +1926,6 @@ export async function runEmbeddedAttempt(
         timedOutDuringCompaction,
         promptError,
         sessionIdUsed,
-        bootstrapPromptWarningSignaturesSeen: bootstrapPromptWarning.warningSignaturesSeen,
-        bootstrapPromptWarningSignature: bootstrapPromptWarning.signature,
         systemPromptReport,
         messagesSnapshot,
         assistantTexts,
