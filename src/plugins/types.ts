@@ -1915,7 +1915,8 @@ export type PluginHookContextAssembledEvent = {
 // loop_iteration_start hook (void — parallel)
 export type PluginHookLoopIterationStartEvent = {
   iteration: number;
-  /** Number of pending tool results awaiting processing. Undefined when not available. */
+  /** Number of pending tool results awaiting processing. Always provided by the
+   *  embedded runner; may be undefined at future or custom call sites. */
   pendingToolResults?: number;
   messageCount: number;
 };
@@ -1924,7 +1925,9 @@ export type PluginHookLoopIterationStartEvent = {
 export type PluginHookLoopIterationEndEvent = {
   iteration: number;
   toolCallsMade: number;
-  /** Number of new messages added this iteration. Undefined when not available. */
+  /** Number of new messages added this iteration (clamped to 0 if compaction
+   *  reduced message count mid-turn). Always provided by the embedded runner;
+   *  may be undefined at future or custom call sites. */
   newMessagesAdded?: number;
   /** True when the turn produced tool results, suggesting (but not guaranteeing)
    *  that the loop will continue. Does not account for abort signals, timeouts,
