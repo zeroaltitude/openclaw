@@ -22,6 +22,7 @@ import {
 import { formatConfigIssueLines } from "../config/issue-format.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
+import { clearInternalHooks } from "../hooks/internal-hooks.js";
 import { clearAgentRunContext, onAgentEvent } from "../infra/agent-events.js";
 import {
   ensureControlUiAssetsBuilt,
@@ -557,6 +558,13 @@ export async function startGatewayServer(
         env: process.env,
       });
   const baseMethods = listGatewayMethods();
+
+  // Clear any previously registered internal hooks before plugins or bundled
+  // hooks register.  This ensures a clean slate on restart/reload.
+  // Plugins register first (during loadGatewayPlugins), then bundled hooks
+  // register later (during startGatewaySidecars → loadInternalHooks).
+  clearInternalHooks();
+
   const emptyPluginRegistry = createEmptyPluginRegistry();
   let pluginRegistry = emptyPluginRegistry;
   let baseGatewayMethods = baseMethods;
