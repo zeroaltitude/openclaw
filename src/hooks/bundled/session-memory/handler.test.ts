@@ -802,4 +802,207 @@ describe("session-memory hook", () => {
     const memoryFiles = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
     expect(memoryFiles).toHaveLength(0);
   });
+
+  it("sessionSaveRedirectPath writes to alternate location", async () => {
+    const tempDir = await createCaseWorkspace("redirect");
+    const quarantine = path.join(tempDir, "quarantine");
+    await fs.mkdir(quarantine, { recursive: true });
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "redirected content" }]),
+    });
+
+    const redirectFile = path.join(quarantine, "quarantined-session.md");
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+    event.context.sessionSaveRedirectPath = redirectFile;
+
+    await handler(event);
+
+    const content = await fs.readFile(redirectFile, "utf-8");
+    expect(content).toContain("redirected content");
+
+    // Verify default memory/ dir was not written
+    const memoryFiles = await fs.readdir(path.join(tempDir, "memory")).catch(() => [] as string[]);
+    expect(memoryFiles.filter((f) => f.endsWith(".md"))).toHaveLength(0);
+  });
+
+  it("sessionSaveRedirectPath resolves relative paths against workspace", async () => {
+    const tempDir = await createCaseWorkspace("redirect-rel");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "relative redirect" }]),
+    });
+
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+    event.context.sessionSaveRedirectPath = "quarantine/redirected.md";
+
+    await handler(event);
+
+    const content = await fs.readFile(path.join(tempDir, "quarantine", "redirected.md"), "utf-8");
+    expect(content).toContain("relative redirect");
+  });
+
+  it("sessionSaveRedirectPath rejects paths outside workspace", async () => {
+    const tempDir = await createCaseWorkspace("redirect-escape");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "escape attempt" }]),
+    });
+
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+    const outsideDir = path.join(path.dirname(tempDir), `outside-workspace-target-${Date.now()}`);
+    const escapePath = path.join(outsideDir, "stolen-session.md");
+    event.context.sessionSaveRedirectPath = escapePath;
+
+    await handler(event);
+
+    const exists = await fs.stat(escapePath).then(
+      () => true,
+      () => false,
+    );
+    expect(exists).toBe(false);
+    await fs.rm(outsideDir, { recursive: true }).catch(() => {});
+    const memoryDir2 = path.join(tempDir, "memory");
+    const memoryFiles2 = await fs.readdir(memoryDir2).catch(() => [] as string[]);
+    expect(memoryFiles2.filter((f) => f.endsWith(".md"))).toHaveLength(0);
+  });
+
+  it("sessionSaveRedirectPath rejects relative traversal paths", async () => {
+    const tempDir = await createCaseWorkspace("redirect-rel-escape");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "traversal attempt" }]),
+    });
+
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+    event.context.sessionSaveRedirectPath = "../../../etc/stolen.md";
+
+    await handler(event);
+
+    // Should fail closed — no file written anywhere
+    const memoryDir = path.join(tempDir, "memory");
+    const memoryFiles = await fs.readdir(memoryDir).catch(() => [] as string[]);
+    expect(memoryFiles.filter((f) => f.endsWith(".md"))).toHaveLength(0);
+  });
+
+  it("sessionSaveContent + sessionSaveRedirectPath writes custom content to redirect path", async () => {
+    const tempDir = await createCaseWorkspace("custom-content-redirect");
+    const quarantine = path.join(tempDir, "quarantine");
+    await fs.mkdir(quarantine, { recursive: true });
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "original" }]),
+    });
+
+    const redirectFile = path.join(quarantine, "custom.md");
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+    event.context.sessionSaveContent = "Redacted by policy";
+    event.context.sessionSaveRedirectPath = redirectFile;
+
+    await handler(event);
+
+    const content = await fs.readFile(redirectFile, "utf-8");
+    expect(content).toBe("Redacted by policy");
+    const memoryFiles3 = await fs.readdir(path.join(tempDir, "memory")).catch(() => [] as string[]);
+    expect(memoryFiles3.filter((f) => f.endsWith(".md"))).toHaveLength(0);
+  });
+
+  it("late-set blockSessionSave retracts a redirected write", async () => {
+    const tempDir = await createCaseWorkspace("late-block-redirect");
+    const quarantine = path.join(tempDir, "quarantine");
+    await fs.mkdir(quarantine, { recursive: true });
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "redirected" }]),
+    });
+
+    const redirectFile = path.join(quarantine, "quarantined.md");
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+    event.context.sessionSaveRedirectPath = redirectFile;
+
+    await handler(event);
+
+    // Verify redirected file was written
+    const content = await fs.readFile(redirectFile, "utf-8");
+    expect(content).toContain("redirected");
+
+    // A later hook blocks all saves — blockSessionSave is a security
+    // primitive meaning "no persistence, period" and wins over redirects.
+    event.context.blockSessionSave = true;
+    await drainPostHookActions(event);
+
+    // The redirected file should be retracted
+    const exists = await fs.stat(redirectFile).then(
+      () => true,
+      () => false,
+    );
+    expect(exists).toBe(false);
+  });
+
+  it("late-set sessionSaveContent does NOT override redirected write content", async () => {
+    const tempDir = await createCaseWorkspace("late-content-redirect");
+    const quarantine = path.join(tempDir, "quarantine");
+    await fs.mkdir(quarantine, { recursive: true });
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "original redirect content" }]),
+    });
+
+    const redirectFile = path.join(quarantine, "preserved.md");
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+    event.context.sessionSaveRedirectPath = redirectFile;
+
+    await handler(event);
+
+    // A later hook tries to override content — should be ignored for redirects
+    event.context.sessionSaveContent = "This should NOT replace redirect content";
+    await drainPostHookActions(event);
+
+    // Original redirect content should be preserved
+    const content = await fs.readFile(redirectFile, "utf-8");
+    expect(content).toContain("original redirect content");
+    expect(content).not.toContain("This should NOT replace");
+  });
 });
