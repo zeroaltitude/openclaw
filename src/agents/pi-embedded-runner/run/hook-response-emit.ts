@@ -83,23 +83,14 @@ export async function applyBeforeResponseEmitHook(
 ): Promise<ApplyBeforeResponseEmitResult | undefined> {
   const { hookRunner, agentCtx, assistantTexts, messagesSnapshot, activeSession, channel } = params;
 
-  // Find last assistant message
-  const lastAssistantMsg = [...messagesSnapshot].toReversed().find((m) => m.role === "assistant");
-  if (!lastAssistantMsg || !("content" in lastAssistantMsg)) {
-    // No assistant message at all — only skip if there's also no allContent.
-    // This guards against runs where the only output is in earlier turns.
-    if (assistantTexts.length === 0) {
-      return undefined;
-    }
-  }
-
-  const content = lastAssistantMsg ? extractAssistantText(lastAssistantMsg) : "";
-  // Don't skip when content is empty but allContent has entries — policy
-  // plugins need the chance to inspect/block earlier assistant turns even
-  // when the final message is tool-call-only or non-text.
-  if (!content && assistantTexts.length === 0) {
+  // Use assistantTexts (the streamed text accumulator) as the source of truth
+  // so content === allContent[allContent.length - 1] always holds.
+  // Extracting from the session message can diverge when the final assistant
+  // message is tool-call-only (extractAssistantText returns "").
+  if (assistantTexts.length === 0) {
     return undefined;
   }
+  const content = assistantTexts[assistantTexts.length - 1];
 
   const emitResult = await hookRunner.runBeforeResponseEmit(
     {
@@ -137,6 +128,22 @@ export async function applyBeforeResponseEmitHook(
       // doesn't leak to subsequent turns or session persistence.
       clearAllAssistantContent(blockMessages);
     }
+    return { blocked: true };
+  }
+
+  // Fail-closed: if run scope resolved to empty (compaction edge case), any
+  // rewrite would silently no-op on session history while assistantTexts gets
+  // updated — leaving unredacted content in session history for future LLM calls.
+  // Block the response to prevent the inconsistency.
+  if (
+    runMessages.length === 0 &&
+    (emitResult?.allContent !== undefined || emitResult?.content !== undefined)
+  ) {
+    log.warn(
+      "response modification requested but run-scoped messages empty — blocking to prevent " +
+        "unredacted session history (compaction edge case)",
+    );
+    clearAllAssistantContent(activeSession.messages);
     return { blocked: true };
   }
 
@@ -257,9 +264,9 @@ export function rewriteLastAssistantContent(messages: AgentMessage[], newContent
   // message with a content field. Tool-use-only messages (e.g. content: [{type: "tool_use", ...}])
   // have "content" but no text parts, so rewriteSingleAssistantMessage would
   // silently no-op — leaving redacted content unpersisted in session history.
-  const sessionMsg = [...messages]
-    .toReversed()
-    .find((m) => m.role === "assistant" && "content" in m && extractAssistantText(m).length > 0);
+  const sessionMsg = messages.findLast(
+    (m) => m.role === "assistant" && "content" in m && extractAssistantText(m).length > 0,
+  );
   if (!sessionMsg) {
     log.warn(
       "rewriteLastAssistantContent: no text-bearing assistant message found in session history",
@@ -319,7 +326,7 @@ function rewriteSingleAssistantMessage(msg: AgentMessage, newContent: string): v
  * Clears both text parts AND tool_use blocks (which may contain sensitive
  * data in their input arguments) to prevent exfiltration via tool calls.
  */
-function clearAllAssistantContent(messages: AgentMessage[]): void {
+export function clearAllAssistantContent(messages: AgentMessage[]): void {
   const assistantMsgs = messages.filter((m) => m.role === "assistant" && "content" in m);
   for (const msg of assistantMsgs) {
     const msgContent = (msg as { content: unknown }).content;

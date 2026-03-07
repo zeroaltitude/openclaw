@@ -3028,6 +3028,27 @@ export async function runEmbeddedAttempt(
               `before_response_emit hook error — FAIL CLOSED, clearing response: runId=${params.runId} ${String(err)}`,
             );
             assistantTexts.splice(0, assistantTexts.length);
+            // Also clear assistant content from session messages so downstream
+            // payloads.ts fallback (lastAssistant from session) can't leak.
+            try {
+              const { clearAllAssistantContent } = await import("./hook-response-emit.js");
+              clearAllAssistantContent(activeSession.messages);
+            } catch {
+              // If even the import fails, clear manually as last resort
+              for (const msg of activeSession.messages) {
+                if (msg.role === "assistant" && "content" in msg) {
+                  if (typeof msg.content === "string") {
+                    (msg as unknown as Record<string, unknown>).content = "";
+                  } else if (Array.isArray(msg.content)) {
+                    for (const part of msg.content) {
+                      if (part && typeof part === "object" && "text" in part) {
+                        (part as unknown as Record<string, unknown>).text = "";
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
 
