@@ -462,7 +462,7 @@ describe("rewriteAllAssistantContent", () => {
     expect((messages[1] as { content: unknown }).content).toBe("question");
   });
 
-  it("clears extra assistant messages when newContents is shorter", () => {
+  it("removes extra assistant messages when newContents is shorter", () => {
     const messages = [
       makeMsg("assistant", "turn 1"),
       makeMsg("assistant", "turn 2"),
@@ -471,9 +471,10 @@ describe("rewriteAllAssistantContent", () => {
 
     rewriteAllAssistantContent(messages, ["only first"]);
 
+    // First message rewritten; extras removed entirely (not blanked to "")
+    // to avoid empty-content messages that break Anthropic API.
+    expect(messages).toHaveLength(1);
     expect((messages[0] as { content: unknown }).content).toBe("only first");
-    expect((messages[1] as { content: unknown }).content).toBe("");
-    expect((messages[2] as { content: unknown }).content).toBe("");
   });
 
   it("handles content-part arrays", () => {

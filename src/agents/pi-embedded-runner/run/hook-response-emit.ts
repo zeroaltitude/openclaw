@@ -336,8 +336,17 @@ export function rewriteAllAssistantContent(messages: AgentMessage[], newContents
     );
   }
   for (let i = 0; i < assistantMsgs.length; i++) {
-    const replacement = i < newContents.length ? newContents[i] : "";
-    rewriteSingleAssistantMessage(assistantMsgs[i], replacement);
+    if (i < newContents.length) {
+      rewriteSingleAssistantMessage(assistantMsgs[i], newContents[i]);
+    } else {
+      // Extra messages beyond allContent length — remove entirely rather than
+      // blanking to "". Empty-content assistant messages break Anthropic API
+      // (rejects { role: "assistant", content: "" } or content: []).
+      const idx = messages.indexOf(assistantMsgs[i]);
+      if (idx >= 0) {
+        messages.splice(idx, 1);
+      }
+    }
   }
 }
 
@@ -349,7 +358,12 @@ function rewriteSingleAssistantMessage(msg: AgentMessage, newContent: string): v
   if (typeof msgContent === "string") {
     (msg as unknown as Record<string, unknown>).content = newContent;
   } else if (Array.isArray(msgContent)) {
-    const textParts = (msgContent as ContentPart[]).filter((c) => c?.type === "text");
+    // Rewrite all text-bearing part types (text, output_text, input_text).
+    // Must match the same set as extractAssistantText to avoid silent PII leaks
+    // where extraction finds text but rewriting misses the parts.
+    const textParts = (msgContent as ContentPart[]).filter(
+      (c) => c?.type === "text" || c?.type === "output_text" || c?.type === "input_text",
+    );
     if (textParts.length > 0) {
       textParts[0].text = newContent;
       for (let i = 1; i < textParts.length; i++) {
