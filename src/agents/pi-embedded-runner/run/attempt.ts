@@ -2996,6 +2996,7 @@ export async function runEmbeddedAttempt(
               messagesSnapshot,
               activeSession,
               channel: params.messageChannel ?? params.messageProvider,
+              preRunMessageCount: prePromptMessageCount,
             });
             if (emitResult !== undefined) {
               if (emitResult.blocked) {
@@ -3034,16 +3035,15 @@ export async function runEmbeddedAttempt(
               const { clearAllAssistantContent } = await import("./hook-response-emit.js");
               clearAllAssistantContent(activeSession.messages);
             } catch {
-              // If even the import fails, clear manually as last resort.
-              // Set content = [] (not selective text clearing) to also remove
-              // tool_use blocks whose input arguments may contain sensitive data.
-              for (const msg of activeSession.messages) {
-                if (msg.role === "assistant" && "content" in msg) {
-                  if (typeof msg.content === "string") {
-                    (msg as unknown as Record<string, unknown>).content = "";
-                  } else if (Array.isArray(msg.content)) {
-                    msg.content.length = 0;
-                  }
+              // If even the import fails, remove assistant messages manually.
+              // Splice in reverse so indices stay valid. Removes the messages
+              // entirely — empty-content ghosts would break LLM API calls.
+              for (let i = activeSession.messages.length - 1; i >= 0; i--) {
+                if (
+                  activeSession.messages[i].role === "assistant" &&
+                  "content" in activeSession.messages[i]
+                ) {
+                  activeSession.messages.splice(i, 1);
                 }
               }
             }
