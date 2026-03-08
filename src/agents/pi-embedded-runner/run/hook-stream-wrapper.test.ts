@@ -40,9 +40,6 @@ function makeMockHookRunner(
     runGatewayStop: vi.fn(),
     runBeforeLlmCall: vi.fn().mockResolvedValue(undefined),
     runAfterLlmCall: vi.fn(),
-    runLoopIterationStart: vi.fn(),
-    runLoopIterationEnd: vi.fn(),
-    runBeforeResponseEmit: vi.fn(),
     getHookCount: vi.fn().mockReturnValue(0),
     ...overrides,
   } as unknown as HookRunner;
