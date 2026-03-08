@@ -1893,19 +1893,27 @@ export type PluginHookGatewayStopEvent = {
 //    messagesSnapshot refreshed). Plugin authors needing crash = blocked at the
 //    per-handler level should set catchErrors: false on their hook runner.
 //
-// Content is raw assistant text (may include reasoning/tool-call artifacts that
-// are stripped in the final delivery pipeline). For PII scanning this is correct
-// (scan the superset), but content-based rewrites should be aware that the
-// delivered text may differ slightly from what the hook sees.
-//
-// Streaming limitation: this hook fires after the LLM prompt completes. In
-// streaming mode, text_delta chunks may already have been delivered to the
-// client incrementally before this hook runs. The hook modifies persisted
-// session history and the final delivered text block, but CANNOT retract
-// content that was already streamed. Plugin authors implementing PII redaction
-// or output policies should be aware that streaming responses may bypass
-// interception. For strict PII guarantees, consider disabling streaming when
-// the plugin is active, or use before_llm_call to block before generation.
+/**
+ * Fires before the final assistant response is delivered to the user.
+ * Plugins can modify, redact, or block the response.
+ *
+ * Use cases: PII redaction, output policies, response gating.
+ *
+ * **Streaming limitation:** In streaming mode, `text_delta` chunks may have
+ * already been delivered to the client before this hook fires. The hook
+ * modifies persisted session history and the final text block, but **cannot
+ * retract already-streamed content**. For strict PII guarantees, disable
+ * streaming when the plugin is active, or use `before_llm_call` to block
+ * before generation begins.
+ *
+ * **Fail-closed:** If the hook machinery itself throws, the response is
+ * suppressed (assistant content cleared from session history).
+ *
+ * Content is raw assistant text — may include reasoning/tool-call artifacts
+ * that are stripped in the final delivery pipeline. For PII scanning this is
+ * correct (scan the superset), but content-based rewrites should be aware
+ * that the delivered text may differ slightly from what the hook sees.
+ */
 export type PluginHookBeforeResponseEmitEvent = {
   /**
    * The final assistant response text about to be delivered.
