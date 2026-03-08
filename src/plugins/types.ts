@@ -1898,12 +1898,25 @@ export type PluginHookGatewayStopEvent = {
 // (scan the superset), but content-based rewrites should be aware that the
 // delivered text may differ slightly from what the hook sees.
 //
-// Streaming: the hook fires post-prompt. In streaming mode, text_delta chunks
-// may already have been emitted. The hook modifies persisted session history
-// and the final delivered text, but cannot retract streamed chunks.
+// Streaming limitation: this hook fires after the LLM prompt completes. In
+// streaming mode, text_delta chunks may already have been delivered to the
+// client incrementally before this hook runs. The hook modifies persisted
+// session history and the final delivered text block, but CANNOT retract
+// content that was already streamed. Plugin authors implementing PII redaction
+// or output policies should be aware that streaming responses may bypass
+// interception. For strict PII guarantees, consider disabling streaming when
+// the plugin is active, or use before_llm_call to block before generation.
 export type PluginHookBeforeResponseEmitEvent = {
-  /** The final assistant response text about to be delivered.
-   *  This is raw text — may include artifacts that are stripped before delivery. */
+  /**
+   * The final assistant response text about to be delivered.
+   *
+   * **Streaming note:** In streaming mode, this text may have already been
+   * partially or fully delivered to the client via text_delta chunks before
+   * this hook fires. Modifications here affect persisted session history and
+   * the final text block, but cannot retract already-streamed content.
+   *
+   * This is raw text — may include artifacts that are stripped before delivery.
+   */
   content: string;
   /** All assistant response texts from the current run (multi-turn).
    *  Enables full PII redaction across tool-loop iterations.
