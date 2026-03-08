@@ -2000,6 +2000,84 @@ export async function runEmbeddedAttempt(
         messagesSnapshot = snapshotSelection.messagesSnapshot;
         sessionIdUsed = snapshotSelection.sessionIdUsed;
 
+        // --- before_response_emit hook ---
+        // Fires after the prompt completes, before the response is finalized.
+        // Modifies the persisted session history and the delivered response text.
+        //
+        // LIMITATION: In streaming mode, text_delta chunks may already have been
+        // emitted to the client by this point. The hook cannot retract streamed
+        // chunks. It CAN modify/redact what gets persisted to session history
+        // (affecting future LLM context) and what gets delivered in non-streaming
+        // paths. For full real-time stream interception, use before_llm_call to
+        // block the call or after_llm_call to filter tool execution.
+        // Run regardless of promptError — prior tool-loop iterations may have
+        // accumulated PII in assistantTexts before the final call errored.
+        // The hook's natural no-op (assistantTexts.length === 0) handles the
+        // case where no content was produced.
+        if (hookRunner?.hasHooks("before_response_emit")) {
+          try {
+            const { applyBeforeResponseEmitHook } = await import("./hook-response-emit.js");
+            const emitResult = await applyBeforeResponseEmitHook({
+              hookRunner,
+              agentCtx: hookCtx,
+              assistantTexts,
+              messagesSnapshot,
+              activeSession,
+              channel: params.messageChannel ?? params.messageProvider,
+            });
+            if (emitResult !== undefined) {
+              if (emitResult.blocked) {
+                // Blocked — suppress the entire accumulated response, not just
+                // the last chunk. Earlier tool-loop iterations may have added
+                // text that would otherwise escape the hook.
+                assistantTexts.splice(0, assistantTexts.length);
+              } else if (emitResult.allContent !== undefined) {
+                // Full multi-turn modification — replace all assistant texts.
+                // Truncate to original length to prevent plugins from expanding
+                // the response beyond what was actually produced in this run.
+                const bounded = emitResult.allContent.slice(0, assistantTexts.length);
+                assistantTexts.splice(0, assistantTexts.length, ...bounded);
+              } else if (emitResult.content !== undefined) {
+                // Single last-message modification (backward-compatible).
+                if (assistantTexts.length > 0) {
+                  assistantTexts[assistantTexts.length - 1] = emitResult.content;
+                }
+              }
+              // Refresh messagesSnapshot so downstream consumers (agent_end,
+              // llm_output, cache trace) see the post-redaction content.
+              messagesSnapshot = activeSession.messages.slice();
+            }
+          } catch (err) {
+            // Fail-closed: if the hook machinery itself throws (import failure,
+            // internal bug, plugin escaping per-handler catchErrors), suppress
+            // the response rather than delivering potentially unredacted PII.
+            // Plugin authors writing output-policy hooks expect crash = blocked.
+            log.error(
+              `before_response_emit hook error — FAIL CLOSED, clearing response: runId=${params.runId} ${String(err)}`,
+            );
+            assistantTexts.splice(0, assistantTexts.length);
+            // Also clear assistant content from session messages so downstream
+            // payloads.ts fallback (lastAssistant from session) can't leak.
+            try {
+              const { clearAllAssistantContent } = await import("./hook-response-emit.js");
+              clearAllAssistantContent(activeSession.messages);
+            } catch {
+              // If even the import fails, clear manually as last resort.
+              // Set content = [] (not selective text clearing) to also remove
+              // tool_use blocks whose input arguments may contain sensitive data.
+              for (const msg of activeSession.messages) {
+                if (msg.role === "assistant" && "content" in msg) {
+                  if (typeof msg.content === "string") {
+                    (msg as unknown as Record<string, unknown>).content = "";
+                  } else if (Array.isArray(msg.content)) {
+                    msg.content.length = 0;
+                  }
+                }
+              }
+            }
+          }
+        }
+
         if (promptError && promptErrorSource === "prompt" && !compactionOccurredThisAttempt) {
           try {
             sessionManager.appendCustomEntry("openclaw:prompt-error", {

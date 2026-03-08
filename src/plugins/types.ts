@@ -341,7 +341,8 @@ export type PluginHookName =
   | "loop_iteration_start"
   | "loop_iteration_end"
   | "before_llm_call"
-  | "after_llm_call";
+  | "after_llm_call"
+  | "before_response_emit";
 
 export const PLUGIN_HOOK_NAMES = [
   "before_model_resolve",
@@ -373,6 +374,7 @@ export const PLUGIN_HOOK_NAMES = [
   "loop_iteration_end",
   "before_llm_call",
   "after_llm_call",
+  "before_response_emit",
 ] as const satisfies readonly PluginHookName[];
 
 type MissingPluginHookNames = Exclude<PluginHookName, (typeof PLUGIN_HOOK_NAMES)[number]>;
@@ -910,6 +912,54 @@ export type PluginHookAfterLlmCallResult = {
   toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
 };
 
+// Response Emit Hook
+// ============================================================================
+
+// before_response_emit hook (modifying — sequential)
+//
+// Error handling: FAIL-CLOSED. If the hook machinery throws, the response
+// is suppressed (assistantTexts cleared). Plugin authors can rely on crash = blocked.
+//
+// Content is raw assistant text (may include reasoning/tool-call artifacts that
+// are stripped in the final delivery pipeline). For PII scanning this is correct
+// (scan the superset), but content-based rewrites should be aware that the
+// delivered text may differ slightly from what the hook sees.
+//
+// Streaming: the hook fires post-prompt. In streaming mode, text_delta chunks
+// may already have been emitted. The hook modifies persisted session history
+// and the final delivered text, but cannot retract streamed chunks.
+export type PluginHookBeforeResponseEmitEvent = {
+  /** The final assistant response text about to be delivered.
+   *  This is raw text — may include artifacts that are stripped before delivery. */
+  content: string;
+  /** All assistant response texts from the current run (multi-turn).
+   *  Enables full PII redaction across tool-loop iterations.
+   *  Bounded to the original assistantTexts.length — plugins cannot inject messages. */
+  allContent: string[];
+  /** Channel identifier (e.g. "telegram", "discord"). */
+  channel?: string;
+  /** Number of messages in the session at the time of the hook. */
+  messageCount: number;
+};
+
+export type PluginHookBeforeResponseEmitResult = {
+  /** Replace the final response text (first-writer-wins across handlers).
+   *  Mutually exclusive with allContent: whichever field is set first by a
+   *  higher-priority handler blocks the other from being set by later handlers.
+   *  In applyBeforeResponseEmitHook, allContent takes precedence over content
+   *  when both are somehow present in the merged result. */
+  content?: string;
+  /** Replace all assistant texts from the current run (first-writer-wins across handlers).
+   *  Mutually exclusive with content: whichever field is set first by a
+   *  higher-priority handler blocks the other from being set by later handlers.
+   *  Takes precedence over content at the application layer. */
+  allContent?: string[];
+  /** Block the response entirely (one-way latch). Clears all current-run assistant content from session history. */
+  block?: boolean;
+  /** Reason for blocking (first-writer-wins). */
+  blockReason?: string;
+};
+
 // Hook handler types mapped by hook name
 export type PluginHookHandlerMap = {
   before_model_resolve: (
@@ -1028,6 +1078,13 @@ export type PluginHookHandlerMap = {
     event: PluginHookAfterLlmCallEvent,
     ctx: PluginHookAgentContext,
   ) => Promise<PluginHookAfterLlmCallResult | void> | PluginHookAfterLlmCallResult | void;
+  before_response_emit: (
+    event: PluginHookBeforeResponseEmitEvent,
+    ctx: PluginHookAgentContext,
+  ) =>
+    | Promise<PluginHookBeforeResponseEmitResult | void>
+    | PluginHookBeforeResponseEmitResult
+    | void;
 };
 
 export type PluginHookRegistration<K extends PluginHookName = PluginHookName> = {

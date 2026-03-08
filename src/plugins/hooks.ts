@@ -57,6 +57,8 @@ import type {
   PluginHookBeforeLlmCallResult,
   PluginHookAfterLlmCallEvent,
   PluginHookAfterLlmCallResult,
+  PluginHookBeforeResponseEmitEvent,
+  PluginHookBeforeResponseEmitResult,
 } from "./types.js";
 
 // Re-export types for consumers
@@ -789,6 +791,42 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
           acc?.tools !== undefined && next.tools !== undefined
             ? next.tools.filter((t) => acc.tools!.some((a) => a.name === t.name))
             : (next.tools ?? acc?.tools),
+      }),
+    );
+  }
+
+  // Response Emit Hooks
+  // =========================================================================
+
+  /**
+   * Run before_response_emit hook.
+   * Fires before the final assistant response is delivered.
+   * Allows plugins to modify, redact, or block the response.
+   * Runs sequentially, merging results across handlers.
+   */
+  async function runBeforeResponseEmit(
+    event: PluginHookBeforeResponseEmitEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookBeforeResponseEmitResult | undefined> {
+    return runModifyingHook<"before_response_emit", PluginHookBeforeResponseEmitResult>(
+      "before_response_emit",
+      event,
+      ctx,
+      (acc, next) => ({
+        // content and allContent are mutually exclusive — first-writer-wins.
+        // If a higher-priority handler set either, it wins.
+        content:
+          acc?.content !== undefined
+            ? acc.content
+            : acc?.allContent !== undefined
+              ? undefined
+              : next.content,
+        allContent:
+          acc?.allContent !== undefined
+            ? acc.allContent
+            : acc?.content !== undefined
+              ? undefined
+              : next.allContent,
         block: next.block || acc?.block,
         blockReason: acc?.blockReason ?? next.blockReason,
       }),
@@ -878,6 +916,8 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     // LLM call hooks
     runBeforeLlmCall,
     runAfterLlmCall,
+    // Response emit hooks
+    runBeforeResponseEmit,
     // Utility
     hasHooks,
     getHookCount,

@@ -11,6 +11,7 @@ import type {
   PluginHookAgentContext,
   PluginHookBeforeLlmCallEvent,
   PluginHookAfterLlmCallEvent,
+  PluginHookBeforeResponseEmitEvent,
   PluginHookRegistration,
 } from "./types.js";
 
@@ -266,5 +267,92 @@ describe("after_llm_call hook", () => {
     const runner = createHookRunner(makeRegistry([]));
     const result = await runner.runAfterLlmCall(baseEvent, agentCtx);
     expect(result).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// before_response_emit (modifying, sequential)
+// ---------------------------------------------------------------------------
+
+describe("before_response_emit hook", () => {
+  const baseEvent: PluginHookBeforeResponseEmitEvent = {
+    content: "Hello world",
+    allContent: ["Step 1", "Step 2", "Hello world"],
+    channel: "test",
+    messageCount: 3,
+  };
+
+  it("merges block from multiple handlers (one-way latch)", async () => {
+    const hooks: PluginHookRegistration[] = [
+      {
+        hookName: "before_response_emit",
+        pluginId: "a",
+        source: "test",
+        priority: 10,
+        handler: vi.fn().mockReturnValue({ block: false }),
+      },
+      {
+        hookName: "before_response_emit",
+        pluginId: "b",
+        source: "test",
+        priority: 50,
+        handler: vi.fn().mockReturnValue({ block: true, blockReason: "policy" }),
+      },
+    ];
+    const runner = createHookRunner(makeRegistry(hooks));
+    const result = await runner.runBeforeResponseEmit(baseEvent, agentCtx);
+    expect(result?.block).toBe(true);
+    expect(result?.blockReason).toBe("policy");
+  });
+
+  it("returns undefined when no handlers registered", async () => {
+    const runner = createHookRunner(makeRegistry([]));
+    const result = await runner.runBeforeResponseEmit(baseEvent, agentCtx);
+    expect(result).toBeUndefined();
+  });
+
+  it("first-writer-wins: higher-priority content blocks lower-priority allContent", async () => {
+    const hooks = [
+      {
+        hookName: "before_response_emit" as const,
+        pluginId: "a",
+        source: "test" as const,
+        priority: 50,
+        handler: vi.fn().mockReturnValue({ content: "redacted by A" }),
+      },
+      {
+        hookName: "before_response_emit" as const,
+        pluginId: "b",
+        source: "test" as const,
+        priority: 10,
+        handler: vi.fn().mockReturnValue({ allContent: ["replaced by B"] }),
+      },
+    ];
+    const runner = createHookRunner(makeRegistry(hooks));
+    const result = await runner.runBeforeResponseEmit(baseEvent, agentCtx);
+    expect(result?.content).toBe("redacted by A");
+    expect(result?.allContent).toBeUndefined();
+  });
+
+  it("first-writer-wins: higher-priority allContent wins", async () => {
+    const hooks = [
+      {
+        hookName: "before_response_emit" as const,
+        pluginId: "a",
+        source: "test" as const,
+        priority: 50,
+        handler: vi.fn().mockReturnValue({ allContent: ["first"] }),
+      },
+      {
+        hookName: "before_response_emit" as const,
+        pluginId: "b",
+        source: "test" as const,
+        priority: 10,
+        handler: vi.fn().mockReturnValue({ allContent: ["second"] }),
+      },
+    ];
+    const runner = createHookRunner(makeRegistry(hooks));
+    const result = await runner.runBeforeResponseEmit(baseEvent, agentCtx);
+    expect(result?.allContent).toEqual(["first"]);
   });
 });
