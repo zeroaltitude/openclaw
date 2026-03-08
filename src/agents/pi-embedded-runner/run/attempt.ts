@@ -3035,14 +3035,13 @@ export async function runEmbeddedAttempt(
               const { clearAllAssistantContent } = await import("./hook-response-emit.js");
               clearAllAssistantContent(activeSession.messages);
             } catch {
-              // If even the import fails, remove assistant messages manually.
+              // If even the import fails, remove assistant + toolResult messages manually.
               // Splice in reverse so indices stay valid. Removes the messages
-              // entirely — empty-content ghosts would break LLM API calls.
+              // entirely — empty-content ghosts would break LLM API calls, and
+              // orphaned toolResults may contain sensitive tool output.
               for (let i = activeSession.messages.length - 1; i >= 0; i--) {
-                if (
-                  activeSession.messages[i].role === "assistant" &&
-                  "content" in activeSession.messages[i]
-                ) {
+                const role = activeSession.messages[i].role;
+                if (role === "assistant" || role === "toolResult") {
                   activeSession.messages.splice(i, 1);
                 }
               }
