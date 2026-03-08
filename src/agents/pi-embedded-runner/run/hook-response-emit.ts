@@ -23,10 +23,6 @@ export interface ApplyBeforeResponseEmitParams {
   messagesSnapshot: AgentMessage[];
   activeSession: { messages: AgentMessage[] };
   channel?: string;
-  /** Number of messages in the session before the current run started.
-   *  Used to count actual assistant turns (not assistantTexts.length, which
-   *  can have multiple entries per turn with block-reply chunking). */
-  preRunMessageCount?: number;
 }
 
 /** Result from applyBeforeResponseEmitHook. */

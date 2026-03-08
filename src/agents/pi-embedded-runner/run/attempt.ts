@@ -2996,7 +2996,6 @@ export async function runEmbeddedAttempt(
               messagesSnapshot,
               activeSession,
               channel: params.messageChannel ?? params.messageProvider,
-              preRunMessageCount: prePromptMessageCount,
             });
             if (emitResult !== undefined) {
               if (emitResult.blocked) {
