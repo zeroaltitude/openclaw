@@ -388,10 +388,10 @@ function rewriteSingleAssistantMessage(msg: AgentMessage, newContent: string): v
  * corresponding `tool_use` assistant message is removed would produce a
  * malformed conversation history that the Anthropic API rejects.
  *
- * When `scope` is omitted, ALL assistant messages with content are removed
- * (toolResult messages are left untouched in the unscoped path since the
- * caller is clearing the entire session and toolResults without a preceding
- * tool_use are already invalid).
+ * When `scope` is omitted, ALL assistant and toolResult messages are removed.
+ * This is the fail-closed nuclear path — toolResult entries may contain
+ * sensitive tool output and would be orphaned without their tool_use
+ * predecessor anyway.
  *
  * Messages are removed rather than blanked to avoid ghost entries.
  * Empty-content assistant messages (content: "" or content: []) would persist
@@ -414,8 +414,10 @@ export function clearAllAssistantContent(messages: AgentMessage[], scope?: Agent
         continue;
       }
     } else {
-      // Unscoped: remove all assistant messages with content.
-      if (msg.role !== "assistant" || !("content" in msg)) {
+      // Unscoped (fail-closed nuclear): remove all assistant and toolResult messages.
+      // toolResult entries may contain sensitive tool output and would be orphaned
+      // without their tool_use predecessor.
+      if (msg.role !== "assistant" && msg.role !== "toolResult") {
         continue;
       }
     }
