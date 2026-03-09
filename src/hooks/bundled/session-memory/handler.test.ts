@@ -546,10 +546,13 @@ describe("session-memory hook", () => {
 
   // Uses the exported drain utility from internal-hooks.ts so tests share
   // the exact same drain semantics as production (snapshot → clear → sequential
-  // await → per-action error isolation).
+  // await). Errors are rethrown (rather than swallowed) so test failures surface
+  // the actual error message instead of a confusing downstream assertion failure.
   async function drainActions(event: { postHookActions: Array<() => Promise<void> | void> }) {
     const { drainPostHookActions } = await import("../../internal-hooks.js");
-    await drainPostHookActions(event.postHookActions);
+    await drainPostHookActions(event.postHookActions, (err) => {
+      throw err;
+    });
   }
 
   it("blockSessionSave (pre-set) prevents memory file creation", async () => {
@@ -618,14 +621,13 @@ describe("session-memory hook", () => {
       content: createMockSessionContent([{ role: "user", content: "first session" }]),
     });
 
-    // Pin Math.random AND timestamp to force deterministic slug — both
-    // handler calls produce the same LLM-generated slug ("simple-math"
-    // via the mock), exercising the slug-collision restoration path
-    // (preExistingContent !== null).  Math.random is pinned as a backstop
-    // for the edge case where sessionContent is null and the LLM path
-    // never fires.  Without pinning the clock, a wall-clock second
-    // boundary between event1 and event2 would produce different HHMMSS
-    // prefixes → no collision.
+    // Pin Math.random AND timestamp to force deterministic fallback slug —
+    // both handler calls produce the same HHMMSS prefix (fixed timestamp)
+    // and the same random suffix (pinned Math.random). LLM slug generation
+    // is disabled in the test environment (VITEST=true), so the collision
+    // is exercised entirely through the fallback path.  Without pinning
+    // the clock, a wall-clock second boundary between event1 and event2
+    // would produce different HHMMSS prefixes → no collision.
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     const fixedTimestamp = new Date("2024-01-15T12:34:56.000Z");
 
