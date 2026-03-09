@@ -874,4 +874,36 @@ describe("session-memory hook", () => {
     const memoryFiles = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
     expect(memoryFiles).toHaveLength(0);
   });
+
+  it("blockSessionSave pre-set then cleared without sessionSaveContent warns and writes nothing", async () => {
+    const tempDir = await createCaseWorkspace("block-cleared-no-content");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "will not be saved" }]),
+    });
+
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+
+    // Pre-set blockSessionSave — handler skips transcript loading + inline write
+    event.context.blockSessionSave = true;
+
+    await handler(event);
+
+    // A later hook clears blockSessionSave but forgets to set sessionSaveContent.
+    // Since the transcript was never loaded, no file can be produced.
+    event.context.blockSessionSave = false;
+
+    await drainPostHookActions(event);
+
+    // No memory file should exist — the transcript was never loaded
+    const memoryDir = path.join(tempDir, "memory");
+    const memoryFiles = await fs.readdir(memoryDir).catch(() => [] as string[]);
+    expect(memoryFiles.filter((f) => f.endsWith(".md"))).toHaveLength(0);
+  });
 });

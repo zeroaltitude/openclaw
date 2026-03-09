@@ -318,6 +318,19 @@ const saveSessionToMemory: HookHandler = async (event) => {
         log.debug("Session save content replaced by post-hook (sessionSaveContent)", {
           length: postContent.length,
         });
+      } else if (
+        event.context.blockSessionSave !== true &&
+        writtenEntry === null &&
+        typeof postContent !== "string"
+      ) {
+        // blockSessionSave was pre-set (causing writtenEntry=null and no inline
+        // write), then a later hook cleared it without providing sessionSaveContent.
+        // The transcript was never loaded, so we cannot produce a file. Warn so
+        // plugin authors know to supply content when un-blocking.
+        log.warn(
+          "blockSessionSave was cleared but no sessionSaveContent provided — " +
+            "no memory file written (transcript was not loaded during pre-set block)",
+        );
       }
     });
   } catch (err) {
