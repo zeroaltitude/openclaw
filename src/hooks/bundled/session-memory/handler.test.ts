@@ -618,59 +618,65 @@ describe("session-memory hook", () => {
     expect(memoryFiles).toHaveLength(0);
   });
 
-  it("late-block retraction restores pre-existing file instead of deleting", async () => {
+  it("late-block retraction restores pre-existing file instead of deleting (slug collision)", async () => {
     const tempDir = await createCaseWorkspace("block-save-restore");
     const sessionsDir = path.join(tempDir, "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
     const sessionFile = await writeWorkspaceFile({
       dir: sessionsDir,
       name: "test-session.jsonl",
-      content: createMockSessionContent([{ role: "user", content: "new session" }]),
+      content: createMockSessionContent([{ role: "user", content: "first session" }]),
     });
 
-    // Run the handler to create the memory file (captures the generated filename).
-    const event = createHookEvent("command", "new", "agent:main:main", {
-      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
-      previousSessionEntry: { sessionId: "s1", sessionFile },
-    });
-    await handler(event);
-    await drainPostHookActions(event);
+    // Pin Math.random to force deterministic slug — both handler calls
+    // produce the same fallback filename, exercising the slug-collision
+    // restoration path (preExistingContent !== null).
+    const origRandom = Math.random;
+    Math.random = () => 0.5;
 
-    const memoryDir = path.join(tempDir, "memory");
-    const files1 = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
-    expect(files1).toHaveLength(1);
-    const existingFile = files1[0];
-    const existingPath = path.join(memoryDir, existingFile);
+    try {
+      // First handler: creates memory file with deterministic slug.
+      const event1 = createHookEvent("command", "new", "agent:main:main", {
+        cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+        previousSessionEntry: { sessionId: "s1", sessionFile },
+      });
+      await handler(event1);
+      await drainPostHookActions(event1);
 
-    // Replace the file content with known "prior" content to simulate a
-    // pre-existing memory file that would be at risk during slug collision.
-    await fs.writeFile(existingPath, "prior session content");
+      const memoryDir = path.join(tempDir, "memory");
+      const files1 = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
+      expect(files1).toHaveLength(1);
+      const collidingFile = files1[0];
+      const collidingPath = path.join(memoryDir, collidingFile);
+      const originalContent = await fs.readFile(collidingPath, "utf-8");
+      expect(originalContent).toContain("first session");
 
-    // Now run a second handler that writes to the SAME filename.
-    // We simulate this by using the same session (same slug output).
-    const event2 = createHookEvent("command", "new", "agent:main:main", {
-      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
-      previousSessionEntry: { sessionId: "s2", sessionFile },
-    });
-    await handler(event2);
+      // Second handler: same deterministic slug → overwrites the file (collision).
+      const sessionFile2 = await writeWorkspaceFile({
+        dir: sessionsDir,
+        name: "test-session2.jsonl",
+        content: createMockSessionContent([{ role: "user", content: "second session" }]),
+      });
+      const event2 = createHookEvent("command", "new", "agent:main:main", {
+        cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+        previousSessionEntry: { sessionId: "s2", sessionFile: sessionFile2 },
+      });
+      await handler(event2);
 
-    // Verify inline write happened (file content changed from "prior session content").
-    // Note: if slugs differ, this test just validates the non-collision retraction path.
-    // The fix ensures correctness in both cases — collision restores, no-collision deletes.
+      // Verify the file was overwritten by second handler.
+      const overwrittenContent = await fs.readFile(collidingPath, "utf-8");
+      expect(overwrittenContent).toContain("second session");
 
-    // Late-block: a later hook sets blockSessionSave
-    event2.context.blockSessionSave = true;
-    await drainPostHookActions(event2);
+      // Late-block: retraction should restore the FIRST session's content.
+      event2.context.blockSessionSave = true;
+      await drainPostHookActions(event2);
 
-    // The SECOND handler's file should be retracted.
-    // If it was the same filename (collision), the prior content should be restored.
-    // If different filename, that file should be deleted and the original file untouched.
-    const files2 = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
-
-    // The original file must survive regardless of collision
-    expect(files2).toContain(existingFile);
-    const content = await fs.readFile(existingPath, "utf-8");
-    expect(content).toBe("prior session content");
+      const restoredContent = await fs.readFile(collidingPath, "utf-8");
+      expect(restoredContent).toContain("first session");
+      expect(restoredContent).not.toContain("second session");
+    } finally {
+      Math.random = origRandom;
+    }
   });
 
   it("sessionSaveContent (pre-set) overrides saved content", async () => {
