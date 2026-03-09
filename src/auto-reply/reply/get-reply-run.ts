@@ -503,6 +503,7 @@ export async function runPreparedReply(
             ctx.OriginatingChannel ??
             sessionCtx.OriginatingChannel ??
             ctx.Provider ??
+            ctx.Surface ??
             sessionCtx.Provider
           )
             ?.trim()
