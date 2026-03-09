@@ -308,7 +308,11 @@ export async function triggerInternalHook(event: InternalHookEvent): Promise<voi
  *
  * Snapshots the array before iterating so that self-scheduling actions
  * (ones that push new callbacks) do not execute in the same drain cycle.
- * Clears the source array after snapshotting so re-draining is a no-op.
+ * Clears the source array after snapshotting so an immediate re-drain with
+ * no intervening pushes is a no-op.  Note: if an action pushes new callbacks
+ * *during* its own execution, those entries land in the already-cleared source
+ * array and will persist after this function returns — a subsequent drain
+ * call will execute them.
  * Errors are caught per-action so one failure doesn't block others.
  *
  * Exported for use in tests that need to drain post-hook actions without
