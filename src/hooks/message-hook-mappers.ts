@@ -151,7 +151,7 @@ export function toPluginMessageContext(
     channelId: canonical.channelId,
     accountId: canonical.accountId,
     conversationId: canonical.conversationId,
-    sessionKey: "sessionKey" in canonical ? canonical.sessionKey : undefined,
+    sessionKey: canonical.sessionKey,
   };
 }
 
