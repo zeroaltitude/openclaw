@@ -53,8 +53,8 @@ export type FollowupRun = {
     groupId?: string | null;
     groupChannel?: string;
     groupSpace?: string;
-    senderId?: string;
-    senderName?: string;
+    senderId?: string | null;
+    senderName?: string | null;
     senderUsername?: string;
     senderE164?: string;
     senderIsOwner?: boolean;
