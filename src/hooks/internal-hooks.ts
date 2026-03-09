@@ -297,16 +297,38 @@ export async function triggerInternalHook(event: InternalHookEvent): Promise<voi
   // callbacks do not execute in this drain cycle. Without this, a self-
   // scheduling action (one that pushes another action) could loop infinitely
   // because Array's for...of iterator is live and re-reads length each step.
-  const pendingActions = [...event.postHookActions];
-  // Clear the source array so re-draining the same event is a no-op.
-  // Without this, passing an event twice would re-execute every action.
-  event.postHookActions.length = 0;
-  for (const action of pendingActions) {
+  await drainPostHookActions(event.postHookActions, (err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error(`Post-hook action error [${event.type}:${event.action}]: ${message}`);
+  });
+}
+
+/**
+ * Drain an array of post-hook action callbacks.
+ *
+ * Snapshots the array before iterating so that self-scheduling actions
+ * (ones that push new callbacks) do not execute in the same drain cycle.
+ * Clears the source array after snapshotting so re-draining is a no-op.
+ * Errors are caught per-action so one failure doesn't block others.
+ *
+ * Exported for use in tests that need to drain post-hook actions without
+ * going through the full triggerInternalHook pipeline, ensuring they
+ * share the same drain semantics as production.
+ *
+ * @param actions - The postHookActions array to drain (mutated: cleared after snapshot).
+ * @param onError - Optional per-action error handler. Defaults to swallowing errors silently.
+ */
+export async function drainPostHookActions(
+  actions: Array<() => Promise<void> | void>,
+  onError?: (err: unknown) => void,
+): Promise<void> {
+  const pending = [...actions];
+  actions.length = 0;
+  for (const action of pending) {
     try {
       await action();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error(`Post-hook action error [${event.type}:${event.action}]: ${message}`);
+      onError?.(err);
     }
   }
 }

@@ -544,24 +544,12 @@ describe("session-memory hook", () => {
     expect(memoryContent).toContain("assistant: Only message 2");
   });
 
-  // Helper to drain postHookActions with per-action error isolation,
-  // matching triggerInternalHook's actual drain behaviour.
-  async function drainPostHookActions(event: {
-    postHookActions: Array<() => Promise<void> | void>;
-  }) {
-    // Snapshot before draining — matches triggerInternalHook's production
-    // semantics (prevents self-scheduling actions from executing in the
-    // same drain cycle).
-    const pending = [...event.postHookActions];
-    // Clear source array so re-drain is a no-op (matches production).
-    event.postHookActions.length = 0;
-    for (const action of pending) {
-      try {
-        await action();
-      } catch {
-        // Per-action isolation — one failure doesn't block others.
-      }
-    }
+  // Uses the exported drain utility from internal-hooks.ts so tests share
+  // the exact same drain semantics as production (snapshot → clear → sequential
+  // await → per-action error isolation).
+  async function drainActions(event: { postHookActions: Array<() => Promise<void> | void> }) {
+    const { drainPostHookActions } = await import("../../internal-hooks.js");
+    await drainPostHookActions(event.postHookActions);
   }
 
   it("blockSessionSave (pre-set) prevents memory file creation", async () => {
@@ -581,7 +569,7 @@ describe("session-memory hook", () => {
     event.context.blockSessionSave = true;
 
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const memoryFiles = await fs.readdir(memoryDir).catch(() => [] as string[]);
@@ -614,7 +602,7 @@ describe("session-memory hook", () => {
     event.context.blockSessionSave = true;
 
     // Post-hook action retracts the file
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     memoryFiles = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
     expect(memoryFiles).toHaveLength(0);
@@ -649,7 +637,7 @@ describe("session-memory hook", () => {
       });
       event1.timestamp = fixedTimestamp;
       await handler(event1);
-      await drainPostHookActions(event1);
+      await drainActions(event1);
 
       const memoryDir = path.join(tempDir, "memory");
       const files1 = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
@@ -678,7 +666,7 @@ describe("session-memory hook", () => {
 
       // Late-block: retraction should restore the FIRST session's content.
       event2.context.blockSessionSave = true;
-      await drainPostHookActions(event2);
+      await drainActions(event2);
 
       const restoredContent = await fs.readFile(collidingPath, "utf-8");
       expect(restoredContent).toContain("first session");
@@ -705,7 +693,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "Custom summary from upstream hook";
 
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
@@ -737,7 +725,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "Redacted by policy";
 
     // Post-hook action overwrites
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
@@ -763,7 +751,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "";
 
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
@@ -832,7 +820,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "Replacement content from policy hook";
 
     // Post-hook should create the directory and write the file
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
     expect(files.length).toBeGreaterThan(0);
@@ -858,7 +846,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "Should not appear";
 
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const memoryFiles = await fs.readdir(memoryDir).catch(() => [] as string[]);
@@ -887,7 +875,7 @@ describe("session-memory hook", () => {
     event.context.blockSessionSave = true;
     event.context.sessionSaveContent = "Should not appear";
 
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const memoryFiles = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
@@ -918,7 +906,7 @@ describe("session-memory hook", () => {
     // Since the transcript was never loaded, no file can be produced.
     event.context.blockSessionSave = false;
 
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     // No memory file should exist — the transcript was never loaded
     const memoryDir = path.join(tempDir, "memory");

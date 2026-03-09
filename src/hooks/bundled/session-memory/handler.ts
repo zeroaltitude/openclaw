@@ -349,6 +349,22 @@ const saveSessionToMemory: HookHandler = async (event) => {
             "execution. To write a file after clearing blockSessionSave, also " +
             "provide sessionSaveContent with the desired content.",
         );
+      } else if (
+        event.context.blockSessionSave !== true &&
+        writtenEntry !== null &&
+        typeof postContent !== "string" &&
+        hasCustomContent
+      ) {
+        // sessionSaveContent was pre-set (inline write used custom content),
+        // then a later hook cleared it. The file retains the pre-set content.
+        // This is a no-op — to revert to transcript content, the clearing hook
+        // must provide its own sessionSaveContent. Log for diagnostics so
+        // plugin authors know their clearing was silently ignored.
+        log.debug(
+          "sessionSaveContent was cleared by a post-hook but the inline write " +
+            "already used the pre-set content. File retains pre-set content. " +
+            "To override, set sessionSaveContent to the desired replacement.",
+        );
       }
     });
   } catch (err) {
