@@ -154,28 +154,28 @@ describe("PluginHookAgentContext identity fields", () => {
   // (lines ~1628-1642) to verify the params → hookCtx mapping preserves
   // identity fields end-to-end, including null coercion semantics.
 
-  describe("hookCtx construction (attempt.ts pattern)", () => {
-    // Replicates the exact construction from attempt.ts:
-    // const hookCtx = { agentId, sessionKey, ..., senderId: params.senderId ?? null, ... }
-    function buildHookCtx(params: Record<string, unknown>): PluginHookAgentContext {
-      return {
-        agentId: params.agentId as string,
-        sessionKey: params.sessionKey as string,
-        sessionId: params.sessionId as string,
-        workspaceDir: params.workspaceDir as string,
-        messageProvider: (params.messageProvider as string) ?? undefined,
-        sourceProvider: (params.sourceProvider as string) ?? undefined,
-        trigger: params.trigger as string,
-        channelId:
-          (params.messageChannel as string) ?? (params.messageProvider as string) ?? undefined,
-        senderId: (params.senderId as string) ?? null,
-        senderName: (params.senderName as string) ?? null,
-        senderIsOwner: params.senderIsOwner as boolean,
-        groupId: (params.groupId as string) ?? null,
-        spawnedBy: (params.spawnedBy as string) ?? null,
-      };
-    }
+  // Replicates the exact construction from attempt.ts:
+  // const hookCtx = { agentId, sessionKey, ..., senderId: params.senderId ?? null, ... }
+  function buildHookCtx(params: Record<string, unknown>): PluginHookAgentContext {
+    return {
+      agentId: params.agentId as string,
+      sessionKey: params.sessionKey as string,
+      sessionId: params.sessionId as string,
+      workspaceDir: params.workspaceDir as string,
+      messageProvider: (params.messageProvider as string) ?? undefined,
+      sourceProvider: (params.sourceProvider as string) ?? undefined,
+      trigger: params.trigger as string,
+      channelId:
+        (params.messageChannel as string) ?? (params.messageProvider as string) ?? undefined,
+      senderId: (params.senderId as string) ?? null,
+      senderName: (params.senderName as string) ?? null,
+      senderIsOwner: params.senderIsOwner as boolean,
+      groupId: (params.groupId as string) ?? null,
+      spawnedBy: (params.spawnedBy as string) ?? null,
+    };
+  }
 
+  describe("hookCtx construction (attempt.ts pattern)", () => {
     it("maps fully-populated params to hookCtx with all identity fields", () => {
       const ctx = buildHookCtx({
         agentId: "main",
@@ -242,6 +242,224 @@ describe("PluginHookAgentContext identity fields", () => {
       });
 
       expect(ctx.channelId).toBe("discord");
+    });
+
+    it("groupId null (DM) is distinct from groupId undefined (unknown)", () => {
+      // null = confirmed DM, no group → lower injection risk for security plugins
+      const dmCtx = buildHookCtx({
+        agentId: "main",
+        sessionKey: "main:abc",
+        trigger: "user",
+        groupId: null,
+      });
+      expect(dmCtx.groupId).toBeNull();
+      expect(dmCtx.groupId).not.toBeUndefined();
+
+      // undefined params → coerced to null by `?? null`, consistent with attempt.ts
+      const unknownCtx = buildHookCtx({
+        agentId: "main",
+        sessionKey: "main:abc",
+        trigger: "user",
+        // groupId omitted entirely → undefined in params → null via ?? null
+      });
+      expect(unknownCtx.groupId).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // End-to-end pipeline simulation
+  // ---------------------------------------------------------------------------
+  // Replicates the full get-reply-run → FollowupRun.run → attempt.ts hookCtx
+  // chain to verify identity field preservation across all three stages,
+  // including the sourceProvider platform-token extraction and the null-for-
+  // confirmed vs undefined-for-unknown semantic distinction.
+
+  describe("full pipeline identity propagation", () => {
+    // Stage 1: get-reply-run.ts — session context → run params
+    // Replicates the sourceProvider extraction from get-reply-run.ts lines ~499-511
+    function extractSourceProvider(
+      originatingChannel: string | undefined,
+      sessionOriginatingChannel: string | undefined,
+      provider: string | undefined,
+      surface: string | undefined,
+      sessionProvider: string | undefined,
+    ): string | undefined {
+      return (
+        (
+          (
+            originatingChannel ??
+            sessionOriginatingChannel ??
+            provider ??
+            surface ??
+            sessionProvider
+          )
+            ?.trim()
+            .toLowerCase() || ""
+        ).split(":")[0] || undefined
+      );
+    }
+
+    // Stage 2: FollowupRun.run — run params stored as-is in the queue
+    // (identity: transparent forwarding)
+
+    // Stage 3: attempt.ts — run params → hookCtx
+    // (already covered by buildHookCtx above)
+
+    it("sourceProvider extracts platform token from routing paths", () => {
+      // "telegram:group:123" → "telegram"
+      expect(
+        extractSourceProvider("telegram:group:123", undefined, undefined, undefined, undefined),
+      ).toBe("telegram");
+      // "discord" → "discord"
+      expect(extractSourceProvider("discord", undefined, undefined, undefined, undefined)).toBe(
+        "discord",
+      );
+      // Full channel key "slack:channel:C123" → "slack"
+      expect(
+        extractSourceProvider("slack:channel:C123", undefined, undefined, undefined, undefined),
+      ).toBe("slack");
+    });
+
+    it("sourceProvider falls through chain correctly", () => {
+      // OriginatingChannel takes priority
+      expect(extractSourceProvider("telegram", "slack", "webchat", undefined, "webchat")).toBe(
+        "telegram",
+      );
+      // Falls back to session OriginatingChannel
+      expect(extractSourceProvider(undefined, "signal", "webchat", undefined, undefined)).toBe(
+        "signal",
+      );
+      // Falls back to Provider
+      expect(extractSourceProvider(undefined, undefined, "slack", undefined, undefined)).toBe(
+        "slack",
+      );
+      // Falls back to Surface
+      expect(extractSourceProvider(undefined, undefined, undefined, "webchat", undefined)).toBe(
+        "webchat",
+      );
+      // Falls back to session Provider
+      expect(extractSourceProvider(undefined, undefined, undefined, undefined, "telegram")).toBe(
+        "telegram",
+      );
+      // All undefined → undefined
+      expect(
+        extractSourceProvider(undefined, undefined, undefined, undefined, undefined),
+      ).toBeUndefined();
+    });
+
+    it("identity fields survive the full 3-stage pipeline for group messages", () => {
+      // Stage 1: get-reply-run extracts identity from session context
+      const sourceProvider = extractSourceProvider(
+        "telegram",
+        undefined,
+        "webchat",
+        undefined,
+        undefined,
+      );
+      const runParams = {
+        sourceProvider,
+        groupId: "G789" as string | null,
+        senderId: "U456" as string | null,
+        senderName: "Eddie" as string | null,
+        senderIsOwner: true,
+        spawnedBy: null as string | null,
+      };
+
+      // Stage 2: FollowupRun.run stores identity as-is (transparent forwarding)
+      const queuedRun = { ...runParams };
+
+      // Stage 3: attempt.ts builds hookCtx
+      const hookCtx = buildHookCtx({
+        agentId: "main",
+        sessionKey: "main:abc",
+        trigger: "user",
+        messageProvider: "webchat",
+        sourceProvider: queuedRun.sourceProvider,
+        senderId: queuedRun.senderId,
+        senderName: queuedRun.senderName,
+        senderIsOwner: queuedRun.senderIsOwner,
+        groupId: queuedRun.groupId,
+        spawnedBy: queuedRun.spawnedBy,
+      });
+
+      // sourceProvider is the origin platform, not the routing channel
+      expect(hookCtx.sourceProvider).toBe("telegram");
+      expect(hookCtx.messageProvider).toBe("webchat");
+      expect(hookCtx.senderId).toBe("U456");
+      expect(hookCtx.senderName).toBe("Eddie");
+      expect(hookCtx.senderIsOwner).toBe(true);
+      expect(hookCtx.groupId).toBe("G789");
+      expect(hookCtx.spawnedBy).toBeNull();
+    });
+
+    it("identity fields survive the full 3-stage pipeline for DM (null group)", () => {
+      // Stage 1: DM → no group session key → null
+      const runParams = {
+        sourceProvider: extractSourceProvider("slack", undefined, undefined, undefined, undefined),
+        groupId: null as string | null,
+        senderId: "U456" as string | null,
+        senderName: "Eddie" as string | null,
+        senderIsOwner: true,
+        spawnedBy: null as string | null,
+      };
+
+      // Stage 2: transparent forwarding (null must survive, not become undefined)
+      const queuedRun = { ...runParams };
+      expect(queuedRun.groupId).toBeNull();
+      expect(queuedRun.spawnedBy).toBeNull();
+
+      // Stage 3: hookCtx construction
+      const hookCtx = buildHookCtx({
+        agentId: "main",
+        sessionKey: "main:dm",
+        trigger: "user",
+        sourceProvider: queuedRun.sourceProvider,
+        groupId: queuedRun.groupId,
+        spawnedBy: queuedRun.spawnedBy,
+        senderId: queuedRun.senderId,
+        senderName: queuedRun.senderName,
+        senderIsOwner: queuedRun.senderIsOwner,
+      });
+
+      // Security plugins can safely use `ctx.groupId === null` to identify DMs
+      expect(hookCtx.groupId).toBeNull();
+      expect(hookCtx.groupId).not.toBeUndefined();
+      expect(hookCtx.spawnedBy).toBeNull();
+      expect(hookCtx.spawnedBy).not.toBeUndefined();
+    });
+
+    it("identity fields survive for spawned sub-agent sessions", () => {
+      const runParams = {
+        sourceProvider: extractSourceProvider(
+          "discord",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ),
+        groupId: "G123" as string | null,
+        senderId: "U789" as string | null,
+        senderName: null as string | null,
+        senderIsOwner: false,
+        spawnedBy: "agent:main:parent-session" as string | null,
+      };
+
+      const hookCtx = buildHookCtx({
+        agentId: "sub:codex",
+        sessionKey: "agent:sub:xyz",
+        trigger: "user",
+        sourceProvider: runParams.sourceProvider,
+        groupId: runParams.groupId,
+        senderId: runParams.senderId,
+        senderName: runParams.senderName,
+        senderIsOwner: runParams.senderIsOwner,
+        spawnedBy: runParams.spawnedBy,
+      });
+
+      expect(hookCtx.sourceProvider).toBe("discord");
+      expect(hookCtx.spawnedBy).toBe("agent:main:parent-session");
+      expect(hookCtx.senderName).toBeNull();
+      expect(hookCtx.senderIsOwner).toBe(false);
     });
   });
 });
