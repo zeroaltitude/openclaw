@@ -1475,7 +1475,8 @@ export type PluginHookAgentContext = {
   senderName?: string | null;
   /** Whether the sender is a configured owner (from ownerNumbers). */
   senderIsOwner?: boolean;
-  /** Group/channel ID if this is a group chat (null for DMs). */
+  /** Group/channel ID if this is a group chat (null for DMs and non-group sessions).
+   *  Always resolved from session context — null means confirmed non-group, not unknown. */
   groupId?: string | null;
   /** Parent session key if this is a sub-agent session. */
   spawnedBy?: string | null;
