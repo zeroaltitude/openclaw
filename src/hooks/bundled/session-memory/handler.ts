@@ -186,7 +186,7 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // one silently overwrites the earlier memory entry.
     if (!slug) {
       const timeSlug = now.toISOString().split("T")[1].split(".")[0].replace(/:/g, "");
-      const rand = Math.random().toString(36).slice(2, 6).padEnd(4, "0");
+      const rand = crypto.randomUUID().replace(/-/g, "").slice(0, 4);
       slug = `${timeSlug.slice(0, 6)}-${rand}`;
       log.debug("Using fallback timestamp slug", { slug });
     }
@@ -279,7 +279,7 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // Defer retraction/replacement to post-hook phase so that hooks
     // registered after this handler can set blockSessionSave or
     // sessionSaveContent and still have them honored.
-    const writtenEntry = context.blockSessionSave === true ? null : entry;
+    const writtenEntry = blockPreSet ? null : entry;
     // Post-hook callback — errors propagate to the framework's per-action
     // catch in triggerInternalHook, which provides consistent log formatting
     // and per-action isolation.

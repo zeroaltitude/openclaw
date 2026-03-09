@@ -621,14 +621,14 @@ describe("session-memory hook", () => {
       content: createMockSessionContent([{ role: "user", content: "first session" }]),
     });
 
-    // Pin Math.random AND timestamp to force deterministic fallback slug —
+    // Pin crypto.randomUUID AND timestamp to force deterministic fallback slug —
     // both handler calls produce the same HHMMSS prefix (fixed timestamp)
-    // and the same random suffix (pinned Math.random). LLM slug generation
-    // is disabled in the test environment (VITEST=true), so the collision
+    // and the same random suffix (pinned UUID). LLM slug generation is
+    // disabled in the test environment (VITEST=true), so the collision
     // is exercised entirely through the fallback path.  Without pinning
     // the clock, a wall-clock second boundary between event1 and event2
     // would produce different HHMMSS prefixes → no collision.
-    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("aaaa1111-2222-3333-4444-555566667777");
     const fixedTimestamp = new Date("2024-01-15T12:34:56.000Z");
 
     try {
