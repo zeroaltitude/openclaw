@@ -351,6 +351,13 @@ export async function runAgentTurnWithFallback(params: {
                 groupChannel: params.followupRun.run.groupChannel,
                 groupSpace: params.followupRun.run.groupSpace,
                 ...senderContext,
+                // Override live senderContext with stored run values to prevent
+                // trust-context drift (matches agent-runner-memory.ts pattern).
+                senderId: params.followupRun.run.senderId,
+                senderName: params.followupRun.run.senderName,
+                senderUsername: params.followupRun.run.senderUsername,
+                senderE164: params.followupRun.run.senderE164,
+                senderIsOwner: params.followupRun.run.senderIsOwner,
                 sourceProvider: params.followupRun.run.sourceProvider,
                 spawnedBy: params.followupRun.run.spawnedBy,
                 ...runBaseParams,
