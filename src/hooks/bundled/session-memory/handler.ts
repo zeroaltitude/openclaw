@@ -211,14 +211,26 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // When blockPreSet is true, skip entry construction entirely — the inline
     // write won't happen and the value would be discarded.
     let entry: string;
-    if (hasCustomContent) {
+    if (blockPreSet) {
+      // Block takes precedence — skip entry construction entirely since the
+      // inline write won't happen and the value would be discarded.
+      entry = "";
+      if (hasCustomContent) {
+        log.debug(
+          "blockSessionSave pre-set — sessionSaveContent was also set but will be ignored " +
+            "(blockSessionSave takes precedence over sessionSaveContent)",
+        );
+      } else {
+        log.debug("Session save blocked by upstream hook (inline check)");
+      }
+    } else if (hasCustomContent) {
       // An empty string is a valid redaction signal — hooks may intentionally
       // set it to persist a blank marker while avoiding transcript retention.
       entry = context.sessionSaveContent as string;
       log.debug("Using custom session content from upstream hook", {
         length: entry.length,
       });
-    } else if (!blockPreSet) {
+    } else {
       const entryParts = [
         `# Session: ${dateStr} ${timeStr} UTC`,
         "",
@@ -233,8 +245,6 @@ const saveSessionToMemory: HookHandler = async (event) => {
       }
 
       entry = entryParts.join("\n");
-    } else {
-      entry = ""; // Block pre-set — writtenEntry will be null regardless.
     }
 
     // Write inline (fail-safe: if postHookActions never drains, the file
@@ -246,14 +256,7 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // erasure of prior memory files when LLM slugs collide on the same day.
     let preExistingContent: string | null = null;
     if (blockPreSet) {
-      if (hasCustomContent) {
-        log.debug(
-          "blockSessionSave pre-set — sessionSaveContent was also set but will be ignored " +
-            "(blockSessionSave takes precedence over sessionSaveContent)",
-        );
-      } else {
-        log.debug("Session save blocked by upstream hook (inline check)");
-      }
+      // Already logged above — nothing to write.
     } else {
       await fs.mkdir(memoryDir, { recursive: true });
       try {
