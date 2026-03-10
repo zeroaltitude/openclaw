@@ -179,7 +179,16 @@ describe("before_llm_call hook", () => {
 
 describe("after_llm_call hook", () => {
   const baseEvent: PluginHookAfterLlmCallEvent = {
-    response: { role: "assistant", content: [], timestamp: Date.now() } as AgentMessage,
+    response: {
+      role: "assistant",
+      content: [] as Array<{ type: string; text: string }>,
+      timestamp: Date.now(),
+      api: "openai-chat",
+      provider: "test",
+      model: "test-model",
+      usage: { inputTokens: 0, outputTokens: 0 },
+      stopReason: "end_turn",
+    } as unknown as AgentMessage,
     toolCalls: [
       { id: "tc1", name: "read", arguments: { path: "/a" } },
       { id: "tc2", name: "write", arguments: { path: "/b" } },
