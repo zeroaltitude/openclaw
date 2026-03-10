@@ -5,6 +5,7 @@
  * Creates a new dated memory file with LLM-generated slug
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -304,7 +305,10 @@ const saveSessionToMemory: HookHandler = async (event) => {
         // provider for slug generation — but only when the transcript was actually
         // loaded (i.e. no custom content was pre-set). When hasCustomContent is
         // true, transcript loading and LLM calls were skipped entirely.
-        if (!hasCustomContent) {
+        if (!hasCustomContent && sessionContent) {
+          // Only warn when transcript was actually loaded and potentially
+          // sent to the LLM for slug generation. When sessionFile was null
+          // or sessionContent failed to load, no data left the device.
           log.warn(
             "blockSessionSave was set by a late hook — memory file will be retracted, but " +
               "transcript content may have already been sent to the LLM provider for slug generation. " +
