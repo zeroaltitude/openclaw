@@ -268,6 +268,69 @@ export function resolveAnthropicBetas(
   return betas.size > 0 ? [...betas] : undefined;
 }
 
+// ============================================================================
+// ANTHROPIC FAST MODE (speed parameter)
+// ============================================================================
+
+/** Valid values for the Anthropic `speed` request body parameter. */
+export type AnthropicSpeed = "fast";
+
+/**
+ * Resolve the Anthropic speed parameter from extraParams.
+ * Only applies to direct Anthropic provider (not Bedrock/Vertex).
+ *
+ * Config example:
+ *   "extraParams": { "speed": "fast" }
+ */
+export function resolveAnthropicSpeed(
+  extraParams: Record<string, unknown> | undefined,
+  provider: string,
+): AnthropicSpeed | undefined {
+  if (provider !== "anthropic") {
+    return undefined;
+  }
+  const raw = extraParams?.speed;
+  if (raw === "fast") {
+    return "fast";
+  }
+  if (raw !== undefined && raw !== null) {
+    const summary = typeof raw === "string" ? raw : typeof raw;
+    log.warn(`ignoring invalid Anthropic speed param: ${summary} (expected "fast")`);
+  }
+  return undefined;
+}
+
+/**
+ * Inject the `speed` parameter into the Anthropic Messages API request body.
+ * Only applies to anthropic-messages API on the anthropic provider.
+ *
+ * Requires the `fast-mode-2026-02-01` beta header (set via anthropicBeta).
+ */
+export function createAnthropicSpeedWrapper(
+  baseStreamFn: StreamFn | undefined,
+  speed: AnthropicSpeed,
+): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+  return (model, context, options) => {
+    if (model.api !== "anthropic-messages" || model.provider !== "anthropic") {
+      return underlying(model, context, options);
+    }
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload, payloadModel) => {
+        if (payload && typeof payload === "object") {
+          const payloadObj = payload as Record<string, unknown>;
+          if (payloadObj.speed === undefined) {
+            payloadObj.speed = speed;
+          }
+        }
+        return originalOnPayload?.(payload, payloadModel);
+      },
+    });
+  };
+}
+
 export function createAnthropicBetaHeadersWrapper(
   baseStreamFn: StreamFn | undefined,
   betas: string[],

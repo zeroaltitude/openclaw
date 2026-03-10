@@ -1687,6 +1687,109 @@ describe("applyExtraParamsToAgent", () => {
     expect(headers).toEqual({ "X-Custom": "1" });
   });
 
+  // ========================================================================
+  // ANTHROPIC FAST MODE (speed parameter)
+  // ========================================================================
+
+  it("injects speed=fast into Anthropic Messages payloads when configured", () => {
+    const cfg = buildAnthropicModelConfig("anthropic/claude-opus-4-6", { speed: "fast" });
+    const payload: Record<string, unknown> = { model: "claude-opus-4-6" };
+    const baseStreamFn: StreamFn = (model, _context, options) => {
+      options?.onPayload?.(payload, model);
+      return {} as ReturnType<StreamFn>;
+    };
+    const agent = { streamFn: baseStreamFn };
+    applyExtraParamsToAgent(agent, cfg, "anthropic", "claude-opus-4-6");
+
+    const model = {
+      api: "anthropic-messages",
+      provider: "anthropic",
+      id: "claude-opus-4-6",
+    } as Model<"anthropic-messages">;
+    const context: Context = { messages: [] };
+    void agent.streamFn?.(model, context, {});
+
+    expect(payload.speed).toBe("fast");
+  });
+
+  it("does not inject speed for non-anthropic providers", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          models: {
+            "openai/gpt-5": { params: { speed: "fast" } },
+          },
+        },
+      },
+    };
+    const payload: Record<string, unknown> = { model: "gpt-5" };
+    const baseStreamFn: StreamFn = (model, _context, options) => {
+      options?.onPayload?.(payload, model);
+      return {} as ReturnType<StreamFn>;
+    };
+    const agent = { streamFn: baseStreamFn };
+    applyExtraParamsToAgent(agent, cfg, "openai", "gpt-5");
+
+    const model = {
+      api: "openai-responses",
+      provider: "openai",
+      id: "gpt-5",
+      baseUrl: "https://api.openai.com/v1",
+    } as unknown as Model<"openai-responses">;
+    const context: Context = { messages: [] };
+    void agent.streamFn?.(model, context, {});
+
+    expect(payload.speed).toBeUndefined();
+  });
+
+  it("preserves caller-provided speed value in Anthropic payloads", () => {
+    const cfg = buildAnthropicModelConfig("anthropic/claude-opus-4-6", { speed: "fast" });
+    const payload: Record<string, unknown> = { model: "claude-opus-4-6", speed: "normal" };
+    const baseStreamFn: StreamFn = (model, _context, options) => {
+      options?.onPayload?.(payload, model);
+      return {} as ReturnType<StreamFn>;
+    };
+    const agent = { streamFn: baseStreamFn };
+    applyExtraParamsToAgent(agent, cfg, "anthropic", "claude-opus-4-6");
+
+    const model = {
+      api: "anthropic-messages",
+      provider: "anthropic",
+      id: "claude-opus-4-6",
+    } as Model<"anthropic-messages">;
+    const context: Context = { messages: [] };
+    void agent.streamFn?.(model, context, {});
+
+    // Should NOT overwrite existing value
+    expect(payload.speed).toBe("normal");
+  });
+
+  it("warns and skips speed injection for invalid speed values", () => {
+    const warnSpy = vi.spyOn(log, "warn");
+    const cfg = buildAnthropicModelConfig("anthropic/claude-opus-4-6", { speed: "turbo" });
+    const payload: Record<string, unknown> = { model: "claude-opus-4-6" };
+    const baseStreamFn: StreamFn = (model, _context, options) => {
+      options?.onPayload?.(payload, model);
+      return {} as ReturnType<StreamFn>;
+    };
+    const agent = { streamFn: baseStreamFn };
+    applyExtraParamsToAgent(agent, cfg, "anthropic", "claude-opus-4-6");
+
+    const model = {
+      api: "anthropic-messages",
+      provider: "anthropic",
+      id: "claude-opus-4-6",
+    } as Model<"anthropic-messages">;
+    const context: Context = { messages: [] };
+    void agent.streamFn?.(model, context, {});
+
+    expect(payload.speed).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("ignoring invalid Anthropic speed param"),
+    );
+    warnSpy.mockRestore();
+  });
+
   it("forces store=true for direct OpenAI Responses payloads", () => {
     const payload = runResponsesPayloadMutationCase({
       applyProvider: "openai",
