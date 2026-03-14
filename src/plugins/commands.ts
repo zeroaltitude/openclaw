@@ -184,7 +184,9 @@ export function matchPluginCommand(
   commandBody: string,
 ): { command: RegisteredPluginCommand; args?: string } | null {
   const trimmed = commandBody.trim();
-  if (!trimmed.startsWith("/")) {
+  // Support both slash-prefixed (/command) and dot-prefixed (.command) commands.
+  // Dot-prefix is the established convention for provenance/security commands.
+  if (!trimmed.startsWith("/") && !trimmed.startsWith(".")) {
     return null;
   }
 
@@ -193,8 +195,13 @@ export function matchPluginCommand(
   const commandName = spaceIndex === -1 ? trimmed : trimmed.slice(0, spaceIndex);
   const args = spaceIndex === -1 ? undefined : trimmed.slice(spaceIndex + 1).trim();
 
-  const key = commandName.toLowerCase();
-  const command = pluginCommands.get(key);
+  // Commands are stored in the registry with a slash prefix (e.g. "/reset-trust").
+  // Normalise dot-prefixed commands to slash-prefix for the lookup so both
+  // ".reset-trust" and "/reset-trust" resolve to the same registered command.
+  const normalizedName = commandName.startsWith(".")
+    ? `/${commandName.slice(1).toLowerCase()}`
+    : commandName.toLowerCase();
+  const command = pluginCommands.get(normalizedName);
 
   if (!command) {
     return null;
