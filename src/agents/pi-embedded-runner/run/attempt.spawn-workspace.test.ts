@@ -561,6 +561,7 @@ describe("runEmbeddedAttempt bootstrap warning prompt assembly", () => {
       prompt: "hello",
       timeoutMs: 10_000,
       runId: "run-warning",
+      attemptIndex: 0,
       provider: "openai",
       modelId: "gpt-test",
       model: testModel,

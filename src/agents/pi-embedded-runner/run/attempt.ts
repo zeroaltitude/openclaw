@@ -2596,6 +2596,8 @@ export async function runEmbeddedAttempt(
                   hookRunner
                     .runLoopIterationStart(
                       {
+                        runId: params.runId,
+                        attemptIndex: params.attemptIndex,
                         iteration: hookTurnIteration,
                         messageCount: activeSession.messages.length,
                         pendingToolResults: hookPendingToolResults,
@@ -2616,6 +2618,8 @@ export async function runEmbeddedAttempt(
                   hookRunner
                     .runLoopIterationEnd(
                       {
+                        runId: params.runId,
+                        attemptIndex: params.attemptIndex,
                         iteration: hookTurnIteration,
                         toolCallsMade: toolResults.length,
                         // Clamp to 0: mid-turn compaction can reduce messages.length
@@ -2893,6 +2897,7 @@ export async function runEmbeddedAttempt(
                   messages: contextMessagesSnapshot,
                   messageCount: contextMessagesSnapshot.length,
                   imageCount: imageResult.images.length,
+                  images: imageResult.images,
                   attemptIndex: params.attemptIndex,
                 },
                 hookCtx,

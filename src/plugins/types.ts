@@ -1905,6 +1905,10 @@ export type PluginHookContextAssembledEvent = {
   messageCount: number;
   /** Number of images attached to the prompt. */
   imageCount: number;
+  /** Images about to be sent with this prompt (not yet in messages).
+   *  Each entry contains type, mimeType, and base64-encoded data.
+   *  Available for hashing, token estimation, content classification, etc. */
+  images?: Array<{ type: string; data: string; mimeType: string }>;
   /** Zero-based attempt index within the outer run loop. 0 = initial attempt,
    *  1+ = retry after overflow compaction, auth refresh, or tool result truncation.
    *  Context (messages, systemPrompt) may differ between attempts due to compaction.
@@ -1914,6 +1918,10 @@ export type PluginHookContextAssembledEvent = {
 
 // loop_iteration_start hook (void — parallel)
 export type PluginHookLoopIterationStartEvent = {
+  /** Unique run identifier for correlating loop events with context_assembled. */
+  runId?: string;
+  /** Attempt index within the run (0-based; increments on compaction/auth retries). */
+  attemptIndex?: number;
   iteration: number;
   /** Number of pending tool results awaiting processing. Always provided by the
    *  embedded runner; may be undefined at future or custom call sites. */
@@ -1923,6 +1931,10 @@ export type PluginHookLoopIterationStartEvent = {
 
 // loop_iteration_end hook (void — parallel)
 export type PluginHookLoopIterationEndEvent = {
+  /** Unique run identifier for correlating loop events with context_assembled. */
+  runId?: string;
+  /** Attempt index within the run (0-based; increments on compaction/auth retries). */
+  attemptIndex?: number;
   iteration: number;
   toolCallsMade: number;
   /** Number of new messages added this iteration (clamped to 0 if compaction
