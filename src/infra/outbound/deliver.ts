@@ -130,6 +130,7 @@ type ChannelHandlerParams = {
   forceDocument?: boolean;
   silent?: boolean;
   mediaLocalRoots?: readonly string[];
+  sessionKey?: string;
 };
 
 // Channel docking: outbound delivery delegates to plugin.outbound adapters.
@@ -250,6 +251,7 @@ function createChannelOutboundContextBase(
     deps: params.deps,
     silent: params.silent,
     mediaLocalRoots: params.mediaLocalRoots,
+    sessionKey: params.sessionKey,
   };
 }
 
@@ -570,6 +572,7 @@ async function deliverOutboundPayloadsCore(
     forceDocument: params.forceDocument,
     silent: params.silent,
     mediaLocalRoots,
+    sessionKey: params.mirror?.sessionKey ?? params.session?.key,
   });
   const configuredTextLimit = handler.chunker
     ? resolveTextChunkLimit(cfg, channel, accountId, {
