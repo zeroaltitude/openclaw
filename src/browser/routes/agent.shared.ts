@@ -197,19 +197,26 @@ export async function withRouteTabContext<T>(
         // Note: cross-site navigations that trigger a renderer swap may
         // invalidate tab.targetId; in that case getPageForTargetId returns
         // null and we fall back to the (possibly stale) tab.url.
-        try {
-          const pwMod = await getPwAiModuleBase({ mode: "soft" });
-          if (pwMod?.getPageForTargetId) {
-            const page = await pwMod.getPageForTargetId({
-              cdpUrl: profileCtx.profile.cdpUrl,
-              targetId: tab.targetId,
-            });
-            if (page) {
-              postRunUrl = page.url();
+        // existing-session profiles set cdpUrl to "" (Chrome MCP auto-connect,
+        // no CDP port). Passing an empty cdpUrl to getPageForTargetId would
+        // always fail, so skip the Playwright lookup for those profiles and
+        // rely on tab.url (updated by the relay on each tabs.onUpdated event).
+        const cdpUrl = profileCtx.profile.cdpUrl;
+        if (cdpUrl) {
+          try {
+            const pwMod = await getPwAiModuleBase({ mode: "soft" });
+            if (pwMod?.getPageForTargetId) {
+              const page = await pwMod.getPageForTargetId({
+                cdpUrl,
+                targetId: tab.targetId,
+              });
+              if (page) {
+                postRunUrl = page.url();
+              }
             }
+          } catch {
+            // Playwright unavailable — fall back to tab.url
           }
-        } catch {
-          // Playwright unavailable — fall back to tab.url
         }
       }
       enrichTabResponseBody(interceptedBody, tab, postRunUrl);
