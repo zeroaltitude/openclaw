@@ -17,7 +17,6 @@ import {
 } from "../../agents/pi-embedded-helpers.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
 import {
-  resolveGroupSessionKey,
   resolveSessionTranscriptPath,
   type SessionEntry,
   updateSessionStore,
@@ -360,6 +359,19 @@ export async function runAgentTurnWithFallback(params: {
                 senderIsOwner: params.followupRun.run.senderIsOwner,
                 sourceProvider: params.followupRun.run.sourceProvider,
                 spawnedBy: params.followupRun.run.spawnedBy,
+                // Pin delivery routing to stored run values so queued runs
+                // always use the original channel and account credentials,
+                // not whatever the live session template reflects at execution
+                // time. Without this, agentAccountId (used for message-tool
+                // account selection and capability resolution) and
+                // messageProvider could drift if the session switches
+                // channels/accounts between queue capture and dispatch.
+                ...(params.followupRun.run.messageProvider != null && {
+                  messageProvider: params.followupRun.run.messageProvider,
+                }),
+                ...(params.followupRun.run.agentAccountId != null && {
+                  agentAccountId: params.followupRun.run.agentAccountId,
+                }),
                 prompt: params.commandBody,
                 extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
                 toolResultFormat: (() => {
