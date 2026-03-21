@@ -406,7 +406,12 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // the redirect target is outside the workspace.  writeFileWithinRoot
     // will catch this anyway, but failing early with a clear log message
     // is more useful for debugging than a generic SafeOpenError.
-    if (isRedirected && writeRelativePath.startsWith("..")) {
+    if (
+      isRedirected &&
+      (writeRelativePath === ".." ||
+        writeRelativePath.startsWith(`..${path.sep}`) ||
+        writeRelativePath.startsWith("../"))
+    ) {
       log.warn("Redirect path resolves outside workspace, rejecting", {
         redirectPath,
         resolvedRelative: writeRelativePath,
@@ -459,6 +464,14 @@ const saveSessionToMemory: HookHandler = async (event) => {
       entry = entryParts.join("\n");
     }
 
+    // Track the real path of the written file for retraction. For redirected
+    // writes through symlinks, writeFileWithinRoot follows the symlink, so
+    // the actual data may be at a different path than the lexical redirect.
+    // Updated to realpath after a successful redirect write.
+    let writtenFilePath = isRedirected
+      ? path.resolve(canonicalWorkspace, writeRelativePath)
+      : memoryFilePath;
+
     // Write inline (fail-safe: if postHookActions never drains, the file
     // is preserved on disk with the best content available at this point).
     // If blockSessionSave was already set by an upstream hook, skip the write.
@@ -490,6 +503,11 @@ const saveSessionToMemory: HookHandler = async (event) => {
         throw err;
       }
       log.debug("Memory file written successfully (redirected)");
+      // Resolve the real path of the written file for retraction purposes.
+      // writeFileWithinRoot follows symlinks, so the actual data may be at
+      // a different location than the lexical redirect path. Retraction must
+      // target the real file to honor "no persistence anywhere" guarantees.
+      writtenFilePath = await fs.realpath(writtenFilePath).catch(() => writtenFilePath);
       // Use canonicalWorkspace (always realpath'd for redirects) so the
       // logged path is consistent regardless of symlinks.
       const writePath = path.resolve(canonicalWorkspace, writeRelativePath);
@@ -522,9 +540,6 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // explicitly chose an alternative location and content; overriding
     // content in post-hook would undermine the redirect contract.
     const writtenEntry = context.blockSessionSave === true ? null : entry;
-    const writtenFilePath = isRedirected
-      ? path.resolve(canonicalWorkspace, writeRelativePath)
-      : memoryFilePath;
 
     // Post-hook callback — errors propagate to the framework's per-action
     // catch in triggerInternalHook, which provides consistent log formatting
@@ -548,10 +563,28 @@ const saveSessionToMemory: HookHandler = async (event) => {
         return;
       }
 
-      // sessionSaveContent replacement only for non-redirected writes.
-      // Redirect hooks chose the target path and content; a later hook
-      // shouldn't silently overwrite that decision.
+      // For redirected writes, only handle the late-unblock case: if the
+      // inline write was skipped (writtenEntry is null because blockSessionSave
+      // was true initially) and a later hook cleared the block and set
+      // sessionSaveContent, we must persist to the redirect path.
+      // Content replacement of an already-written redirect is NOT supported —
+      // the redirect hook chose the target path and content explicitly.
       if (isRedirected) {
+        if (
+          writtenEntry === null &&
+          event.context.blockSessionSave !== true &&
+          typeof event.context.sessionSaveContent === "string"
+        ) {
+          await writeFileWithinRoot({
+            rootDir: canonicalWorkspace,
+            relativePath: writeRelativePath,
+            data: event.context.sessionSaveContent,
+            encoding: "utf-8",
+          });
+          log.debug(
+            "Redirected session save written by post-hook (late unblock + sessionSaveContent)",
+          );
+        }
         return;
       }
 
