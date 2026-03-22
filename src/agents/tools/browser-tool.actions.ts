@@ -56,25 +56,6 @@ function formatTabsToolResult(tabs: unknown[]): AgentToolResult<unknown> {
   };
 }
 
-function formatConsoleToolResult(result: {
-  targetId?: string;
-  messages?: unknown[];
-}): AgentToolResult<unknown> {
-  const wrapped = wrapBrowserExternalJson({
-    kind: "console",
-    payload: result,
-    includeWarning: false,
-  });
-  return {
-    content: [{ type: "text" as const, text: wrapped.wrappedText }],
-    details: {
-      ...wrapped.safeDetails,
-      targetId: typeof result.targetId === "string" ? result.targetId : undefined,
-      messageCount: Array.isArray(result.messages) ? result.messages.length : undefined,
-    },
-  };
-}
-
 function isChromeStaleTargetError(profile: string | undefined, err: unknown): boolean {
   if (!profile) {
     return false;
