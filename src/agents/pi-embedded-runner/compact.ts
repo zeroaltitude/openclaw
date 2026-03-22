@@ -124,8 +124,8 @@ export type CompactEmbeddedPiSessionParams = {
   currentChannelId?: string;
   currentThreadTs?: string;
   currentMessageId?: string | number;
-  /** Trusted sender id from inbound context for scoped message-tool discovery. */
-  senderId?: string;
+  /** Trusted sender id from inbound context for scoped message-tool discovery and plugin hooks. */
+  senderId?: string | null;
   authProfileId?: string;
   /** Group id for channel-level tool policy resolution. */
   groupId?: string | null;
@@ -135,8 +135,6 @@ export type CompactEmbeddedPiSessionParams = {
   groupSpace?: string | null;
   /** Parent session key for subagent policy inheritance. */
   spawnedBy?: string | null;
-  /** Sender identity for plugin hooks (e.g. trust classification). */
-  senderId?: string | null;
   /** Sender display name for plugin hooks. */
   senderName?: string | null;
   /** Whether the sender is an owner (required for owner-only tools). */
