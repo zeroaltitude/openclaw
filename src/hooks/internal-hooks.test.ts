@@ -451,7 +451,7 @@ describe("hooks", () => {
 
       registerInternalHook("command:new", async (event) => {
         order.push("handler-1");
-        event.postHookActions.push(async () => {
+        event.postHookActions!.push(async () => {
           order.push("post-action-1");
         });
       });
@@ -470,7 +470,7 @@ describe("hooks", () => {
       let sawFlag = false;
 
       registerInternalHook("command:new", async (event) => {
-        event.postHookActions.push(async () => {
+        event.postHookActions!.push(async () => {
           sawFlag = event.context.myFlag === true;
         });
       });
@@ -489,10 +489,10 @@ describe("hooks", () => {
       const executed: string[] = [];
 
       registerInternalHook("command:new", async (event) => {
-        event.postHookActions.push(async () => {
+        event.postHookActions!.push(async () => {
           throw new Error("boom");
         });
-        event.postHookActions.push(async () => {
+        event.postHookActions!.push(async () => {
           executed.push("second-action");
         });
       });
@@ -507,13 +507,13 @@ describe("hooks", () => {
       const order: string[] = [];
 
       registerInternalHook("command:new", async (event) => {
-        event.postHookActions.push(() => {
+        event.postHookActions!.push(() => {
           order.push("from-handler-1");
         });
       });
 
       registerInternalHook("command:new", async (event) => {
-        event.postHookActions.push(() => {
+        event.postHookActions!.push(() => {
           order.push("from-handler-2");
         });
       });
@@ -532,7 +532,7 @@ describe("hooks", () => {
     it("drains post-hook actions even when no handlers are registered", async () => {
       const event = createInternalHookEvent("command", "new", "test-session");
       let ran = false;
-      event.postHookActions.push(() => {
+      event.postHookActions!.push(() => {
         ran = true;
       });
       // No handlers registered — post-hooks should still drain
@@ -543,7 +543,7 @@ describe("hooks", () => {
     it("clears postHookActions after drain — re-trigger is a no-op", async () => {
       const event = createInternalHookEvent("command", "new", "test-session");
       let count = 0;
-      event.postHookActions.push(() => {
+      event.postHookActions!.push(() => {
         count++;
       });
       await triggerInternalHook(event);

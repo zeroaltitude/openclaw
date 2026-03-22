@@ -174,7 +174,7 @@ export interface InternalHookEvent {
    *  sequentially after the main handler loop. This eliminates FIFO
    *  registration-order dependencies: a handler that runs early can defer
    *  work that depends on context set by later handlers. */
-  postHookActions: Array<() => Promise<void> | void>;
+  postHookActions?: Array<() => Promise<void> | void>;
 }
 
 export type InternalHookHandler = (event: InternalHookEvent) => Promise<void> | void;

@@ -297,6 +297,8 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // Post-hook callback — errors propagate to the framework's per-action
     // catch in triggerInternalHook, which provides consistent log formatting
     // and per-action isolation.
+    // Defensive: normalize for direct callers that bypass triggerInternalHook.
+    event.postHookActions ??= [];
     event.postHookActions.push(async () => {
       // If a later hook blocked the save, retract the file we just wrote.
       // If the file existed before our write (slug collision), restore the
