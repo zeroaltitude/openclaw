@@ -822,7 +822,14 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
         });
         const original = handler as PluginHookHandlerMap["before_llm_call"];
         effectiveHandler = (async (event: PluginHookBeforeLlmCallEvent, ctx: PluginHookAgentContext) => {
-          const result = await original(event, ctx);
+          // Deep-clone messages and systemPrompt so the constrained handler
+          // cannot bypass the policy by mutating the event in place.
+          const sandboxedEvent: PluginHookBeforeLlmCallEvent = {
+            ...event,
+            messages: structuredClone(event.messages),
+            systemPrompt: event.systemPrompt,
+          };
+          const result = await original(sandboxedEvent, ctx);
           if (!result) {
             return result;
           }
