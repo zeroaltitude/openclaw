@@ -105,7 +105,10 @@ export async function runBeforeToolCallHook(args: {
   if (args.ctx?.sessionId && getGlobalHookRunner()?.hasHooks("after_llm_call")) {
     const { checkAfterLlmCallGate } =
       await import("./pi-embedded-runner/run/after-llm-call-gate.js");
-    const gateResult = await checkAfterLlmCallGate(args.ctx.sessionId, args.toolCallId);
+    // Gate is keyed by sessionId:runId to scope per-run (prevents concurrent
+    // runs in interrupt mode from clobbering each other's gates).
+    const gateKey = args.ctx.runId ? `${args.ctx.sessionId}:${args.ctx.runId}` : args.ctx.sessionId;
+    const gateResult = await checkAfterLlmCallGate(gateKey, args.toolCallId);
     if (gateResult.blocked) {
       return { blocked: true, reason: gateResult.reason ?? "Blocked by after_llm_call hook" };
     }

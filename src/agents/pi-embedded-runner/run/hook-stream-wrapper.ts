@@ -48,6 +48,8 @@ export interface HookStreamWrapperParams {
   modelId: string;
   /** Session ID for after_llm_call gate keying. Required when after_llm_call hooks are registered. */
   sessionId?: string;
+  /** Run ID for gate scoping — prevents concurrent/replaced runs from clobbering each other's gates. */
+  runId?: string;
 }
 
 export function wrapStreamFnWithHooks(
@@ -119,9 +121,13 @@ export function wrapStreamFnWithHooks(
     // The gate Promise is set synchronously (before this function returns),
     // guaranteeing it exists when executeToolCalls starts.
     if (hookRunner.hasHooks("after_llm_call") && params.sessionId) {
-      const sessionId = params.sessionId;
-      // Clear any stale gate from a previous turn/message_end in this session.
-      clearAfterLlmCallGate(sessionId);
+      // Scope gate by sessionId + runId to prevent concurrent/replaced runs
+      // from clobbering each other's gate decisions. In interrupt mode, a new
+      // run can start before the old run's tool calls finish — without runId
+      // scoping, the new run would clear the old run's gate.
+      const gateKey = params.runId ? `${params.sessionId}:${params.runId}` : params.sessionId;
+      // Clear any stale gate from a previous turn/message_end in this run.
+      clearAfterLlmCallGate(gateKey);
 
       const originalIterator = responseStream[Symbol.asyncIterator]();
       const wrappedIterator: AsyncIterator<AssistantMessageEvent> = {
@@ -145,7 +151,7 @@ export function wrapStreamFnWithHooks(
                   finalMessage,
                   iterationRef.current,
                   modelId,
-                  sessionId,
+                  gateKey,
                 );
               }
             }
@@ -194,7 +200,7 @@ function fireAfterLlmCallGate(
   finalMessage: AgentMessage,
   iteration: number,
   modelId: string,
-  sessionId: string,
+  gateKey: string,
 ): void {
   // Extract tool calls from the message content.
   const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
@@ -232,5 +238,5 @@ function fireAfterLlmCallGate(
     agentCtx,
   );
 
-  setAfterLlmCallGatePromise(sessionId, hookPromise);
+  setAfterLlmCallGatePromise(gateKey, hookPromise);
 }

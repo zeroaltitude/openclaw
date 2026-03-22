@@ -2407,6 +2407,7 @@ export async function runEmbeddedAttempt(
           iterationRef: hookIterationRef,
           modelId: params.modelId,
           sessionId: params.sessionId,
+          runId: params.runId,
         });
       }
 

@@ -811,6 +811,24 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
           handler as PluginHookHandlerMap["before_agent_start"],
         ) as PluginHookHandlerMap[K];
       }
+      if (hookName === "before_llm_call") {
+        pushDiagnostic({
+          level: "warn",
+          pluginId: record.id,
+          source: record.source,
+          message: `typed hook "${hookName}" prompt fields constrained by plugins.entries.${record.id}.hooks.allowPromptInjection=false — messages/systemPrompt mutations will be stripped; block/tools/toolCalls still allowed`,
+        });
+        const original = handler as PluginHookHandlerMap["before_llm_call"];
+        effectiveHandler = (async (event, ctx) => {
+          const result = await original(event, ctx);
+          if (!result) {
+            return result;
+          }
+          // Strip prompt-injection fields; preserve non-injection controls
+          const { messages: _m, systemPrompt: _s, ...safe } = result;
+          return Object.keys(safe).length > 0 ? (safe as typeof result) : undefined;
+        }) as PluginHookHandlerMap[K];
+      }
     }
     record.hookCount += 1;
     registry.typedHooks.push({
