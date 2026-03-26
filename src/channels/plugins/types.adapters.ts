@@ -143,6 +143,7 @@ export type ChannelOutboundContext = {
   silent?: boolean;
   /** Session key for plugin hook correlation (e.g. message_sending). */
   sessionKey?: string;
+  gatewayClientScopes?: readonly string[];
 };
 
 export type ChannelOutboundPayloadContext = ChannelOutboundContext & {
