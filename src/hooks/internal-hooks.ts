@@ -300,7 +300,10 @@ export async function triggerInternalHook(event: InternalHookEvent): Promise<voi
 
   if (!hasInternalHookListeners(event.type, event.action)) {
     // No handlers, but still drain any pre-populated postHookActions.
-    await drainPostHookActions(event.postHookActions);
+    await drainPostHookActions(event.postHookActions, (err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error(`Post-hook action error [${event.type}:${event.action}]: ${message}`);
+    });
     return;
   }
 
