@@ -85,7 +85,9 @@ export function createAccountListHelpers(
         enabledIds.every((id) => {
           const rawKey = normalizedToRaw.get(id) ?? id;
           const acct = accounts[rawKey];
-          if (!acct) return false;
+          if (!acct) {
+            return false;
+          }
           return baseTokenFields.every((f) => isTruthy(acct[f]));
         });
       if (everyAccountHasOwnTokens) {
