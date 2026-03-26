@@ -1915,6 +1915,9 @@ export type PluginHookGatewayStopEvent = {
  * that the delivered text may differ slightly from what the hook sees.
  */
 export type PluginHookBeforeResponseEmitEvent = {
+  /** Stable run identifier — correlates with context_assembled, loop_iteration,
+   *  and LLM call hook events within the same agent run. */
+  runId: string;
   /**
    * The final assistant response text about to be delivered.
    *

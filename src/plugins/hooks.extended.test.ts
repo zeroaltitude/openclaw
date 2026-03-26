@@ -39,6 +39,7 @@ const agentCtx: PluginHookAgentContext = {
 
 describe("before_response_emit hook", () => {
   const baseEvent: PluginHookBeforeResponseEmitEvent = {
+    runId: "test-run-id",
     content: "Hello world",
     allContent: ["Step 1", "Step 2", "Hello world"],
     channel: "test",

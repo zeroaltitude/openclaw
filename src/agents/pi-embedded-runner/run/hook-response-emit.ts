@@ -23,6 +23,8 @@ export interface ApplyBeforeResponseEmitParams {
   messagesSnapshot: AgentMessage[];
   activeSession: { messages: AgentMessage[] };
   channel?: string;
+  /** Stable run identifier for cross-hook correlation. */
+  runId?: string;
 }
 
 /** Result from applyBeforeResponseEmitHook. */
@@ -106,7 +108,7 @@ export function countCurrentRunAssistantTurns(messages: AgentMessage[]): number 
 export async function applyBeforeResponseEmitHook(
   params: ApplyBeforeResponseEmitParams,
 ): Promise<ApplyBeforeResponseEmitResult | undefined> {
-  const { hookRunner, agentCtx, assistantTexts, messagesSnapshot, activeSession, channel } = params;
+  const { hookRunner, agentCtx, assistantTexts, messagesSnapshot, activeSession, channel, runId } = params;
 
   if (assistantTexts.length === 0) {
     return undefined;
@@ -154,6 +156,7 @@ export async function applyBeforeResponseEmitHook(
 
   const emitResult = await hookRunner.runBeforeResponseEmit(
     {
+      runId: runId ?? "",
       content,
       allContent: sessionAllContent,
       channel,
