@@ -108,7 +108,8 @@ export function countCurrentRunAssistantTurns(messages: AgentMessage[]): number 
 export async function applyBeforeResponseEmitHook(
   params: ApplyBeforeResponseEmitParams,
 ): Promise<ApplyBeforeResponseEmitResult | undefined> {
-  const { hookRunner, agentCtx, assistantTexts, messagesSnapshot, activeSession, channel, runId } = params;
+  const { hookRunner, agentCtx, assistantTexts, messagesSnapshot, activeSession, channel, runId } =
+    params;
 
   if (assistantTexts.length === 0) {
     return undefined;
