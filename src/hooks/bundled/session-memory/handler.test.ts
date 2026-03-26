@@ -549,9 +549,9 @@ describe("session-memory hook", () => {
   // the exact same drain semantics as production (snapshot → clear → sequential
   // await). Errors are rethrown (rather than swallowed) so test failures surface
   // the actual error message instead of a confusing downstream assertion failure.
-  async function drainActions(event: { postHookActions: Array<() => Promise<void> | void> }) {
+  async function drainActions(event: { postHookActions?: Array<() => Promise<void> | void> }) {
     const { drainPostHookActions } = await import("../../internal-hooks.js");
-    await drainPostHookActions(event.postHookActions, (err) => {
+    await drainPostHookActions(event.postHookActions ?? [], (err) => {
       throw err;
     });
   }
