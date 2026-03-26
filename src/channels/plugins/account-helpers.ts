@@ -1,13 +1,21 @@
 import type { OpenClawConfig } from "../../config/config.js";
 import {
+  resolveAccountEntry,
+  resolveNormalizedAccountEntry,
+} from "../../routing/account-lookup.js";
+import {
   DEFAULT_ACCOUNT_ID,
   normalizeAccountId,
   normalizeOptionalAccountId,
 } from "../../routing/session-key.js";
+import type { ChannelAccountSnapshot } from "./types.core.js";
 
 export function createAccountListHelpers(
   channelKey: string,
-  options?: { normalizeAccountId?: (id: string) => string },
+  options?: {
+    normalizeAccountId?: (id: string) => string;
+    allowUnlistedDefaultAccount?: boolean;
+  },
 ) {
   function resolveConfiguredDefaultAccountId(cfg: OpenClawConfig): string | undefined {
     const channel = cfg.channels?.[channelKey] as Record<string, unknown> | undefined;
@@ -18,6 +26,9 @@ export function createAccountListHelpers(
       return undefined;
     }
     const ids = listAccountIds(cfg);
+    if (options?.allowUnlistedDefaultAccount) {
+      return preferred;
+    }
     if (ids.some((id) => normalizeAccountId(id) === preferred)) {
       return preferred;
     }
@@ -39,46 +50,32 @@ export function createAccountListHelpers(
   }
 
   function listAccountIds(cfg: OpenClawConfig): string[] {
-    const ids = listConfiguredAccountIds(cfg);
-    if (ids.length === 0) {
-      return [DEFAULT_ACCOUNT_ID];
-    }
-    // Check whether any existing named account already normalizes to "default".
-    const normalizedIds = ids.map(normalizeAccountId);
-    if (normalizedIds.includes(DEFAULT_ACCOUNT_ID)) {
-      return ids.toSorted((a, b) => a.localeCompare(b));
-    }
     // If the base channel config has its own tokens (botToken/appToken/token),
-    // only inject a default account when at least one named account carries its
-    // own per-account auth.  When every named account inherits the base tokens
-    // (i.e. has no per-account botToken/appToken/token override), injecting
-    // default would start a duplicate provider on the same credentials.
+    // include the default account alongside named accounts so both providers start —
+    // but only when at least one named account carries its own per-account auth.
+    // When every named account inherits the base tokens, injecting default would
+    // start a duplicate provider on the same credentials.
+    const configuredIds = listConfiguredAccountIds(cfg);
     const channel = cfg.channels?.[channelKey];
     const base = channel as Record<string, unknown> | undefined;
     const isTruthy = (v: unknown): boolean =>
       typeof v === "string" ? v.trim().length > 0 : Boolean(v);
-    // Identify which token fields the base config provides.
     const baseTokenFields = (["botToken", "appToken", "token"] as const).filter((f) =>
       isTruthy(base?.[f]),
     );
-    if (baseTokenFields.length > 0) {
+
+    let implicitId: string | undefined;
+    if (baseTokenFields.length > 0 && configuredIds.length > 0) {
       const accounts = (base?.accounts ?? {}) as Record<string, Record<string, unknown>>;
-      // Use the caller-provided normalizer for the reverse map so it matches
-      // the IDs returned by listConfiguredAccountIds().
       const normalizeId = options?.normalizeAccountId ?? normalizeAccountId;
-      // Build reverse map from normalized ID → raw config key so we can look
-      // up the account object even when normalizeAccountId transforms the keys.
-      const rawKeys = Object.keys(accounts);
       const normalizedToRaw = new Map<string, string>();
-      for (const key of rawKeys) {
+      for (const key of Object.keys(accounts)) {
         const normalized = normalizeId(key);
         if (normalized && !normalizedToRaw.has(normalized)) {
           normalizedToRaw.set(normalized, key);
         }
       }
-      // Only consider enabled accounts — disabled accounts are skipped at
-      // startup and must not prevent default injection for enabled ones.
-      const enabledIds = ids.filter((id) => {
+      const enabledIds = configuredIds.filter((id) => {
         const rawKey = normalizedToRaw.get(id) ?? id;
         const acct = accounts[rawKey];
         return !acct || acct["enabled"] !== false;
@@ -88,35 +85,159 @@ export function createAccountListHelpers(
         enabledIds.every((id) => {
           const rawKey = normalizedToRaw.get(id) ?? id;
           const acct = accounts[rawKey];
-          if (!acct) {
-            return false;
-          }
-          // An account is only independent if it overrides *every* base token
-          // field.  Partial overrides still inherit the remaining base tokens.
+          if (!acct) return false;
           return baseTokenFields.every((f) => isTruthy(acct[f]));
         });
       if (everyAccountHasOwnTokens) {
-        // Every named account has distinct credentials, so default won't
-        // collide with any of them — safe to inject.
-        return [DEFAULT_ACCOUNT_ID, ...ids].toSorted((a, b) => a.localeCompare(b));
+        implicitId = DEFAULT_ACCOUNT_ID;
       }
-      // At least one named account inherits base tokens — injecting default
-      // would duplicate that account's credentials.
     }
-    return ids.toSorted((a, b) => a.localeCompare(b));
+
+    return listCombinedAccountIds({
+      configuredAccountIds: configuredIds,
+      implicitAccountId: implicitId,
+      fallbackAccountIdWhenEmpty: DEFAULT_ACCOUNT_ID,
+    });
   }
 
   function resolveDefaultAccountId(cfg: OpenClawConfig): string {
-    const preferred = resolveConfiguredDefaultAccountId(cfg);
-    if (preferred) {
-      return preferred;
-    }
-    const ids = listAccountIds(cfg);
-    if (ids.includes(DEFAULT_ACCOUNT_ID)) {
-      return DEFAULT_ACCOUNT_ID;
-    }
-    return ids[0] ?? DEFAULT_ACCOUNT_ID;
+    return resolveListedDefaultAccountId({
+      accountIds: listAccountIds(cfg),
+      configuredDefaultAccountId: resolveConfiguredDefaultAccountId(cfg),
+      allowUnlistedDefaultAccount: options?.allowUnlistedDefaultAccount,
+    });
   }
 
   return { listConfiguredAccountIds, listAccountIds, resolveDefaultAccountId };
+}
+
+export function listCombinedAccountIds(params: {
+  configuredAccountIds: Iterable<string>;
+  additionalAccountIds?: Iterable<string>;
+  implicitAccountId?: string | undefined;
+  fallbackAccountIdWhenEmpty?: string | undefined;
+}): string[] {
+  const ids = new Set<string>();
+
+  for (const id of params.configuredAccountIds) {
+    if (id) {
+      ids.add(id);
+    }
+  }
+  for (const id of params.additionalAccountIds ?? []) {
+    if (id) {
+      ids.add(id);
+    }
+  }
+  if (params.implicitAccountId) {
+    ids.add(params.implicitAccountId);
+  }
+
+  if (ids.size === 0 && params.fallbackAccountIdWhenEmpty) {
+    return [params.fallbackAccountIdWhenEmpty];
+  }
+  return [...ids].toSorted((a, b) => a.localeCompare(b));
+}
+
+export function resolveListedDefaultAccountId(params: {
+  accountIds: readonly string[];
+  configuredDefaultAccountId?: string | undefined;
+  allowUnlistedDefaultAccount?: boolean;
+  ambiguousFallbackAccountId?: string | undefined;
+  normalizeListedAccountId?: ((accountId: string) => string) | undefined;
+}): string {
+  const preferred = params.configuredDefaultAccountId;
+  const normalizeListedAccountId = params.normalizeListedAccountId ?? normalizeAccountId;
+  if (
+    preferred &&
+    (params.allowUnlistedDefaultAccount ||
+      params.accountIds.some((accountId) => normalizeListedAccountId(accountId) === preferred))
+  ) {
+    return preferred;
+  }
+  if (params.accountIds.includes(DEFAULT_ACCOUNT_ID)) {
+    return DEFAULT_ACCOUNT_ID;
+  }
+  if (params.ambiguousFallbackAccountId && params.accountIds.length > 1) {
+    return params.ambiguousFallbackAccountId;
+  }
+  return params.accountIds[0] ?? DEFAULT_ACCOUNT_ID;
+}
+
+export function mergeAccountConfig<TConfig extends Record<string, unknown>>(params: {
+  channelConfig: TConfig | undefined;
+  accountConfig: Partial<TConfig> | undefined;
+  omitKeys?: string[];
+  nestedObjectKeys?: string[];
+}): TConfig {
+  const omitKeys = new Set(["accounts", ...(params.omitKeys ?? [])]);
+  const base = Object.fromEntries(
+    Object.entries((params.channelConfig ?? {}) as Record<string, unknown>).filter(
+      ([key]) => !omitKeys.has(key),
+    ),
+  ) as TConfig;
+  const merged = {
+    ...base,
+    ...params.accountConfig,
+  };
+  for (const key of params.nestedObjectKeys ?? []) {
+    const baseValue = base[key as keyof TConfig];
+    const accountValue = params.accountConfig?.[key as keyof TConfig];
+    if (
+      typeof baseValue === "object" &&
+      baseValue != null &&
+      !Array.isArray(baseValue) &&
+      typeof accountValue === "object" &&
+      accountValue != null &&
+      !Array.isArray(accountValue)
+    ) {
+      (merged as Record<string, unknown>)[key] = {
+        ...(baseValue as Record<string, unknown>),
+        ...(accountValue as Record<string, unknown>),
+      };
+    }
+  }
+  return merged;
+}
+
+export function resolveMergedAccountConfig<TConfig extends Record<string, unknown>>(params: {
+  channelConfig: TConfig | undefined;
+  accounts: Record<string, Partial<TConfig>> | undefined;
+  accountId: string;
+  omitKeys?: string[];
+  normalizeAccountId?: (accountId: string) => string;
+  nestedObjectKeys?: string[];
+}): TConfig {
+  const accountConfig = params.normalizeAccountId
+    ? resolveNormalizedAccountEntry(params.accounts, params.accountId, params.normalizeAccountId)
+    : resolveAccountEntry(params.accounts, params.accountId);
+  return mergeAccountConfig<TConfig>({
+    channelConfig: params.channelConfig,
+    accountConfig,
+    omitKeys: params.omitKeys,
+    nestedObjectKeys: params.nestedObjectKeys,
+  });
+}
+
+export function describeAccountSnapshot<
+  TAccount extends {
+    accountId?: string | null;
+    enabled?: boolean | null;
+    name?: string | null | undefined;
+  },
+>(params: {
+  account: TAccount;
+  configured?: boolean | undefined;
+  extra?: Record<string, unknown> | undefined;
+}): ChannelAccountSnapshot {
+  return {
+    accountId: String(params.account.accountId ?? DEFAULT_ACCOUNT_ID),
+    name:
+      typeof params.account.name === "string" && params.account.name.trim()
+        ? params.account.name
+        : undefined,
+    enabled: params.account.enabled !== false,
+    configured: params.configured,
+    ...params.extra,
+  };
 }
