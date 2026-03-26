@@ -294,6 +294,10 @@ export function hasInternalHookListeners(type: InternalHookEventType, action: st
  */
 export async function triggerInternalHook(event: InternalHookEvent): Promise<void> {
   if (!hasInternalHookListeners(event.type, event.action)) {
+    // No handlers, but still drain any pre-populated postHookActions.
+    if (event.postHookActions?.length) {
+      await drainPostHookActions(event.postHookActions);
+    }
     return;
   }
 
