@@ -293,14 +293,16 @@ export function hasInternalHookListeners(type: InternalHookEventType, action: st
  * @param event - The event to trigger
  */
 export async function triggerInternalHook(event: InternalHookEvent): Promise<void> {
-  if (!hasInternalHookListeners(event.type, event.action)) {
-    return;
-  }
-
   // Normalize postHookActions before entering the handler loop — handlers
   // may push to this array during execution. Legacy callers that construct
   // hook events without the field would otherwise hit a TypeError on .push().
   event.postHookActions ??= [];
+
+  if (!hasInternalHookListeners(event.type, event.action)) {
+    // No handlers, but still drain any pre-populated postHookActions.
+    await drainPostHookActions(event.postHookActions);
+    return;
+  }
 
   const typeHandlers = handlers.get(event.type) ?? [];
   const specificHandlers = handlers.get(`${event.type}:${event.action}`) ?? [];
