@@ -678,7 +678,6 @@ export async function createContextEngineAttemptRunner(params: {
     sessionFile,
     workspaceDir,
     agentDir,
-    attemptIndex: 0,
     config: {},
     prompt: "hello",
     timeoutMs: 10_000,
