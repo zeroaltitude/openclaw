@@ -130,8 +130,8 @@ type ChannelHandlerParams = {
   forceDocument?: boolean;
   silent?: boolean;
   mediaLocalRoots?: readonly string[];
-sessionKey?: string;
-    gatewayClientScopes?: readonly string[];
+  sessionKey?: string;
+  gatewayClientScopes?: readonly string[];
 };
 
 // Channel docking: outbound delivery delegates to plugin.outbound adapters.
@@ -252,7 +252,7 @@ function createChannelOutboundContextBase(
     deps: params.deps,
     silent: params.silent,
     mediaLocalRoots: params.mediaLocalRoots,
-sessionKey: params.sessionKey,
+    sessionKey: params.sessionKey,
     gatewayClientScopes: params.gatewayClientScopes,
   };
 }
@@ -585,7 +585,7 @@ async function deliverOutboundPayloadsCore(
     forceDocument: params.forceDocument,
     silent: params.silent,
     mediaLocalRoots,
-sessionKey: params.mirror?.sessionKey ?? params.session?.key,
+    sessionKey: params.mirror?.sessionKey ?? params.session?.key,
     gatewayClientScopes: params.gatewayClientScopes,
   });
   const configuredTextLimit = handler.chunker
