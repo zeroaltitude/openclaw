@@ -8,6 +8,37 @@ import { loadConfig } from "../../config/config.js";
 import { wrapExternalContent } from "../../security/external-content.js";
 import { imageResultFromFile, jsonResult } from "./common.js";
 
+const browserToolActionDeps = {
+  browserAct,
+  browserConsoleMessages,
+  browserSnapshot,
+  browserTabs,
+  imageResultFromFile,
+  loadConfig,
+};
+
+export const __testing = {
+  setDepsForTest(
+    overrides: Partial<{
+      browserAct: typeof browserAct;
+      browserConsoleMessages: typeof browserConsoleMessages;
+      browserSnapshot: typeof browserSnapshot;
+      browserTabs: typeof browserTabs;
+      imageResultFromFile: typeof imageResultFromFile;
+      loadConfig: typeof loadConfig;
+    }> | null,
+  ) {
+    browserToolActionDeps.browserAct = overrides?.browserAct ?? browserAct;
+    browserToolActionDeps.browserConsoleMessages =
+      overrides?.browserConsoleMessages ?? browserConsoleMessages;
+    browserToolActionDeps.browserSnapshot = overrides?.browserSnapshot ?? browserSnapshot;
+    browserToolActionDeps.browserTabs = overrides?.browserTabs ?? browserTabs;
+    browserToolActionDeps.imageResultFromFile =
+      overrides?.imageResultFromFile ?? imageResultFromFile;
+    browserToolActionDeps.loadConfig = overrides?.loadConfig ?? loadConfig;
+  },
+};
+
 type BrowserProxyRequest = (opts: {
   method: string;
   path: string;
@@ -56,6 +87,27 @@ function formatTabsToolResult(tabs: unknown[]): AgentToolResult<unknown> {
   };
 }
 
+function formatConsoleToolResult(result: {
+  targetId?: string;
+  url?: string;
+  messages?: unknown[];
+}): AgentToolResult<unknown> {
+  const wrapped = wrapBrowserExternalJson({
+    kind: "console",
+    payload: result,
+    includeWarning: false,
+  });
+  return {
+    content: [{ type: "text" as const, text: wrapped.wrappedText }],
+    details: {
+      ...wrapped.safeDetails,
+      targetId: typeof result.targetId === "string" ? result.targetId : undefined,
+      url: typeof result.url === "string" ? result.url : undefined,
+      messageCount: Array.isArray(result.messages) ? result.messages.length : undefined,
+    },
+  };
+}
+
 function isChromeStaleTargetError(profile: string | undefined, err: unknown): boolean {
   if (!profile) {
     return false;
@@ -64,7 +116,7 @@ function isChromeStaleTargetError(profile: string | undefined, err: unknown): bo
     const msg = String(err);
     return msg.includes("404:") && msg.includes("tab not found");
   }
-  const cfg = loadConfig();
+  const cfg = browserToolActionDeps.loadConfig();
   const resolved = resolveBrowserConfig(cfg.browser, cfg);
   const browserProfile = resolveProfile(resolved, profile);
   if (!browserProfile || !getBrowserProfileCapabilities(browserProfile).usesChromeMcp) {
@@ -112,7 +164,7 @@ export async function executeTabsAction(params: {
     const tabs = (result as { tabs?: unknown[] }).tabs ?? [];
     return formatTabsToolResult(tabs);
   }
-  const tabs = await browserTabs(baseUrl, { profile });
+  const tabs = await browserToolActionDeps.browserTabs(baseUrl, { profile });
   return formatTabsToolResult(tabs);
 }
 
@@ -123,7 +175,7 @@ export async function executeSnapshotAction(params: {
   proxyRequest: BrowserProxyRequest | null;
 }): Promise<AgentToolResult<unknown>> {
   const { input, baseUrl, profile, proxyRequest } = params;
-  const snapshotDefaults = loadConfig().browser?.snapshotDefaults;
+  const snapshotDefaults = browserToolActionDeps.loadConfig().browser?.snapshotDefaults;
   const format: "ai" | "aria" | undefined =
     input.snapshotFormat === "ai" || input.snapshotFormat === "aria"
       ? input.snapshotFormat
@@ -182,7 +234,7 @@ export async function executeSnapshotAction(params: {
         profile,
         query: snapshotQuery,
       })) as Awaited<ReturnType<typeof browserSnapshot>>)
-    : await browserSnapshot(baseUrl, {
+    : await browserToolActionDeps.browserSnapshot(baseUrl, {
         ...snapshotQuery,
         profile,
       });
@@ -214,7 +266,7 @@ export async function executeSnapshotAction(params: {
       },
     };
     if (labels && snapshot.imagePath) {
-      return await imageResultFromFile({
+      return await browserToolActionDeps.imageResultFromFile({
         label: "browser:snapshot",
         path: snapshot.imagePath,
         extraText: wrappedSnapshot,
@@ -285,21 +337,12 @@ export async function executeConsoleAction(params: {
       },
     };
   }
-  const result = await browserConsoleMessages(baseUrl, { level, targetId, profile });
-  const wrapped = wrapBrowserExternalJson({
-    kind: "console",
-    payload: result,
-    includeWarning: false,
+  const result = await browserToolActionDeps.browserConsoleMessages(baseUrl, {
+    level,
+    targetId,
+    profile,
   });
-  return {
-    content: [{ type: "text" as const, text: wrapped.wrappedText }],
-    details: {
-      ...wrapped.safeDetails,
-      targetId: result.targetId,
-      url: result.url,
-      messageCount: result.messages.length,
-    },
-  };
+  return formatConsoleToolResult(result);
 }
 
 export async function executeActAction(params: {
@@ -317,7 +360,7 @@ export async function executeActAction(params: {
           profile,
           body: request,
         })
-      : await browserAct(baseUrl, request, {
+      : await browserToolActionDeps.browserAct(baseUrl, request, {
           profile,
         });
     return jsonResult(result);
@@ -332,7 +375,7 @@ export async function executeActAction(params: {
               profile,
             })) as { tabs?: unknown[] }
           ).tabs ?? [])
-        : await browserTabs(baseUrl, { profile }).catch(() => []);
+        : await browserToolActionDeps.browserTabs(baseUrl, { profile }).catch(() => []);
       // Some user-browser targetIds can go stale between snapshots and actions.
       // Only retry safe read-only actions, and only when exactly one tab remains attached.
       if (retryRequest && canRetryChromeActWithoutTargetId(request) && tabs.length === 1) {
@@ -344,7 +387,7 @@ export async function executeActAction(params: {
                 profile,
                 body: retryRequest,
               })
-            : await browserAct(baseUrl, retryRequest, {
+            : await browserToolActionDeps.browserAct(baseUrl, retryRequest, {
                 profile,
               });
           return jsonResult(retryResult);
