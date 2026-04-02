@@ -699,13 +699,15 @@ export async function runMemoryFlushIfNeeded(params: {
           // Thread identity context so hooks fired during memory flush
           // see the same trust fields as the originating user turn.
           // Override senderContext (from live session template) with the
-          // stored run values to ensure consistency across all code paths.
+          // stored run values to ensure consistency — but only for non-null
+          // stored values. Null stored identity must not clobber live
+          // senderContext or provenance re-taints every turn as untrusted.
           sourceProvider: params.followupRun.run.sourceProvider,
-          senderId: params.followupRun.run.senderId,
-          senderName: params.followupRun.run.senderName,
-          senderUsername: params.followupRun.run.senderUsername,
-          senderE164: params.followupRun.run.senderE164,
-          senderIsOwner: params.followupRun.run.senderIsOwner,
+          ...(params.followupRun.run.senderId != null && { senderId: params.followupRun.run.senderId }),
+          ...(params.followupRun.run.senderName != null && { senderName: params.followupRun.run.senderName }),
+          ...(params.followupRun.run.senderUsername != null && { senderUsername: params.followupRun.run.senderUsername }),
+          ...(params.followupRun.run.senderE164 != null && { senderE164: params.followupRun.run.senderE164 }),
+          ...(params.followupRun.run.senderIsOwner != null && { senderIsOwner: params.followupRun.run.senderIsOwner }),
           spawnedBy: params.followupRun.run.spawnedBy,
           groupId: params.followupRun.run.groupId,
           groupChannel: params.followupRun.run.groupChannel,

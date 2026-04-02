@@ -428,11 +428,15 @@ export async function runAgentTurnWithFallback(params: {
                 groupId: params.followupRun.run.groupId,
                 groupChannel: params.followupRun.run.groupChannel,
                 groupSpace: params.followupRun.run.groupSpace,
-                senderId: params.followupRun.run.senderId,
-                senderName: params.followupRun.run.senderName,
-                senderUsername: params.followupRun.run.senderUsername,
-                senderE164: params.followupRun.run.senderE164,
-                senderIsOwner: params.followupRun.run.senderIsOwner,
+                // Only override with non-null stored values. Null stored identity
+                // (sessions pre-dating the identity pipeline) must not clobber live
+                // senderContext — provenance would classify every turn as untrusted
+                // since null matches no trustedSenderIds.
+                ...(params.followupRun.run.senderId != null && { senderId: params.followupRun.run.senderId }),
+                ...(params.followupRun.run.senderName != null && { senderName: params.followupRun.run.senderName }),
+                ...(params.followupRun.run.senderUsername != null && { senderUsername: params.followupRun.run.senderUsername }),
+                ...(params.followupRun.run.senderE164 != null && { senderE164: params.followupRun.run.senderE164 }),
+                ...(params.followupRun.run.senderIsOwner != null && { senderIsOwner: params.followupRun.run.senderIsOwner }),
                 sourceProvider: params.followupRun.run.sourceProvider,
                 spawnedBy: params.followupRun.run.spawnedBy,
                 // Pin delivery routing to stored run values so queued runs
