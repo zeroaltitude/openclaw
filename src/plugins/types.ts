@@ -2515,9 +2515,7 @@ export type PluginHookGatewayStopEvent = {
 
 // ============================================================================
 // Agent Loop Observability Hooks
-//
-
-=====================================================================
+// ============================================================================
 
 // context_assembled hook (void — parallel)
 // Fires once per attempt before the first LLM call with the assembled context.
@@ -2580,7 +2578,12 @@ export type PluginHookLoopIterationEndEvent = {
    *  or max-iteration limits — those are evaluated by the loop controller after
    *  this event fires. Use `llm_output` for definitive loop-terminal detection. */
   hasToolResults: boolean;
-=======
+};
+
+// ============================================================================
+// Skill Install Hooks
+// ============================================================================
+
 export type PluginInstallTargetType = "skill" | "plugin";
 export type PluginInstallRequestKind =
   | "skill-install"
