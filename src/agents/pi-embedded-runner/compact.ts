@@ -147,6 +147,10 @@ export type CompactEmbeddedPiSessionParams = {
   spawnedBy?: string | null;
   /** Whether the sender is an owner (required for owner-only tools). */
   senderIsOwner?: boolean;
+  /** Sender's display name. */
+  senderName?: string | null;
+  /** Original message platform for security classification. */
+  sourceProvider?: string;
   sessionFile: string;
   /** Optional caller-observed live prompt tokens used for compaction diagnostics. */
   currentTokenCount?: number;

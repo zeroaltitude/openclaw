@@ -106,6 +106,12 @@ export type CompactionHookRunner = {
       sessionKey: string;
       workspaceDir: string;
       messageProvider?: string;
+      sourceProvider?: string;
+      senderId?: string | null;
+      senderName?: string | null;
+      senderIsOwner?: boolean;
+      groupId?: string | null;
+      spawnedBy?: string | null;
     },
   ) => Promise<void> | void;
   runAfterCompaction?: (
@@ -121,6 +127,12 @@ export type CompactionHookRunner = {
       sessionKey: string;
       workspaceDir: string;
       messageProvider?: string;
+      sourceProvider?: string;
+      senderId?: string | null;
+      senderName?: string | null;
+      senderIsOwner?: boolean;
+      groupId?: string | null;
+      spawnedBy?: string | null;
     },
   ) => Promise<void> | void;
 };
