@@ -1173,6 +1173,8 @@ export async function runEmbeddedAttempt(
         agentId: sessionAgentId,
         sessionKey: sandboxSessionKey,
         sessionId: params.sessionId,
+        workspaceDir: params.workspaceDir,
+        messageProvider: params.messageProvider ?? undefined,
         trigger: params.trigger,
         channelId: params.messageChannel ?? params.messageProvider ?? undefined,
       };
@@ -1428,18 +1430,7 @@ export async function runEmbeddedAttempt(
         getCompactionCount,
       } = subscription;
 
-      // Build hook context early so the subscription callback can close over it
-      // without a forward reference.
       const hookAgentId = sessionAgentId;
-      const hookCtx = {
-        agentId: hookAgentId,
-        sessionKey: params.sessionKey,
-        sessionId: params.sessionId,
-        workspaceDir: params.workspaceDir,
-        messageProvider: params.messageProvider ?? undefined,
-        trigger: params.trigger,
-        channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-      };
 
       // Subscribe for loop iteration tracking hooks
       let hookTurnIteration = 0;
@@ -1881,7 +1872,6 @@ export async function runEmbeddedAttempt(
                   groupId: params.groupId ?? null,
                   spawnedBy: params.spawnedBy ?? null,
                 },
-
               )
               .catch((err) => {
                 log.warn(`llm_input hook failed: ${String(err)}`);
@@ -2208,14 +2198,13 @@ export async function runEmbeddedAttempt(
                 messageProvider: params.messageProvider ?? undefined,
                 trigger: params.trigger,
                 channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-                  sourceProvider: params.sourceProvider ?? undefined,
-                  senderId: params.senderId ?? null,
-                  senderName: params.senderName ?? null,
-                  senderIsOwner: params.senderIsOwner,
-                  groupId: params.groupId ?? null,
-                  spawnedBy: params.spawnedBy ?? null,
+                sourceProvider: params.sourceProvider ?? undefined,
+                senderId: params.senderId ?? null,
+                senderName: params.senderName ?? null,
+                senderIsOwner: params.senderIsOwner,
+                groupId: params.groupId ?? null,
+                spawnedBy: params.spawnedBy ?? null,
               },
-
             )
             .catch((err) => {
               log.warn(`agent_end hook failed: ${err}`);
@@ -2267,9 +2256,10 @@ export async function runEmbeddedAttempt(
 
       // When the LLM call was blocked or response emit blocked, suppress
       // lastAssistant so payloads.ts doesn't fall back to stale text.
-      const lastAssistant = llmCallBlocked || responseEmitBlocked
-        ? undefined
-        : messagesSnapshot.findLast((m) => m.role === "assistant");
+      const lastAssistant =
+        llmCallBlocked || responseEmitBlocked
+          ? undefined
+          : messagesSnapshot.findLast((m) => m.role === "assistant");
 
       const toolMetasNormalized = toolMetas
         .filter(
@@ -2346,7 +2336,6 @@ export async function runEmbeddedAttempt(
               trigger: params.trigger,
               channelId: params.messageChannel ?? params.messageProvider ?? undefined,
             },
-
           )
           .catch((err) => {
             log.warn(`llm_output hook failed: ${String(err)}`);
