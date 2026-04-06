@@ -41,6 +41,12 @@ import type {
   PluginHookContextAssembledEvent,
   PluginHookLoopIterationStartEvent,
   PluginHookLoopIterationEndEvent,
+  PluginHookBeforeLlmCallEvent,
+  PluginHookBeforeLlmCallResult,
+  PluginHookAfterLlmCallEvent,
+  PluginHookAfterLlmCallResult,
+  PluginHookBeforeResponseEmitEvent,
+  PluginHookBeforeResponseEmitResult,
   PluginHookMessageContext,
   PluginHookMessageReceivedEvent,
   PluginHookMessageSendingEvent,
@@ -126,6 +132,12 @@ export type {
   PluginHookContextAssembledEvent,
   PluginHookLoopIterationStartEvent,
   PluginHookLoopIterationEndEvent,
+  PluginHookBeforeLlmCallEvent,
+  PluginHookBeforeLlmCallResult,
+  PluginHookAfterLlmCallEvent,
+  PluginHookAfterLlmCallResult,
+  PluginHookBeforeResponseEmitEvent,
+  PluginHookBeforeResponseEmitResult,
   PluginHookBeforeInstallContext,
   PluginHookBeforeInstallEvent,
   PluginHookBeforeInstallResult,
@@ -1085,12 +1097,101 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
    */
   async function runLoopIterationEnd(
     event: PluginHookLoopIterationEndEvent,
+  PluginHookBeforeLlmCallEvent,
+  PluginHookBeforeLlmCallResult,
+  PluginHookAfterLlmCallEvent,
+  PluginHookAfterLlmCallResult,
+  PluginHookBeforeResponseEmitEvent,
+  PluginHookBeforeResponseEmitResult,
     ctx: PluginHookAgentContext,
   ): Promise<void> {
     return runVoidHook("loop_iteration_end", event, ctx);
   }
 
-// Skill Install Hooks
+
+  // =========================================================================
+  // LLM Call Hooks
+  // =========================================================================
+
+  async function runBeforeLlmCall(
+    event: PluginHookBeforeLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookBeforeLlmCallResult | undefined> {
+    return runModifyingHook<"before_llm_call", PluginHookBeforeLlmCallResult>(
+      "before_llm_call",
+      event,
+      ctx,
+      {
+        mergeResults: (acc, next) => ({
+          messages: acc?.messages ?? next.messages,
+          systemPrompt: acc?.systemPrompt ?? next.systemPrompt,
+          tools:
+            acc?.tools !== undefined && next.tools !== undefined
+              ? next.tools.filter((t) => acc.tools!.some((a) => a.name === t.name))
+              : (next.tools ?? acc?.tools),
+          block: next.block || acc?.block,
+          blockReason: acc?.blockReason ?? next.blockReason,
+        }),
+      },
+    );
+  }
+
+  async function runAfterLlmCall(
+    event: PluginHookAfterLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookAfterLlmCallResult | undefined> {
+    return runModifyingHook<"after_llm_call", PluginHookAfterLlmCallResult>(
+      "after_llm_call",
+      event,
+      ctx,
+      {
+        mergeResults: (acc, next) => ({
+          block: next.block || acc?.block,
+          blockReason: acc?.blockReason ?? next.blockReason,
+          toolCalls:
+            acc?.toolCalls !== undefined && next.toolCalls !== undefined
+              ? next.toolCalls.filter((t) => acc.toolCalls!.some((a) => a.id === t.id))
+              : (next.toolCalls ?? acc?.toolCalls),
+        }),
+      },
+    );
+  }
+
+  // =========================================================================
+  // Response Emit Hooks
+  // =========================================================================
+
+  async function runBeforeResponseEmit(
+    event: PluginHookBeforeResponseEmitEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookBeforeResponseEmitResult | undefined> {
+    return runModifyingHook<"before_response_emit", PluginHookBeforeResponseEmitResult>(
+      "before_response_emit",
+      event,
+      ctx,
+      {
+        mergeResults: (acc, next) => ({
+          content:
+            acc?.content !== undefined
+              ? acc.content
+              : acc?.allContent !== undefined
+                ? undefined
+                : next.content,
+          allContent:
+            acc?.allContent !== undefined
+              ? acc.allContent
+              : acc?.content !== undefined
+                ? undefined
+                : next.allContent,
+          block: next.block || acc?.block,
+          blockReason: acc?.blockReason ?? next.blockReason,
+        }),
+      },
+    );
+  }
+
+  // =========================================================================
+  // Skill Install Hooks
   // =========================================================================
 
   /**
@@ -1181,6 +1282,11 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     runContextAssembled,
     runLoopIterationStart,
     runLoopIterationEnd,
+    // LLM call hooks
+    runBeforeLlmCall,
+    runAfterLlmCall,
+    // Response emit hooks
+    runBeforeResponseEmit,
     // Install hooks
     runBeforeInstall,
     // Utility
