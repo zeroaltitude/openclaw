@@ -1,13 +1,22 @@
+import fs from "node:fs";
+import path from "node:path";
 import { resolveGlobalDedupeCache } from "openclaw/plugin-sdk/core";
+import { STATE_DIR } from "openclaw/plugin-sdk/state-paths";
 
 /**
  * In-memory cache of Slack threads the bot has participated in.
  * Used to auto-respond in threads without requiring @mention after the first reply.
  * Follows a similar TTL pattern to the MS Teams and Telegram sent-message caches.
+ *
+ * The cache is persisted to disk so that thread participation survives gateway
+ * restarts.  Writes are debounced (at most once per PERSIST_DEBOUNCE_MS) and
+ * reads happen once on first access.
  */
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_ENTRIES = 5000;
+const PERSIST_DEBOUNCE_MS = 5_000;
+const PERSIST_FILENAME = "slack-thread-participation.json";
 
 /**
  * Keep Slack thread participation shared across bundled chunks so thread
@@ -18,6 +27,76 @@ const threadParticipation = resolveGlobalDedupeCache(SLACK_THREAD_PARTICIPATION_
   ttlMs: TTL_MS,
   maxSize: MAX_ENTRIES,
 });
+
+/** Persistence state shared across module instances via global singleton. */
+interface PersistState {
+  /** Shadow map for serialization — dedupe cache doesn't expose entries. */
+  entries: Map<string, number>;
+  hydrated: boolean;
+  persistTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const PERSIST_STATE_KEY = Symbol.for("openclaw.slackThreadParticipationPersistState");
+const persistState: PersistState =
+  ((globalThis as Record<symbol, unknown>)[PERSIST_STATE_KEY] as PersistState) ??
+  ((globalThis as Record<symbol, unknown>)[PERSIST_STATE_KEY] = {
+    entries: new Map(),
+    hydrated: false,
+    persistTimer: null,
+  });
+
+/** @internal Overridable persist path for tests. */
+let _persistPathOverride: string | undefined;
+
+function getPersistPath(): string {
+  return _persistPathOverride ?? path.join(STATE_DIR, PERSIST_FILENAME);
+}
+
+/** Load persisted entries into both the dedupe cache and the shadow map. */
+function hydrateFromDisk(): void {
+  if (persistState.hydrated) {
+    return;
+  }
+  persistState.hydrated = true;
+  try {
+    const raw = fs.readFileSync(getPersistPath(), "utf-8");
+    const data = JSON.parse(raw) as Record<string, number>;
+    const now = Date.now();
+    for (const [key, ts] of Object.entries(data)) {
+      if (typeof ts === "number" && now - ts < TTL_MS) {
+        // Use check() to insert into the dedupe cache (it returns false for new entries)
+        threadParticipation.check(key, ts);
+        persistState.entries.set(key, ts);
+      }
+    }
+  } catch {
+    // File missing or corrupt — start fresh.
+  }
+}
+
+/** Debounced write of the shadow map to disk. */
+function schedulePersist(): void {
+  if (persistState.persistTimer) {
+    return;
+  }
+  persistState.persistTimer = setTimeout(() => {
+    persistState.persistTimer = null;
+    try {
+      // Prune expired entries before writing.
+      const now = Date.now();
+      for (const [key, ts] of persistState.entries) {
+        if (now - ts >= TTL_MS) {
+          persistState.entries.delete(key);
+        }
+      }
+      const data = Object.fromEntries(persistState.entries);
+      fs.mkdirSync(path.dirname(getPersistPath()), { recursive: true });
+      fs.writeFileSync(getPersistPath(), JSON.stringify(data));
+    } catch {
+      // Best-effort persistence — don't crash on write failures.
+    }
+  }, PERSIST_DEBOUNCE_MS);
+}
 
 function makeKey(accountId: string, channelId: string, threadTs: string): string {
   return `${accountId}:${channelId}:${threadTs}`;
@@ -31,7 +110,11 @@ export function recordSlackThreadParticipation(
   if (!accountId || !channelId || !threadTs) {
     return;
   }
-  threadParticipation.check(makeKey(accountId, channelId, threadTs));
+  hydrateFromDisk();
+  const key = makeKey(accountId, channelId, threadTs);
+  threadParticipation.check(key);
+  persistState.entries.set(key, Date.now());
+  schedulePersist();
 }
 
 export function hasSlackThreadParticipation(
@@ -42,9 +125,56 @@ export function hasSlackThreadParticipation(
   if (!accountId || !channelId || !threadTs) {
     return false;
   }
+  hydrateFromDisk();
   return threadParticipation.peek(makeKey(accountId, channelId, threadTs));
 }
 
 export function clearSlackThreadParticipationCache(): void {
   threadParticipation.clear();
+  persistState.entries.clear();
+  if (persistState.persistTimer) {
+    clearTimeout(persistState.persistTimer);
+    persistState.persistTimer = null;
+  }
+  try {
+    fs.unlinkSync(getPersistPath());
+  } catch {
+    // Ignore — file may not exist.
+  }
+}
+
+/** @internal Flush pending persist timer synchronously (for tests). */
+export function _flushPersist(): void {
+  if (persistState.persistTimer) {
+    clearTimeout(persistState.persistTimer);
+    persistState.persistTimer = null;
+  }
+  // Write immediately.
+  try {
+    const now = Date.now();
+    for (const [key, ts] of persistState.entries) {
+      if (now - ts >= TTL_MS) {
+        persistState.entries.delete(key);
+      }
+    }
+    const data = Object.fromEntries(persistState.entries);
+    fs.mkdirSync(path.dirname(getPersistPath()), { recursive: true });
+    fs.writeFileSync(getPersistPath(), JSON.stringify(data));
+  } catch {
+    // Best-effort.
+  }
+}
+
+/** @internal Reset all state for tests, optionally setting a custom persist path. */
+export function _resetForTests(persistPath?: string): void {
+  // Set override BEFORE clearing so clearSlackThreadParticipationCache
+  // doesn't delete the file at the new path we're about to hydrate from.
+  _persistPathOverride = persistPath;
+  threadParticipation.clear();
+  persistState.entries.clear();
+  if (persistState.persistTimer) {
+    clearTimeout(persistState.persistTimer);
+    persistState.persistTimer = null;
+  }
+  persistState.hydrated = false;
 }
