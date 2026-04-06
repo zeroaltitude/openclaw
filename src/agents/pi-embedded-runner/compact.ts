@@ -157,6 +157,10 @@ export type CompactEmbeddedPiSessionParams = {
   groupSpace?: string | null;
   /** Parent session key for subagent policy inheritance. */
   spawnedBy?: string | null;
+  /** Original message platform (e.g. "slack", "discord", "telegram"). */
+  sourceProvider?: string;
+  /** Human-readable sender display name. */
+  senderName?: string | null;
   /** Whether the sender is an owner (required for owner-only tools). */
   senderIsOwner?: boolean;
   sessionFile: string;

@@ -2183,6 +2183,7 @@ export type PluginHookName =
   | "loop_iteration_end"
   | "before_llm_call"
   | "after_llm_call"
+  | "before_response_emit"
   | "before_dispatch"
   | "reply_dispatch"
   | "before_install";
@@ -2219,6 +2220,7 @@ export const PLUGIN_HOOK_NAMES = [
   "loop_iteration_end",
   "before_llm_call",
   "after_llm_call",
+  "before_response_emit",
   "before_dispatch",
   "reply_dispatch",
   "before_install",
@@ -2881,7 +2883,6 @@ export type PluginHookLoopIterationEndEvent = {
   hasToolResults: boolean;
 };
 
-
 // ============================================================================
 // LLM Call Hooks
 // ============================================================================
@@ -2922,6 +2923,33 @@ export type PluginHookAfterLlmCallResult = {
   block?: boolean;
   blockReason?: string;
   toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+};
+
+// ============================================================================
+// Response Emit Hooks
+// ============================================================================
+
+export type PluginHookBeforeResponseEmitEvent = {
+  runId: string;
+  /** Text content of the last assistant message in the run. */
+  content: string;
+  /** Text content of ALL assistant messages in the run (one entry per turn). */
+  allContent: string[];
+  /** Channel identifier (e.g. "telegram", "discord"). */
+  channel?: string;
+  /** Total message count in the session at emit time. */
+  messageCount: number;
+};
+
+export type PluginHookBeforeResponseEmitResult = {
+  /** Modified content for the last assistant message (single-message modification). */
+  content?: string;
+  /** Modified content for ALL assistant messages (full multi-turn modification). */
+  allContent?: string[];
+  /** If true, block the entire response from being emitted. */
+  block?: boolean;
+  /** Human-readable reason for blocking. */
+  blockReason?: string;
 };
 
 // ============================================================================
@@ -3180,7 +3208,7 @@ export type PluginHookHandlerMap = {
     | Promise<PluginHookBeforeResponseEmitResult | void>
     | PluginHookBeforeResponseEmitResult
     | void;
-before_install: (
+  before_install: (
     event: PluginHookBeforeInstallEvent,
     ctx: PluginHookBeforeInstallContext,
   ) => Promise<PluginHookBeforeInstallResult | void> | PluginHookBeforeInstallResult | void;

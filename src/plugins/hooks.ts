@@ -1097,17 +1097,10 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
    */
   async function runLoopIterationEnd(
     event: PluginHookLoopIterationEndEvent,
-  PluginHookBeforeLlmCallEvent,
-  PluginHookBeforeLlmCallResult,
-  PluginHookAfterLlmCallEvent,
-  PluginHookAfterLlmCallResult,
-  PluginHookBeforeResponseEmitEvent,
-  PluginHookBeforeResponseEmitResult,
     ctx: PluginHookAgentContext,
   ): Promise<void> {
     return runVoidHook("loop_iteration_end", event, ctx);
   }
-
 
   // =========================================================================
   // LLM Call Hooks
