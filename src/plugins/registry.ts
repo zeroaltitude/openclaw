@@ -42,6 +42,8 @@ import {
   isPluginHookName,
   isPromptInjectionHookName,
   stripPromptMutationFieldsFromLegacyHookResult,
+  type PluginHookAgentContext,
+  type PluginHookBeforeLlmCallEvent,
 } from "./types.js";
 import type {
   ImageGenerationProviderPlugin,
@@ -1092,6 +1094,34 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
         effectiveHandler = constrainLegacyPromptInjectionHook(
           handler as PluginHookHandlerMap["before_agent_start"],
         ) as PluginHookHandlerMap[K];
+      }
+      if (hookName === "before_llm_call") {
+        pushDiagnostic({
+          level: "warn",
+          pluginId: record.id,
+          source: record.source,
+          message: `typed hook "${hookName}" prompt fields constrained by plugins.entries.${record.id}.hooks.allowPromptInjection=false — messages/systemPrompt mutations will be stripped; block/tools/toolCalls still allowed`,
+        });
+        const original = handler as PluginHookHandlerMap["before_llm_call"];
+        effectiveHandler = (async (
+          event: PluginHookBeforeLlmCallEvent,
+          ctx: PluginHookAgentContext,
+        ) => {
+          // Deep-clone messages and systemPrompt so the constrained handler
+          // cannot bypass the policy by mutating the event in place.
+          const sandboxedEvent: PluginHookBeforeLlmCallEvent = {
+            ...event,
+            messages: structuredClone(event.messages),
+            systemPrompt: event.systemPrompt,
+          };
+          const result = await original(sandboxedEvent, ctx);
+          if (!result) {
+            return result;
+          }
+          // Strip prompt-injection fields; preserve non-injection controls
+          const { messages: _m, systemPrompt: _s, ...safe } = result;
+          return Object.keys(safe).length > 0 ? (safe as typeof result) : undefined;
+        }) as PluginHookHandlerMap[K];
       }
     }
     record.hookCount += 1;
