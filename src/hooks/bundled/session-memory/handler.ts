@@ -5,6 +5,7 @@
  * Creates a new dated memory file with LLM-generated slug
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -364,18 +365,22 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // redirected writes use the caller-supplied path directly.
     let filename = "";
     if (!isRedirected) {
-      // If no slug, use timestamp with a random suffix to avoid collisions.
-      // Second-resolution (HHMMSS) alone can collide when automated or
-      // multi-channel setups emit rapid /new or /reset commands within the
-      // same second — both writes target the same filename and the later
-      // one silently overwrites the earlier memory entry.
+      // If no slug, use a timestamp-based fallback. The uniqueSuffix appended
+      // below handles collision avoidance for all paths (LLM and fallback).
       if (!slug) {
         const timeSlug = now.toISOString().split("T")[1].split(".")[0].replace(/:/g, "");
-        const rand = Math.random().toString(36).slice(2, 6); // 4-char alphanumeric
-        slug = `${timeSlug.slice(0, 6)}-${rand}`;
+        slug = timeSlug.slice(0, 6);
         log.debug("Using fallback timestamp slug", { slug });
       }
-      filename = `${dateStr}-${slug}.md`;
+
+      // Append a short random suffix to guarantee filename uniqueness.
+      // LLM-generated slugs are descriptive but not unique — two similar
+      // sessions on the same day can produce identical slugs, causing the
+      // second write to silently overwrite the first. A 4-char hex suffix
+      // (16 bits of entropy) makes collisions vanishingly unlikely even
+      // under rapid automated /new or multi-channel workloads.
+      const uniqueSuffix = crypto.randomUUID().replace(/-/g, "").slice(0, 4);
+      filename = `${dateStr}-${slug}-${uniqueSuffix}.md`;
     }
 
     // Determine write target. Redirect paths are validated by writeFileWithinRoot
@@ -439,8 +444,22 @@ const saveSessionToMemory: HookHandler = async (event) => {
 
     // Use custom content from upstream hook if available, otherwise build entry.
     // hasCustomContent (set above) already gates session loading + slug generation.
+    // When blockPreSet is true, skip entry construction entirely — the inline
+    // write won't happen and the value would be discarded.
     let entry: string;
-    if (hasCustomContent) {
+    if (blockPreSet) {
+      // Block takes precedence — skip entry construction entirely since the
+      // inline write won't happen and the value would be discarded.
+      entry = "";
+      if (hasCustomContent) {
+        log.debug(
+          "blockSessionSave pre-set — sessionSaveContent was also set but will be ignored " +
+            "(blockSessionSave takes precedence over sessionSaveContent)",
+        );
+      } else {
+        log.debug("Session save blocked by upstream hook (inline check)");
+      }
+    } else if (hasCustomContent) {
       // An empty string is a valid redaction signal — hooks may intentionally
       // set it to persist a blank marker while avoiding transcript retention.
       entry = context.sessionSaveContent as string;
@@ -472,22 +491,17 @@ const saveSessionToMemory: HookHandler = async (event) => {
       ? path.resolve(canonicalWorkspace, writeRelativePath)
       : memoryFilePath;
 
-    // Snapshot pre-existing content before the inline write. If a later hook
-    // sets blockSessionSave, we restore this content instead of unlinking —
-    // preventing data loss when the target file already existed (e.g. fixed
-    // redirect quarantine paths or slug collisions on non-redirected writes).
-    let preExistingContent: string | null = null;
-    try {
-      preExistingContent = await fs.readFile(writtenFilePath, "utf-8");
-    } catch {
-      // File doesn't exist yet — no prior content to preserve.
-    }
-
     // Write inline (fail-safe: if postHookActions never drains, the file
     // is preserved on disk with the best content available at this point).
     // If blockSessionSave was already set by an upstream hook, skip the write.
-    if (context.blockSessionSave === true) {
-      log.debug("Session save blocked by upstream hook (inline check)");
+    //
+    // Before writing, snapshot any pre-existing file content so that late-block
+    // retraction can restore it instead of deleting — preventing accidental
+    // erasure of prior memory files when LLM slugs collide on the same day
+    // or when fixed redirect quarantine paths are reused.
+    let preExistingContent: string | null = null;
+    if (blockPreSet) {
+      // Already logged above — nothing to write.
     } else if (isRedirected) {
       // Write session memory to redirect path — writeFileWithinRoot handles
       // path traversal, symlink resolution, and containment validation.
@@ -496,6 +510,11 @@ const saveSessionToMemory: HookHandler = async (event) => {
       //
       // Write scope: redirect paths use workspace/ as root (not memory/) to
       // allow quarantine directories outside memory/. Non-redirects use memory/.
+      try {
+        preExistingContent = await fs.readFile(writtenFilePath, "utf-8");
+      } catch {
+        // File doesn't exist yet — no prior content to preserve.
+      }
       try {
         await writeFileWithinRoot({
           rootDir: canonicalWorkspace,
@@ -526,6 +545,21 @@ const saveSessionToMemory: HookHandler = async (event) => {
       log.info(`Session context saved to ${relPath}`);
     } else {
       await fs.mkdir(memoryDir, { recursive: true });
+      try {
+        preExistingContent = await fs.readFile(memoryFilePath, "utf-8");
+      } catch (err: unknown) {
+        // File doesn't exist yet — normal case, nothing to preserve.
+        // Rethrow non-ENOENT errors (EACCES, EISDIR, etc.) to avoid silently
+        // losing preExistingContent, which would cause late-block retraction
+        // to delete the file instead of restoring a prior session's history.
+        if (
+          err instanceof Error &&
+          "code" in err &&
+          (err as NodeJS.ErrnoException).code !== "ENOENT"
+        ) {
+          throw err;
+        }
+      }
       await writeFileWithinRoot({
         rootDir: memoryDir,
         relativePath: filename,
@@ -550,7 +584,8 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // writes — redirect paths are a security contract where the hook
     // explicitly chose an alternative location and content; overriding
     // content in post-hook would undermine the redirect contract.
-    const writtenEntry = context.blockSessionSave === true ? null : entry;
+    const inlineWriteHappened = !blockPreSet;
+    const writtenEntry = inlineWriteHappened ? entry : null;
 
     // Post-hook callback — errors propagate to the framework's per-action
     // catch in triggerInternalHook, which provides consistent log formatting
@@ -562,31 +597,95 @@ const saveSessionToMemory: HookHandler = async (event) => {
       // If a later hook blocked the save, retract the file we just wrote.
       // This applies to both redirected and non-redirected writes —
       // blockSessionSave means "no persistence anywhere."
-      if (event.context.blockSessionSave === true && writtenEntry !== null) {
-        try {
+      if (event.context.blockSessionSave === true && inlineWriteHappened) {
+        // Privacy note: late-set blockSessionSave retracts the file but does NOT
+        // prevent transcript content from having already been sent to the LLM
+        // provider for slug generation — but only when the transcript was actually
+        // loaded (i.e. no custom content was pre-set). When hasCustomContent is
+        // true, transcript loading and LLM calls were skipped entirely.
+        if (!hasCustomContent && sessionContent) {
+          log.warn(
+            "blockSessionSave was set by a late hook — memory file will be retracted, but " +
+              "transcript content may have already been sent to the LLM provider for slug generation. " +
+              "To prevent transcript processing entirely, set blockSessionSave before the " +
+              "session-memory handler runs.",
+          );
+        }
+
+        if (isRedirected) {
+          // Redirected retraction: simpler path — just restore or unlink.
+          try {
+            if (preExistingContent !== null) {
+              await writeFileWithinRoot({
+                rootDir: canonicalWorkspace,
+                relativePath: writeRelativePath,
+                data: preExistingContent,
+                encoding: "utf-8",
+              });
+              log.debug("Session save retracted — pre-existing content restored", {
+                redirected: true,
+              });
+            } else {
+              await fs.unlink(writtenFilePath);
+              log.debug("Session save retracted by post-hook (blockSessionSave)", {
+                redirected: true,
+              });
+            }
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw err;
+            }
+          }
+        } else {
+          // Non-redirected retraction: verify we're reverting our own write
+          // before touching the file. A concurrent session may have written
+          // to the same filename between our inline write and this drain.
+          let currentContent: string | null = null;
+          try {
+            currentContent = await fs.readFile(memoryFilePath, "utf-8");
+          } catch (err: unknown) {
+            if (
+              err instanceof Error &&
+              "code" in err &&
+              (err as NodeJS.ErrnoException).code === "ENOENT"
+            ) {
+              if (preExistingContent !== null) {
+                await writeFileWithinRoot({
+                  rootDir: memoryDir,
+                  relativePath: filename,
+                  data: preExistingContent,
+                  encoding: "utf-8",
+                });
+                log.debug(
+                  "Session save retracted by post-hook — pre-existing file restored after external deletion",
+                );
+              } else {
+                log.debug("Session save retraction skipped — file already removed");
+              }
+              return;
+            }
+            throw err;
+          }
+
+          if (currentContent !== writtenEntry) {
+            log.warn(
+              "Session save retraction skipped — file was modified by another " +
+                "session since our inline write (concurrent save detected)",
+            );
+            return;
+          }
+
           if (preExistingContent !== null) {
-            // Restore prior content rather than deleting — the file existed
-            // before our write and may belong to a previous session or contain
-            // historical data (common with fixed redirect quarantine paths).
             await writeFileWithinRoot({
-              rootDir: isRedirected ? canonicalWorkspace : memoryDir,
-              relativePath: isRedirected ? writeRelativePath : filename,
+              rootDir: memoryDir,
+              relativePath: filename,
               data: preExistingContent,
               encoding: "utf-8",
             });
-            log.debug("Session save retracted — pre-existing content restored", {
-              redirected: isRedirected,
-            });
+            log.debug("Session save retracted by post-hook — pre-existing file restored");
           } else {
-            await fs.unlink(writtenFilePath);
-            log.debug("Session save retracted by post-hook (blockSessionSave)", {
-              redirected: isRedirected,
-            });
-          }
-        } catch (err) {
-          // File may not exist if inline write also didn't happen — that's fine.
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-            throw err;
+            await fs.unlink(memoryFilePath);
+            log.debug("Session save retracted by post-hook (blockSessionSave)");
           }
         }
         return;
@@ -624,8 +723,38 @@ const saveSessionToMemory: HookHandler = async (event) => {
       if (
         event.context.blockSessionSave !== true &&
         typeof postContent === "string" &&
-        postContent !== writtenEntry
+        // Two distinct intents: write if no inline write happened (writtenEntry
+        // is null because blockPreSet was true) OR if the content changed.
+        (writtenEntry === null || postContent !== writtenEntry)
       ) {
+        // Verify ownership before overwriting — if another concurrent run wrote
+        // to the same file since our inline write, do not clobber their content.
+        // Same TOCTOU guard as the late-block retraction path.
+        if (writtenEntry !== null) {
+          let currentContent: string | null = null;
+          try {
+            currentContent = await fs.readFile(memoryFilePath, "utf-8");
+          } catch (err: unknown) {
+            if (
+              err instanceof Error &&
+              "code" in err &&
+              (err as NodeJS.ErrnoException).code === "ENOENT"
+            ) {
+              // File was externally deleted — safe to recreate with new content.
+              currentContent = null;
+            } else {
+              throw err;
+            }
+          }
+          if (currentContent !== null && currentContent !== writtenEntry) {
+            log.warn(
+              "Session save content replacement skipped — file was modified by another " +
+                "session since our inline write (concurrent save detected)",
+            );
+            return;
+          }
+        }
+
         // Ensure memoryDir exists — the inline write may have been
         // skipped (e.g. blockSessionSave was true initially) so mkdir
         // might never have run.
@@ -639,6 +768,38 @@ const saveSessionToMemory: HookHandler = async (event) => {
         log.debug("Session save content replaced by post-hook (sessionSaveContent)", {
           length: postContent.length,
         });
+      } else if (
+        event.context.blockSessionSave !== true &&
+        writtenEntry === null &&
+        typeof postContent !== "string"
+      ) {
+        // blockSessionSave was pre-set (causing writtenEntry=null and no inline
+        // write), then a later hook cleared it without providing sessionSaveContent.
+        // The transcript was never loaded, so we cannot produce a file. Warn so
+        // plugin authors know to supply content when un-blocking.
+        log.warn(
+          "blockSessionSave was cleared but no sessionSaveContent provided — " +
+            "no memory file written. Transcript was not loaded because " +
+            "sessionSaveContent or blockSessionSave was pre-set during handler " +
+            "execution. To write a file after clearing blockSessionSave, also " +
+            "provide sessionSaveContent with the desired content.",
+        );
+      } else if (
+        event.context.blockSessionSave !== true &&
+        writtenEntry !== null &&
+        typeof postContent !== "string" &&
+        hasCustomContent
+      ) {
+        // sessionSaveContent was pre-set (inline write used custom content),
+        // then a later hook cleared it. The file retains the pre-set content.
+        // This is a no-op — to revert to transcript content, the clearing hook
+        // must provide its own sessionSaveContent. Log for diagnostics so
+        // plugin authors know their clearing was silently ignored.
+        log.debug(
+          "sessionSaveContent was cleared by a post-hook but the inline write " +
+            "already used the pre-set content. File retains pre-set content. " +
+            "To override, set sessionSaveContent to the desired replacement.",
+        );
       }
     });
   } catch (err) {
