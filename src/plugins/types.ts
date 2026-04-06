@@ -2249,10 +2249,25 @@ export type PluginHookAgentContext = {
   /** Resolved model id for this run (for example "gpt-5.4"). */
   modelId?: string;
   messageProvider?: string;
+  /** Original message platform (e.g. "slack", "discord", "telegram", "whatsapp").
+   *  Unlike messageProvider (which may reflect routing or delivery channel), this
+   *  preserves the raw platform origin for security classification. */
+  sourceProvider?: string;
   /** What initiated this agent run: "user", "heartbeat", "cron", or "memory". */
   trigger?: string;
   /** Channel identifier (e.g. "telegram", "discord", "whatsapp"). */
   channelId?: string;
+  /** Sender's platform-specific ID (e.g. Discord user ID, Slack user ID). */
+  senderId?: string | null;
+  /** Sender's display name. */
+  senderName?: string | null;
+  /** Whether the sender is a configured owner (from ownerNumbers). */
+  senderIsOwner?: boolean;
+  /** Group/channel ID if this is a group chat (null for DMs and non-group sessions).
+   *  Always resolved from session context — null means confirmed non-group, not unknown. */
+  groupId?: string | null;
+  /** Parent session key if this is a sub-agent session. */
+  spawnedBy?: string | null;
 };
 
 // before_model_resolve hook
@@ -2424,6 +2439,7 @@ export type PluginHookMessageContext = {
   channelId: string;
   accountId?: string;
   conversationId?: string;
+  sessionKey?: string;
 };
 
 export type PluginHookInboundClaimContext = PluginHookMessageContext & {

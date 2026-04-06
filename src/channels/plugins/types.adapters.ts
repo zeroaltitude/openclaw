@@ -175,6 +175,8 @@ export type ChannelOutboundContext = {
   identity?: OutboundIdentity;
   deps?: OutboundSendDeps;
   silent?: boolean;
+  /** Session key for plugin hook correlation (e.g. message_sending). */
+  sessionKey?: string;
   gatewayClientScopes?: readonly string[];
 };
 
