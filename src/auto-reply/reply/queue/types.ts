@@ -57,6 +57,7 @@ export type FollowupRun = {
     senderUsername?: string;
     senderE164?: string;
     senderIsOwner?: boolean;
+    spawnedBy?: string | null;
     traceAuthorized?: boolean;
     sessionFile: string;
     workspaceDir: string;
