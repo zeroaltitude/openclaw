@@ -1925,6 +1925,7 @@ export async function runEmbeddedAttempt(
       let preflightRecovery: EmbeddedRunAttemptResult["preflightRecovery"];
       let promptErrorSource: "prompt" | "compaction" | "precheck" | null = null;
       let llmCallBlocked = false;
+      let responseEmitBlocked = false;
       let skipPromptSubmission = false;
       try {
         const promptStartedAt = Date.now();
@@ -2559,6 +2560,7 @@ export async function runEmbeddedAttempt(
             // the lastAssistant fallback in payloads.ts.
             messagesSnapshot = activeSession.messages.slice();
           }
+        }
         lastAssistant = messagesSnapshot
           .slice()
           .toReversed()

@@ -608,6 +608,8 @@ export type PluginHookLoopIterationEndEvent = {
   toolCallsMade: number;
   newMessagesAdded?: number;
   hasToolResults: boolean;
+};
+
 // before_llm_call hook (modifying — sequential)
 export type PluginHookBeforeLlmCallEvent = {
   runId: string;
@@ -639,6 +641,11 @@ export type PluginHookAfterLlmCallEvent = {
 };
 
 export type PluginHookAfterLlmCallResult = {
+  block?: boolean;
+  blockReason?: string;
+  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+};
+
 // before_response_emit hook (modifying — sequential)
 export type PluginHookBeforeResponseEmitEvent = {
   runId: string;
