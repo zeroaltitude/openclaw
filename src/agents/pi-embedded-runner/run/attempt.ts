@@ -1895,7 +1895,6 @@ export async function runEmbeddedAttempt(
       scheduleAbortTimer(params.timeoutMs, "initial");
 
       let messagesSnapshot: AgentMessage[] = [];
-      let responseEmitBlocked = false;
       let sessionIdUsed = activeSession.sessionId;
       const onAbort = () => {
         externalAbort = true;
@@ -2560,7 +2559,6 @@ export async function runEmbeddedAttempt(
             // the lastAssistant fallback in payloads.ts.
             messagesSnapshot = activeSession.messages.slice();
           }
-        }
         lastAssistant = messagesSnapshot
           .slice()
           .toReversed()
