@@ -657,6 +657,7 @@ export type PluginHookBeforeResponseEmitEvent = {
 
 export type PluginHookBeforeResponseEmitResult = {
   content?: string;
+  allContent?: string[];
   block?: boolean;
   blockReason?: string;
 };
