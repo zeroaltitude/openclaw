@@ -13,6 +13,18 @@ import { resolveOpenClawAgentDir } from "./agent-paths.js";
 import { MODELS_JSON_STATE } from "./models-config-state.js";
 import { planOpenClawModelsJson } from "./models-config.plan.js";
 
+// DEBUG INSTRUMENTATION — uncommitted, will be removed before PR
+// Logs timing of the two perf fixes so we can verify they work live.
+const DEBUG_PERF =
+  process.env.OPENCLAW_PERF_DEBUG === "1" || process.env.OPENCLAW_PERF_DEBUG === "true";
+function perfLog(phase: string, detail: Record<string, unknown>): void {
+  if (!DEBUG_PERF) {
+    return;
+  }
+  const row = { at: Date.now(), phase, ...detail };
+  console.log(`[models-config:perf] ${JSON.stringify(row)}`);
+}
+
 export { resetModelsJsonReadyCacheForTest } from "./models-config-state.js";
 
 /**
@@ -269,6 +281,7 @@ export async function ensureOpenClawModelsJson(
   agentDirOverride?: string,
   options?: EnsureOpenClawModelsJsonOptions,
 ): Promise<{ agentDir: string; wrote: boolean }> {
+  const callStart = Date.now();
   const resolved = resolveModelsConfigInput(config);
   const cfg = resolved.config;
   const agentDir = agentDirOverride?.trim() ? agentDirOverride.trim() : resolveOpenClawAgentDir();
@@ -286,27 +299,55 @@ export async function ensureOpenClawModelsJson(
     if (explicitHasTarget) {
       const onDiskHasTarget = await readExistingProviderIsConfigured(targetPath, targetProvider);
       if (onDiskHasTarget) {
+        perfLog("short_circuit_hit", {
+          targetProvider,
+          elapsedMs: Date.now() - callStart,
+        });
         await ensureModelsFileModeForModelsJson(targetPath);
         return { agentDir, wrote: false };
       }
+      perfLog("short_circuit_miss_no_ondisk", {
+        targetProvider,
+        elapsedMs: Date.now() - callStart,
+      });
+    } else {
+      perfLog("short_circuit_miss_no_explicit", {
+        targetProvider,
+        elapsedMs: Date.now() - callStart,
+      });
     }
   }
 
+  const fingerprintStart = Date.now();
   const fingerprint = await buildModelsJsonFingerprint({
     config: cfg,
     sourceConfigForSecrets: resolved.sourceConfigForSecrets,
     agentDir,
   });
+  perfLog("fingerprint_built", {
+    elapsedMs: Date.now() - fingerprintStart,
+  });
   const cached = MODELS_JSON_STATE.readyCache.get(targetPath);
   if (cached) {
     const settled = await cached;
     if (settled.fingerprint === fingerprint) {
+      perfLog("cache_hit", {
+        totalMs: Date.now() - callStart,
+      });
       await ensureModelsFileModeForModelsJson(targetPath);
       return settled.result;
     }
+    perfLog("cache_mismatch", {
+      totalMs: Date.now() - callStart,
+    });
+  } else {
+    perfLog("cache_miss_empty", {
+      totalMs: Date.now() - callStart,
+    });
   }
 
   const pending = withModelsJsonWriteLock(targetPath, async () => {
+    const slowPathStart = Date.now();
     // Ensure config env vars (e.g. AWS_PROFILE, AWS_ACCESS_KEY_ID) are
     // are available to provider discovery without mutating process.env.
     const env = createConfigRuntimeEnv(cfg);
@@ -318,6 +359,10 @@ export async function ensureOpenClawModelsJson(
       env,
       existingRaw: existingModelsFile.raw,
       existingParsed: existingModelsFile.parsed,
+    });
+    perfLog("slow_path_plan_complete", {
+      action: plan.action,
+      elapsedMs: Date.now() - slowPathStart,
     });
 
     if (plan.action === "skip") {
