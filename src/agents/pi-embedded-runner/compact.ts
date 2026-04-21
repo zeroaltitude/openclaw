@@ -70,8 +70,8 @@ import {
   consumeCompactionSafeguardCancelReason,
   setCompactionSafeguardCancelReason,
 } from "../pi-hooks/compaction-safeguard-runtime.js";
-import { applyPiCompactionSettingsFromConfig } from "../pi-settings.js";
 import { createPreparedEmbeddedPiSettingsManager } from "../pi-project-settings.js";
+import { applyPiCompactionSettingsFromConfig } from "../pi-settings.js";
 import { createOpenClawCodingTools } from "../pi-tools.js";
 import { wrapStreamFnTextTransforms } from "../plugin-text-transforms.js";
 import { registerProviderStreamForModel } from "../provider-stream.js";
@@ -345,7 +345,10 @@ export async function compactEmbeddedPiSessionDirect(
     };
   };
   const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
-  await ensureOpenClawModelsJson(params.config, agentDir);
+  await ensureOpenClawModelsJson(params.config, agentDir, {
+    targetProvider: provider,
+    targetModel: modelId,
+  });
   const { model, error, authStorage, modelRegistry } = await resolveModelAsync(
     provider,
     modelId,
