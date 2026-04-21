@@ -294,7 +294,10 @@ export async function runEmbeddedPiAgent(
         agentId: params.agentId,
         sessionKey: normalizedSessionKey,
       });
-      await ensureOpenClawModelsJson(params.config, agentDir);
+      await ensureOpenClawModelsJson(params.config, agentDir, {
+        targetProvider: provider,
+        targetModel: modelId,
+      });
       __perfMark("modelsJson");
       const resolvedSessionKey = normalizedSessionKey;
       const hookRunner = getGlobalHookRunner();
