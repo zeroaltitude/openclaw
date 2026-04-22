@@ -991,6 +991,14 @@ export class QmdMemoryManager implements MemorySearchManager {
       onDebug?: (debug: MemorySearchRuntimeDebug) => void;
     },
   ): Promise<MemorySearchResult[]> {
+    // --- PERF: sub-phase timing for QmdMemoryManager.search ---
+    // Reports wall time for each prep step, the runSearchAttempt (external qmd
+    // CLI / mcporter subprocess), and the per-result doc-location resolution.
+    const qmdPerfTotalStart = Date.now();
+    const qmdPhases: Record<string, number> = {};
+    const qmdMark = (name: string, startMs: number) => {
+      qmdPhases[name] = Math.max(0, Date.now() - startMs);
+    };
     if (!this.isScopeAllowed(opts?.sessionKey)) {
       this.logScopeDenied(opts?.sessionKey);
       return [];
@@ -999,9 +1007,15 @@ export class QmdMemoryManager implements MemorySearchManager {
     if (!trimmed) {
       return [];
     }
+    const warmStart = Date.now();
     await this.maybeWarmSession(opts?.sessionKey);
+    qmdMark("warmSession", warmStart);
+    const dirtyStart = Date.now();
     await this.maybeSyncDirtySearchState();
+    qmdMark("dirtySync", dirtyStart);
+    const waitStart = Date.now();
     await this.waitForPendingUpdateBeforeSearch();
+    qmdMark("waitPending", waitStart);
     const limit = Math.min(
       this.qmd.limits.maxResults,
       opts?.maxResults ?? this.qmd.limits.maxResults,
@@ -1120,6 +1134,7 @@ export class QmdMemoryManager implements MemorySearchManager {
     };
 
     let parsed: QmdQueryResult[];
+    const runSearchStart = Date.now();
     try {
       parsed = await runSearchAttempt(true);
     } catch (err) {
@@ -1128,6 +1143,8 @@ export class QmdMemoryManager implements MemorySearchManager {
       }
       parsed = await runSearchAttempt(false);
     }
+    qmdMark("runSearch", runSearchStart);
+    const docResolveStart = Date.now();
     const results: MemorySearchResult[] = [];
     for (const entry of parsed) {
       const docHints = this.normalizeDocHints({
@@ -1154,13 +1171,24 @@ export class QmdMemoryManager implements MemorySearchManager {
         source: doc.source,
       });
     }
+    qmdMark("resolveDocLocations", docResolveStart);
+    const postStart = Date.now();
+    const finalResults = this.clampResultsByInjectedChars(
+      this.diversifyResultsBySource(results, limit),
+    );
+    qmdMark("postProcess", postStart);
+    const qmdTotalMs = Math.max(0, Date.now() - qmdPerfTotalStart);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[qmd-search-perf] session=${opts?.sessionKey ?? "-"} mode=${effectiveSearchMode} configMode=${qmdSearchCommand} totalMs=${qmdTotalMs} phases=${JSON.stringify(qmdPhases)} parsedHits=${parsed.length} finalHits=${finalResults.length} collections=${this.listManagedCollectionNames().length} mcporter=${this.qmd.mcporter.enabled}`,
+    );
     opts?.onDebug?.({
       backend: "qmd",
       configuredMode: qmdSearchCommand,
       effectiveMode: effectiveSearchMode,
       fallback: searchFallbackReason,
     });
-    return this.clampResultsByInjectedChars(this.diversifyResultsBySource(results, limit));
+    return finalResults;
   }
 
   async sync(params?: {
