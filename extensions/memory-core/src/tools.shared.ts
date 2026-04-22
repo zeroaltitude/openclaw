@@ -154,11 +154,29 @@ export async function searchMemoryCorpusSupplements(params: {
   if (supplements.length === 0) {
     return [];
   }
-  const results = (
-    await Promise.all(
-      supplements.map(async (registration) => await registration.supplement.search(params)),
-    )
-  ).flat();
+  // --- PERF: per-supplement timing ---
+  const perfStart = Date.now();
+  const perSupplementMs: Array<{ id: string; hits: number; ms: number }> = [];
+  const searchResults = await Promise.all(
+    supplements.map(async (registration) => {
+      const registrationStart = Date.now();
+      const supplementResults = await registration.supplement.search(params);
+      const ms = Math.max(0, Date.now() - registrationStart);
+      perSupplementMs.push({
+        id: (registration as { pluginId?: string }).pluginId ?? "unknown",
+        hits: supplementResults.length,
+        ms,
+      });
+      return supplementResults;
+    }),
+  );
+  const totalMs = Math.max(0, Date.now() - perfStart);
+  const results = searchResults.flat();
+  const finalMs = Math.max(0, Date.now() - perfStart);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[memory-supplements-perf] corpus=${params.corpus ?? "-"} totalMs=${totalMs} afterMergeMs=${finalMs} supplements=${JSON.stringify(perSupplementMs)} flattenedHits=${results.length}`,
+  );
   return results
     .toSorted((left, right) => {
       if (left.score !== right.score) {

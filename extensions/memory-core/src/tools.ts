@@ -191,6 +191,16 @@ export function createMemorySearchTool(options: {
     execute:
       ({ cfg, agentId }) =>
       async (_toolCallId, params) => {
+        // --- PERF: end-to-end memory_search profiling ---
+        // Every phase is timed with Date.now() deltas and logged once on
+        // completion as a single structured line (prefix `[memory-search-perf]`).
+        // Individual phase timings are also attached to the tool result under
+        // `debug.phases` so upstream agents can surface them.
+        const perfTotalStart = Date.now();
+        const phases: Record<string, number> = {};
+        const markPhase = (name: string, startMs: number) => {
+          phases[name] = Math.max(0, Date.now() - startMs);
+        };
         const query = readStringParam(params, "query", { required: true });
         const maxResults = readNumberParam(params, "maxResults");
         const minScore = readNumberParam(params, "minScore");
@@ -199,10 +209,14 @@ export function createMemorySearchTool(options: {
           | "wiki"
           | "all"
           | undefined;
+        const runtimeStart = Date.now();
         const { resolveMemoryBackendConfig } = await loadMemoryToolRuntime();
+        markPhase("loadRuntime", runtimeStart);
         const shouldQueryMemory = requestedCorpus !== "wiki";
         const shouldQuerySupplements = requestedCorpus === "wiki" || requestedCorpus === "all";
+        const contextStart = Date.now();
         const memory = shouldQueryMemory ? await getMemoryManagerContext({ cfg, agentId }) : null;
+        markPhase("contextInit", contextStart);
         if (shouldQueryMemory && memory && "error" in memory && !shouldQuerySupplements) {
           return jsonResult(buildMemorySearchUnavailableResult(memory.error));
         }
@@ -237,6 +251,7 @@ export function createMemorySearchTool(options: {
               cfg,
               options.agentSessionKey,
             );
+            const searchPhaseStart = Date.now();
             rawResults = await memory.manager.search(query, {
               maxResults,
               minScore,
@@ -246,6 +261,8 @@ export function createMemorySearchTool(options: {
                 runtimeDebug.push(debug);
               },
             });
+            markPhase("managerSearch", searchPhaseStart);
+            const decorateStart = Date.now();
             const status = memory.manager.status();
             const decorated = decorateCitations(rawResults, includeCitations);
             const resolved = resolveMemoryBackendConfig({ cfg, agentId });
@@ -257,6 +274,8 @@ export function createMemorySearchTool(options: {
               ...result,
               corpus: "memory" as const,
             }));
+            markPhase("decorate", decorateStart);
+            const trackingStart = Date.now();
             const sleepTimezone = resolveMemoryDeepDreamingConfig({
               pluginConfig: resolveMemoryCorePluginConfig(cfg),
               cfg,
@@ -268,6 +287,7 @@ export function createMemorySearchTool(options: {
               surfacedResults: memoryResults,
               timezone: sleepTimezone,
             });
+            markPhase("queueTracking", trackingStart);
             provider = status.provider;
             model = status.model;
             fallback = status.fallback;
@@ -285,6 +305,7 @@ export function createMemorySearchTool(options: {
               hits: rawResults.length,
             };
           }
+          const supplementsStart = Date.now();
           const supplementResults = shouldQuerySupplements
             ? await searchMemoryCorpusSupplements({
                 query,
@@ -293,6 +314,8 @@ export function createMemorySearchTool(options: {
                 corpus: requestedCorpus,
               })
             : [];
+          markPhase("supplements", supplementsStart);
+          const mergeStart = Date.now();
           const results = [...surfacedMemoryResults, ...supplementResults]
             .toSorted((left, right) => {
               if (left.score !== right.score) {
@@ -301,6 +324,15 @@ export function createMemorySearchTool(options: {
               return left.path.localeCompare(right.path);
             })
             .slice(0, Math.max(1, maxResults ?? 10));
+          markPhase("mergeSort", mergeStart);
+          const totalMs = Math.max(0, Date.now() - perfTotalStart);
+          // Single structured log line for easy grepping.
+          // Format: [memory-search-perf] agent=<id> session=<key> corpus=<c> backend=<b> mode=<m> totalMs=<n> phases=<json> memHits=<n> suppHits=<n> q=<truncated>
+          const qTrimmed = query.length > 80 ? `${query.slice(0, 77)}...` : query;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[memory-search-perf] agent=${agentId ?? "-"} session=${options.agentSessionKey ?? "-"} corpus=${requestedCorpus ?? "memory"} backend=${searchDebug?.backend ?? "-"} mode=${searchMode ?? "-"} totalMs=${totalMs} phases=${JSON.stringify(phases)} memHits=${rawResults.length} suppHits=${supplementResults.length} q=${JSON.stringify(qTrimmed)}`,
+          );
           return jsonResult({
             results,
             provider,
@@ -308,7 +340,11 @@ export function createMemorySearchTool(options: {
             fallback,
             citations: citationsMode,
             mode: searchMode,
-            debug: searchDebug,
+            debug: {
+              ...searchDebug,
+              phases,
+              totalMs,
+            },
           });
         } catch (err) {
           const message = formatErrorMessage(err);
