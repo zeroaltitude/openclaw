@@ -183,6 +183,12 @@ function assertSafeInstalledDistPath(relativePath, params) {
   return candidatePath;
 }
 
+function isStagedRuntimeNodeModulesPath(relativePath) {
+  return /^dist\/extensions\/[^/]+\/node_modules(?:\/|$)/u.test(
+    normalizeRelativePath(relativePath),
+  );
+}
+
 function listInstalledDistFiles(params = {}) {
   const readDir = params.readdirSync ?? readdirSync;
   const distRoot = resolveInstalledDistRoot(params);
@@ -195,6 +201,10 @@ function listInstalledDistFiles(params = {}) {
   while (pending.length > 0) {
     const currentDir = pending.pop();
     if (!currentDir) {
+      continue;
+    }
+    const relativeCurrentDir = normalizeRelativePath(relative(packageRoot, currentDir));
+    if (isStagedRuntimeNodeModulesPath(relativeCurrentDir)) {
       continue;
     }
     for (const entry of readDir(currentDir, { withFileTypes: true })) {
@@ -232,6 +242,10 @@ function pruneEmptyDistDirectories(params = {}) {
   const pathLstat = params.lstatSync ?? lstatSync;
 
   function prune(currentDir) {
+    const relativeCurrentDir = normalizeRelativePath(relative(packageRoot, currentDir));
+    if (isStagedRuntimeNodeModulesPath(relativeCurrentDir)) {
+      return;
+    }
     for (const entry of readDir(currentDir, { withFileTypes: true })) {
       if (entry.isSymbolicLink()) {
         throw new Error(
@@ -636,7 +650,8 @@ function applyBundledPluginRuntimeHotfixes(params = {}) {
 export function isSourceCheckoutRoot(params) {
   const pathExists = params.existsSync ?? existsSync;
   return (
-    pathExists(join(params.packageRoot, ".git")) &&
+    (pathExists(join(params.packageRoot, ".git")) ||
+      pathExists(join(params.packageRoot, "pnpm-workspace.yaml"))) &&
     pathExists(join(params.packageRoot, "src")) &&
     pathExists(join(params.packageRoot, "extensions"))
   );
@@ -807,6 +822,20 @@ export function runBundledPluginPostinstall(params = {}) {
   });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+export function isDirectPostinstallInvocation(params = {}) {
+  const entryPath = params.entryPath ?? process.argv[1];
+  if (!entryPath) {
+    return false;
+  }
+  const modulePath = params.modulePath ?? fileURLToPath(import.meta.url);
+  const resolveRealPath = params.realpathSync ?? realpathSync;
+  try {
+    return resolveRealPath(entryPath) === resolveRealPath(modulePath);
+  } catch {
+    return pathToFileURL(entryPath).href === pathToFileURL(modulePath).href;
+  }
+}
+
+if (isDirectPostinstallInvocation()) {
   runBundledPluginPostinstall();
 }
