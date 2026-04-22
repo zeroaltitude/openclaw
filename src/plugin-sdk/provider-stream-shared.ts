@@ -314,6 +314,21 @@ export function sanitizeGoogleThinkingPayload(params: {
   ) {
     payloadObj.generationConfig = { thinkingConfig: { thinkingBudget: 0 } };
   }
+
+  // TEMP DEBUG: remove before PR
+  if (process.env.OPENCLAW_PERF_DEBUG) {
+    const configKeys =
+      payloadObj.config && typeof payloadObj.config === "object"
+        ? Object.keys(payloadObj.config as Record<string, unknown>)
+        : null;
+    const genKeys =
+      payloadObj.generationConfig && typeof payloadObj.generationConfig === "object"
+        ? Object.keys(payloadObj.generationConfig as Record<string, unknown>)
+        : null;
+    console.log(
+      `[gemini-thinking-debug] enter modelId=${params.modelId} thinkingLevel=${params.thinkingLevel} configKeys=${JSON.stringify(configKeys)} genKeys=${JSON.stringify(genKeys)} payloadKeys=${JSON.stringify(Object.keys(payloadObj))}`,
+    );
+  }
   sanitizeGoogleThinkingConfigContainer({
     container: payloadObj.config,
     modelId: params.modelId,
@@ -324,6 +339,19 @@ export function sanitizeGoogleThinkingPayload(params: {
     modelId: params.modelId,
     thinkingLevel: params.thinkingLevel,
   });
+  if (process.env.OPENCLAW_PERF_DEBUG) {
+    const cfg =
+      payloadObj.config && typeof payloadObj.config === "object"
+        ? (payloadObj.config as Record<string, unknown>).thinkingConfig
+        : undefined;
+    const gcfg =
+      payloadObj.generationConfig && typeof payloadObj.generationConfig === "object"
+        ? (payloadObj.generationConfig as Record<string, unknown>).thinkingConfig
+        : undefined;
+    console.log(
+      `[gemini-thinking-debug] after config.thinkingConfig=${JSON.stringify(cfg)} generationConfig.thinkingConfig=${JSON.stringify(gcfg)}`,
+    );
+  }
 }
 
 function sanitizeGoogleThinkingConfigContainer(params: {
