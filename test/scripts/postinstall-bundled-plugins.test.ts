@@ -5,6 +5,7 @@ import {
   createBundledRuntimeDependencyInstallArgs,
   createBundledRuntimeDependencyInstallEnv,
   createNestedNpmInstallEnv,
+  isDirectPostinstallInvocation,
   pruneInstalledPackageDist,
   discoverBundledPluginRuntimeDeps,
   pruneBundledPluginSourceNodeModules,
@@ -81,6 +82,20 @@ describe("bundled plugin postinstall", () => {
       windowsVerbatimArguments: undefined,
     });
   }
+
+  it("recognizes direct invocation through symlinked temp prefixes", () => {
+    const realpathSync = vi.fn((value: string) =>
+      value.replace(/^\/var\/folders\//u, "/private/var/folders/"),
+    );
+
+    expect(
+      isDirectPostinstallInvocation({
+        entryPath: "/var/folders/tmp/openclaw/scripts/postinstall-bundled-plugins.mjs",
+        modulePath: "/private/var/folders/tmp/openclaw/scripts/postinstall-bundled-plugins.mjs",
+        realpathSync,
+      }),
+    ).toBe(true);
+  });
 
   async function writeDiscordDaveyOptionalDependencyFixture(
     extensionsDir: string,
@@ -419,6 +434,27 @@ describe("bundled plugin postinstall", () => {
         log: { log: vi.fn(), warn: vi.fn() },
       }),
     ).toThrow("unsafe dist entry: dist/escape");
+  });
+
+  it("ignores staged bundled plugin node_modules when pruning packaged dist", async () => {
+    const packageRoot = await createTempDirAsync("openclaw-packaged-install-runtime-deps-");
+    const staleFile = path.join(packageRoot, "dist", "stale-runtime.js");
+    const packageJson = path.join(packageRoot, "dist", "extensions", "slack", "package.json");
+    const binDir = path.join(packageRoot, "dist", "extensions", "slack", "node_modules", ".bin");
+    await fs.mkdir(path.dirname(staleFile), { recursive: true });
+    await fs.mkdir(path.dirname(packageJson), { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.writeFile(staleFile, "export {};\n");
+    await fs.writeFile(packageJson, "{}\n");
+    await fs.symlink("../fxparser/bin.js", path.join(binDir, "fxparser"));
+
+    expect(
+      pruneInstalledPackageDist({
+        packageRoot,
+        expectedFiles: new Set(["dist/extensions/slack/package.json"]),
+        log: { log: vi.fn(), warn: vi.fn() },
+      }),
+    ).toEqual(["dist/stale-runtime.js"]);
   });
 
   it("unlinks stale files instead of recursive pruning them", () => {
