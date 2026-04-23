@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -7,19 +8,76 @@ import {
   loadConfig,
 } from "../config/config.js";
 import { createConfigRuntimeEnv } from "../config/env-vars.js";
+import { isRecord } from "../utils.js";
 import { resolveOpenClawAgentDir } from "./agent-paths.js";
 import { MODELS_JSON_STATE } from "./models-config-state.js";
 import { planOpenClawModelsJson } from "./models-config.plan.js";
 
 export { resetModelsJsonReadyCacheForTest } from "./models-config-state.js";
 
-async function readFileMtimeMs(pathname: string): Promise<number | null> {
+/**
+ * Fields on an auth profile that rotate frequently without changing the
+ * shape of what providers are available (OAuth token refreshes, expirations).
+ * We exclude them from the fingerprint so token rotation does not invalidate
+ * the implicit-provider-discovery cache.
+ */
+const AUTH_PROFILE_VOLATILE_FIELDS: ReadonlySet<string> = new Set([
+  "access",
+  "refresh",
+  "token",
+  "expires",
+  "expiresAt",
+  "expiresIn",
+  "issuedAt",
+  "refreshedAt",
+  "lastCheckedAt",
+  "lastRefreshAt",
+  "lastValidatedAt",
+]);
+
+/**
+ * Compute a content-based fingerprint for a JSON file whose mtime may
+ * change without meaningful content change (e.g. auth-profiles.json rewritten
+ * by OAuth token refresh).
+ *
+ * Returns null if the file does not exist or cannot be parsed; returns the
+ * file's raw SHA-256 hash as a fallback if JSON parsing fails but the file
+ * exists.
+ */
+async function readAuthProfilesStableHash(pathname: string): Promise<string | null> {
+  let raw: string;
   try {
-    const stat = await fs.stat(pathname);
-    return Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : null;
+    raw = await fs.readFile(pathname, "utf8");
   } catch {
     return null;
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // File exists but is unparseable; hash the raw bytes so we still detect
+    // changes, but avoid using mtime.
+    return createHash("sha256").update(raw).digest("hex");
+  }
+  const stable = stripAuthProfilesVolatileFields(parsed);
+  return createHash("sha256").update(stableStringify(stable)).digest("hex");
+}
+
+function stripAuthProfilesVolatileFields(value: unknown): unknown {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripAuthProfilesVolatileFields(entry));
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (AUTH_PROFILE_VOLATILE_FIELDS.has(key)) {
+      continue;
+    }
+    result[key] = stripAuthProfilesVolatileFields(entry);
+  }
+  return result;
 }
 
 function stableStringify(value: unknown): string {
@@ -42,17 +100,25 @@ async function buildModelsJsonFingerprint(params: {
   sourceConfigForSecrets: OpenClawConfig;
   agentDir: string;
 }): Promise<string> {
-  const authProfilesMtimeMs = await readFileMtimeMs(
+  // Hash auth-profiles.json contents (stripped of volatile OAuth fields) so
+  // that token rotation does not invalidate the implicit-provider-discovery
+  // cache but structural changes (added/removed profiles) still do.
+  //
+  // We intentionally do NOT include models.json state here. Its contents are
+  // the OUTPUT of this function, not an input to it. Including models.json
+  // state caused every run to observe its own write and invalidate the cache
+  // on the next call. External edits to models.json are still handled by the
+  // plan layer, which compares existing file contents against the computed
+  // plan and rewrites only on real drift.
+  const authProfilesHash = await readAuthProfilesStableHash(
     path.join(params.agentDir, "auth-profiles.json"),
   );
-  const modelsFileMtimeMs = await readFileMtimeMs(path.join(params.agentDir, "models.json"));
   const envShape = createConfigRuntimeEnv(params.config, {});
   return stableStringify({
     config: params.config,
     sourceConfigForSecrets: params.sourceConfigForSecrets,
     envShape,
-    authProfilesMtimeMs,
-    modelsFileMtimeMs,
+    authProfilesHash,
   });
 }
 
@@ -135,14 +201,97 @@ async function withModelsJsonWriteLock<T>(targetPath: string, run: () => Promise
   }
 }
 
+/**
+ * Optional hints the caller may pass to short-circuit work when it already
+ * knows the exact provider/model it wants. When set AND the requested
+ * provider is already fully configured in models.json with a usable apiKey
+ * or auth, the plugin-discovery pipeline is skipped entirely (saving several
+ * seconds on cache-miss calls).
+ */
+export type EnsureOpenClawModelsJsonOptions = {
+  /** Provider id the caller intends to use (e.g. "anthropic", "openai"). */
+  targetProvider?: string;
+  /** Model id the caller intends to use. Reserved for future refinements. */
+  targetModel?: string;
+};
+
+/**
+ * Inspect on-disk models.json to see if the requested provider is already
+ * present with functional credentials. Used for the short-circuit fast path.
+ */
+async function readExistingProviderIsConfigured(
+  targetPath: string,
+  targetProvider: string,
+): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(targetPath, "utf8");
+  } catch {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.providers)) {
+    return false;
+  }
+  const provider = parsed.providers[targetProvider];
+  if (!isRecord(provider)) {
+    return false;
+  }
+  // Must have some form of usable credential material. We accept either a
+  // non-empty apiKey or a non-empty headers map or explicit auth config — any
+  // of these indicates the provider row is fully populated and usable by the
+  // pi-embedded runner without a fresh discovery pass.
+  const apiKey = provider.apiKey;
+  if (typeof apiKey === "string" && apiKey.length > 0) {
+    return true;
+  }
+  if (isRecord(apiKey) && Object.keys(apiKey).length > 0) {
+    // Unresolved secret ref — provider row exists but secret isn't baked yet.
+    // Be conservative: this still means the shape is stable, so short-circuit.
+    return true;
+  }
+  if (isRecord(provider.headers) && Object.keys(provider.headers).length > 0) {
+    return true;
+  }
+  if (provider.auth !== undefined) {
+    return true;
+  }
+  return false;
+}
+
 export async function ensureOpenClawModelsJson(
   config?: OpenClawConfig,
   agentDirOverride?: string,
+  options?: EnsureOpenClawModelsJsonOptions,
 ): Promise<{ agentDir: string; wrote: boolean }> {
   const resolved = resolveModelsConfigInput(config);
   const cfg = resolved.config;
   const agentDir = agentDirOverride?.trim() ? agentDirOverride.trim() : resolveOpenClawAgentDir();
   const targetPath = path.join(agentDir, "models.json");
+
+  // --- SHORT-CIRCUIT FAST PATH ---
+  // If the caller specified a target provider and that provider is already
+  // configured in both the in-memory config AND the on-disk models.json, we
+  // can skip the entire implicit-discovery pipeline. The pi-embedded runner
+  // only needs models.json to contain the one provider it's about to call.
+  const targetProvider = options?.targetProvider?.trim();
+  if (targetProvider) {
+    const explicitProviders = cfg.models?.providers ?? {};
+    const explicitHasTarget = Boolean(explicitProviders[targetProvider]);
+    if (explicitHasTarget) {
+      const onDiskHasTarget = await readExistingProviderIsConfigured(targetPath, targetProvider);
+      if (onDiskHasTarget) {
+        await ensureModelsFileModeForModelsJson(targetPath);
+        return { agentDir, wrote: false };
+      }
+    }
+  }
+
   const fingerprint = await buildModelsJsonFingerprint({
     config: cfg,
     sourceConfigForSecrets: resolved.sourceConfigForSecrets,
