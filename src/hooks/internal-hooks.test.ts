@@ -542,7 +542,7 @@ describe("hooks", () => {
     it("clears postHookActions after drain — re-trigger is a no-op", async () => {
       const event = createInternalHookEvent("command", "new", "test-session");
       let count = 0;
-      event.postHookActions.push(() => {
+      event.postHookActions!.push(() => {
         count++;
       });
       await triggerInternalHook(event);
