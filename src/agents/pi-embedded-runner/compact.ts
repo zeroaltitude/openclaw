@@ -132,7 +132,11 @@ import {
   buildEmbeddedSystemPrompt,
   createSystemPromptOverride,
 } from "./system-prompt.js";
-import { collectAllowedToolNames } from "./tool-name-allowlist.js";
+import {
+  collectAllowedToolNames,
+  collectRegisteredToolNames,
+  toSessionToolAllowlist,
+} from "./tool-name-allowlist.js";
 import {
   logProviderToolSchemaDiagnostics,
   normalizeProviderToolSchemas,
@@ -827,23 +831,29 @@ export async function compactEmbeddedPiSessionDirect(
         modelId,
         model,
       });
-      // Only create an explicit resource loader when there are extension factories
-      // to register; otherwise let createAgentSession use its built-in default.
-      let resourceLoader: DefaultResourceLoader | undefined;
-      if (extensionFactories.length > 0) {
-        resourceLoader = new DefaultResourceLoader({
-          cwd: resolvedWorkspace,
-          agentDir,
-          settingsManager,
-          extensionFactories,
-        });
-        await resourceLoader.reload();
-      }
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: resolvedWorkspace,
+        agentDir,
+        settingsManager,
+        extensionFactories,
+      });
+      await resourceLoader.reload();
+      // DefaultResourceLoader.reload() rehydrates settings from disk and can drop OpenClaw
+      // compaction overrides applied in createPreparedEmbeddedPiSettingsManager.
+      applyPiCompactionSettingsFromConfig({
+        settingsManager,
+        cfg: params.config,
+        contextTokenBudget: ctxInfo.tokens,
+      });
 
       const { builtInTools, customTools } = splitSdkTools({
         tools: effectiveTools,
         sandboxEnabled: !!sandbox?.enabled,
       });
+      // Pi only accepts built-in Tool[] at session creation time. After the
+      // session registers custom tools, narrow the active tool names against
+      // the exact OpenClaw-managed registrations.
+      const sessionToolAllowlist = toSessionToolAllowlist(collectRegisteredToolNames(customTools));
 
       const providerStreamFn = resolveCompactionProviderStream({
         effectiveModel,
@@ -854,6 +864,7 @@ export async function compactEmbeddedPiSessionDirect(
       const shouldUseWebSocketTransport = shouldUseOpenAIWebSocketTransport({
         provider,
         modelApi: effectiveModel.api,
+        modelBaseUrl: effectiveModel.baseUrl,
       });
       const wsApiKey = shouldUseWebSocketTransport
         ? await resolveEmbeddedAgentApiKey({
@@ -888,6 +899,7 @@ export async function compactEmbeddedPiSessionDirect(
           });
           session = createdSession.session;
           applySystemPromptOverrideToSession(session, buildSystemPromptOverride(thinkLevel)());
+          session.setActiveToolsByName(sessionToolAllowlist);
           // Compaction builds the same embedded system prompt, so it must flow
           // through the same transport/payload shaping stack as normal turns.
           prepareCompactionSessionAgent({
