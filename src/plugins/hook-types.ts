@@ -82,7 +82,10 @@ export type PluginHookName =
   | "gateway_stop"
   | "before_dispatch"
   | "reply_dispatch"
-  | "before_install";
+  | "before_install"
+  | "context_assembled"
+  | "loop_iteration_start"
+  | "loop_iteration_end";
 
 export const PLUGIN_HOOK_NAMES = [
   "before_model_resolve",
@@ -114,6 +117,9 @@ export const PLUGIN_HOOK_NAMES = [
   "before_dispatch",
   "reply_dispatch",
   "before_install",
+  "context_assembled",
+  "loop_iteration_start",
+  "loop_iteration_end",
 ] as const satisfies readonly PluginHookName[];
 
 type MissingPluginHookNames = Exclude<PluginHookName, (typeof PLUGIN_HOOK_NAMES)[number]>;
@@ -620,6 +626,37 @@ export type PluginHookBeforeInstallContext = {
   origin?: string;
 };
 
+// context_assembled hook (void — parallel)
+export type PluginHookContextAssembledEvent = {
+  runId: string;
+  systemPrompt: string;
+  prompt: string;
+  messages: AgentMessage[];
+  messageCount: number;
+  imageCount: number;
+  images?: Array<{ type: string; data: string; mimeType: string }>;
+  attemptIndex: number;
+};
+
+// loop_iteration_start hook (void — parallel)
+export type PluginHookLoopIterationStartEvent = {
+  runId?: string;
+  attemptIndex?: number;
+  iteration: number;
+  pendingToolResults?: number;
+  messageCount: number;
+};
+
+// loop_iteration_end hook (void — parallel)
+export type PluginHookLoopIterationEndEvent = {
+  runId?: string;
+  attemptIndex?: number;
+  iteration: number;
+  toolCallsMade: number;
+  newMessagesAdded?: number;
+  hasToolResults: boolean;
+};
+
 export type PluginHookBeforeInstallEvent = {
   targetType: PluginInstallTargetType;
   targetName: string;
@@ -750,6 +787,18 @@ export type PluginHookHandlerMap = {
   gateway_stop: (
     event: PluginHookGatewayStopEvent,
     ctx: PluginHookGatewayContext,
+  ) => Promise<void> | void;
+  context_assembled: (
+    event: PluginHookContextAssembledEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<void> | void;
+  loop_iteration_start: (
+    event: PluginHookLoopIterationStartEvent,
+    ctx: PluginHookAgentContext,
+  ) => Promise<void> | void;
+  loop_iteration_end: (
+    event: PluginHookLoopIterationEndEvent,
+    ctx: PluginHookAgentContext,
   ) => Promise<void> | void;
   before_install: (
     event: PluginHookBeforeInstallEvent,
