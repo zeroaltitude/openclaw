@@ -250,6 +250,14 @@ export async function runEmbeddedPiAgent(
     return enqueueGlobal(async () => {
       throwIfAborted();
       const started = Date.now();
+      // [pi-embedded-perf] bootstrap sub-phase timing
+      const __perfPhases: Record<string, number> = {};
+      let __perfLast = started;
+      const __perfMark = (name: string) => {
+        const now = Date.now();
+        __perfPhases[name] = now - __perfLast;
+        __perfLast = now;
+      };
       const workspaceResolution = resolveRunWorkspaceDir({
         workspaceDir: params.workspaceDir,
         sessionKey: params.sessionKey,
@@ -269,11 +277,13 @@ export async function runEmbeddedPiAgent(
           `[workspace-fallback] caller=runEmbeddedPiAgent reason=${workspaceResolution.fallbackReason} run=${params.runId} session=${redactedSessionId} sessionKey=${redactedSessionKey} agent=${workspaceResolution.agentId} workspace=${redactedWorkspace}`,
         );
       }
+      __perfMark("workspaceResolve");
       ensureRuntimePluginsLoaded({
         config: params.config,
         workspaceDir: resolvedWorkspace,
         allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
       });
+      __perfMark("pluginsLoad");
 
       let provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
       let modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
@@ -285,6 +295,7 @@ export async function runEmbeddedPiAgent(
         sessionKey: normalizedSessionKey,
       });
       await ensureOpenClawModelsJson(params.config, agentDir);
+      __perfMark("modelsJson");
       const resolvedSessionKey = normalizedSessionKey;
       const hookRunner = getGlobalHookRunner();
       const hookCtx = {
@@ -314,6 +325,7 @@ export async function runEmbeddedPiAgent(
         hookRunner,
         hookContext: hookCtx,
       });
+      __perfMark("hookModelSelect");
       provider = hookSelection.provider;
       modelId = hookSelection.modelId;
       const legacyBeforeAgentStartResult = hookSelection.legacyBeforeAgentStartResult;
@@ -324,6 +336,7 @@ export async function runEmbeddedPiAgent(
         agentDir,
         params.config,
       );
+      __perfMark("resolveModel");
       if (!model) {
         throw new FailoverError(error ?? `Unknown model: ${provider}/${modelId}`, {
           reason: "model_not_found",
@@ -444,6 +457,7 @@ export async function runEmbeddedPiAgent(
       });
 
       await initializeAuthProfile();
+      __perfMark("initAuth");
       const { sessionAgentId } = resolveSessionAgentIds({
         sessionKey: params.sessionKey,
         config: params.config,
@@ -572,6 +586,13 @@ export async function runEmbeddedPiAgent(
       // repeated initialization/connection overhead per attempt.
       ensureContextEnginesInitialized();
       const contextEngine = await resolveContextEngine(params.config);
+      __perfMark("contextEngine");
+      log.info(
+        `[pi-embedded-perf] bootstrap sessionKey=${params.sessionKey ?? params.sessionId} ` +
+          `provider=${provider} model=${modelId} ` +
+          `totalBootstrapMs=${Date.now() - started} ` +
+          `phases=${JSON.stringify(__perfPhases)}`,
+      );
       try {
         // When the engine owns compaction, compactEmbeddedPiSessionDirect is
         // bypassed. Fire lifecycle hooks here so recovery paths still notify
