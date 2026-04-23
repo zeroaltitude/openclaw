@@ -65,6 +65,10 @@ import type {
   PluginHookToolResultPersistResult,
   PluginHookBeforeMessageWriteEvent,
   PluginHookBeforeMessageWriteResult,
+PluginHookBeforeLlmCallEvent,
+  PluginHookBeforeLlmCallResult,
+  PluginHookAfterLlmCallEvent,
+  PluginHookAfterLlmCallResult,
   PluginHookBeforeInstallContext,
   PluginHookBeforeInstallEvent,
   PluginHookBeforeInstallResult,
@@ -1109,7 +1113,74 @@ export function createHookRunner(
     return runVoidHook("loop_iteration_end", event, ctx);
   }
 
-// Skill Install Hooks
+  // =========================================================================
+  // LLM Call Hooks
+  // =========================================================================
+
+  /**
+   * Run before_llm_call hook.
+   * Fires before every LLM API call within the agent loop.
+   * Allows plugins to inspect/modify context, filter tools, or block the call.
+   * Runs sequentially, merging results across handlers.
+   */
+  async function runBeforeLlmCall(
+    event: PluginHookBeforeLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookBeforeLlmCallResult | undefined> {
+    return runModifyingHook<"before_llm_call", PluginHookBeforeLlmCallResult>(
+      "before_llm_call",
+      event,
+      ctx,
+      {
+        mergeResults: (acc, next) => ({
+          // First-writer-wins for messages/systemPrompt: once a higher-priority
+          // security plugin sanitizes inputs, later plugins cannot override them.
+          messages: acc?.messages ?? next.messages,
+          systemPrompt: acc?.systemPrompt ?? next.systemPrompt,
+          // Intersection latch: if both handlers provide tools, only keep tools
+          // present in both lists. Prevents a later handler from widening the allowlist.
+          tools:
+            acc?.tools !== undefined && next.tools !== undefined
+              ? next.tools.filter((t) => acc.tools!.some((a) => a.name === t.name))
+              : (next.tools ?? acc?.tools),
+          block: next.block || acc?.block,
+          blockReason: acc?.blockReason ?? next.blockReason,
+        }),
+      },
+    );
+  }
+
+  /**
+   * Run after_llm_call hook.
+   * Fires after the LLM response is received, before tool execution.
+   * Allows plugins to block all tool execution or filter individual tool calls.
+   * Results are stored as a Promise in the gate and enforced deterministically
+   * by the tool wrapper.
+   */
+  async function runAfterLlmCall(
+    event: PluginHookAfterLlmCallEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookAfterLlmCallResult | undefined> {
+    return runModifyingHook<"after_llm_call", PluginHookAfterLlmCallResult>(
+      "after_llm_call",
+      event,
+      ctx,
+      {
+        mergeResults: (acc, next) => ({
+          block: next.block || acc?.block,
+          blockReason: acc?.blockReason ?? next.blockReason,
+          // Intersection: if both handlers provide tool lists, keep only tools in both.
+          toolCalls:
+            acc?.toolCalls !== undefined && next.toolCalls !== undefined
+              ? next.toolCalls.filter((t) => acc.toolCalls!.some((a) => a.id === t.id))
+              : (next.toolCalls ?? acc?.toolCalls),
+        }),
+      },
+    );
+  }
+
+  // =========================================================================
+  // Skill Install Hooks
   // =========================================================================
 
   /**
@@ -1200,6 +1271,9 @@ export function createHookRunner(
     runContextAssembled,
     runLoopIterationStart,
     runLoopIterationEnd,
+    // LLM call hooks
+    runBeforeLlmCall,
+    runAfterLlmCall,
     // Install hooks
     runBeforeInstall,
     // Utility
