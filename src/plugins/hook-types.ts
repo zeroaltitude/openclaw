@@ -87,7 +87,8 @@ export type PluginHookName =
   | "loop_iteration_start"
   | "loop_iteration_end"
   | "before_llm_call"
-  | "after_llm_call";
+  | "after_llm_call"
+  | "before_response_emit";
 
 export const PLUGIN_HOOK_NAMES = [
   "before_model_resolve",
@@ -124,6 +125,7 @@ export const PLUGIN_HOOK_NAMES = [
   "loop_iteration_end",
   "before_llm_call",
   "after_llm_call",
+  "before_response_emit",
 ] as const satisfies readonly PluginHookName[];
 
 type MissingPluginHookNames = Exclude<PluginHookName, (typeof PLUGIN_HOOK_NAMES)[number]>;
@@ -697,6 +699,22 @@ export type PluginHookAfterLlmCallResult = {
   toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
 };
 
+// before_response_emit hook (modifying — sequential)
+export type PluginHookBeforeResponseEmitEvent = {
+  runId: string;
+  content: string;
+  allContent: string[];
+  channel?: string;
+  messageCount: number;
+};
+
+export type PluginHookBeforeResponseEmitResult = {
+  content?: string;
+  allContent?: string[];
+  block?: boolean;
+  blockReason?: string;
+};
+
 export type PluginHookBeforeInstallEvent = {
   targetType: PluginInstallTargetType;
   targetName: string;
@@ -848,6 +866,13 @@ export type PluginHookHandlerMap = {
     event: PluginHookAfterLlmCallEvent,
     ctx: PluginHookAgentContext,
   ) => Promise<PluginHookAfterLlmCallResult | void> | PluginHookAfterLlmCallResult | void;
+  before_response_emit: (
+    event: PluginHookBeforeResponseEmitEvent,
+    ctx: PluginHookAgentContext,
+  ) =>
+    | Promise<PluginHookBeforeResponseEmitResult | void>
+    | PluginHookBeforeResponseEmitResult
+    | void;
   before_install: (
     event: PluginHookBeforeInstallEvent,
     ctx: PluginHookBeforeInstallContext,
