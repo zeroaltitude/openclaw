@@ -298,6 +298,26 @@ export function sanitizeGoogleThinkingPayload(params: {
     return;
   }
   const payloadObj = params.payload as Record<string, unknown>;
+
+  // When thinkingLevel is "off" and the payload has NEITHER `config` nor
+  // `generationConfig`, the provider will silently apply its default thinking
+  // budget (often several thousand tokens) — which adds multi-second latency
+  // per call and silently regresses sub-agents that asked for a no-thinking
+  // Google call. Create a minimal `generationConfig` with
+  // `thinkingConfig.thinkingBudget = 0` so the caller's explicit
+  // thinking-off intent is honored end-to-end. Skip this for models that
+  // either require thinking mode or use the newer `thinkingLevel` enum.
+  if (
+    params.thinkingLevel === "off" &&
+    typeof params.modelId === "string" &&
+    !isGoogleThinkingRequiredModel(params.modelId) &&
+    !isGemma4Model(params.modelId) &&
+    !isGoogleGemini3ThinkingLevelModel(params.modelId) &&
+    !(payloadObj.config && typeof payloadObj.config === "object") &&
+    !(payloadObj.generationConfig && typeof payloadObj.generationConfig === "object")
+  ) {
+    payloadObj.generationConfig = { thinkingConfig: { thinkingBudget: 0 } };
+  }
   sanitizeGoogleThinkingConfigContainer({
     container: payloadObj.config,
     modelId: params.modelId,
@@ -319,6 +339,39 @@ function sanitizeGoogleThinkingConfigContainer(params: {
     return;
   }
   const configObj = params.container as Record<string, unknown>;
+
+  // When the caller explicitly requested thinkingLevel "off", FORCE
+  // `thinkingConfig.thinkingBudget = 0`. Without this, Gemini 2.5 Flash (and
+  // other non-thinking-required Gemini models) silently run with the
+  // provider's default thinking budget (often ~4-8k tokens) even when the
+  // caller asked for thinking-off, adding several seconds of latency per
+  // call and silently regressing any sub-agent that asked for a no-thinking
+  // Google call (for example the `active-memory` extension which spawns a
+  // bounded sub-agent with reasoningLevel="off"). Upstream components
+  // (pi-agent-core, model policies) may already have inserted a non-zero
+  // thinkingConfig by the time the payload reaches this wrapper, so we
+  // overwrite any existing thinkingBudget rather than only inserting when
+  // absent. Skip this forced-zero path for models that either require
+  // thinking mode (Gemini 2.5 Pro) or use the newer `thinkingLevel` enum
+  // instead of `thinkingBudget` (Gemma 4, Gemini 3 thinking-level variants),
+  // since thinkingBudget=0 is invalid or ineffective on those and they are
+  // handled by their dedicated branches below.
+  if (
+    params.thinkingLevel === "off" &&
+    typeof params.modelId === "string" &&
+    !isGoogleThinkingRequiredModel(params.modelId) &&
+    !isGemma4Model(params.modelId) &&
+    !isGoogleGemini3ThinkingLevelModel(params.modelId)
+  ) {
+    const existing = configObj.thinkingConfig;
+    if (existing && typeof existing === "object") {
+      (existing as Record<string, unknown>).thinkingBudget = 0;
+    } else {
+      configObj.thinkingConfig = { thinkingBudget: 0 };
+    }
+    return;
+  }
+
   const thinkingConfig = configObj.thinkingConfig;
   if (!thinkingConfig || typeof thinkingConfig !== "object") {
     return;

@@ -114,3 +114,153 @@ describe("sanitizeGoogleThinkingPayload — gemini-2.5-pro zero budget", () => {
     });
   });
 });
+
+describe("sanitizeGoogleThinkingPayload \u2014 inject thinkingBudget=0 on thinkingLevel=off", () => {
+  it("injects thinkingBudget=0 for gemini-2.5-flash when thinkingLevel=off and no existing thinkingConfig", () => {
+    const payload: { config: Record<string, unknown> } = { config: {} };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-flash",
+      thinkingLevel: "off",
+    });
+    expect(payload.config.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it("injects thinkingBudget=0 for gemini-2.5-flash-lite when thinkingLevel=off", () => {
+    const payload: { config: Record<string, unknown> } = { config: {} };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-flash-lite",
+      thinkingLevel: "off",
+    });
+    expect(payload.config.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it("injects thinkingBudget=0 on native generationConfig for gemini-2.5-flash", () => {
+    const payload: { generationConfig: Record<string, unknown> } = { generationConfig: {} };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-flash",
+      thinkingLevel: "off",
+    });
+    expect(payload.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it("does NOT inject thinkingBudget for gemini-2.5-pro (thinking-required)", () => {
+    const payload: { config: Record<string, unknown> } = { config: {} };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-pro",
+      thinkingLevel: "off",
+    });
+    expect(payload.config).not.toHaveProperty("thinkingConfig");
+  });
+
+  it("does NOT inject thinkingBudget for gemini-3-flash-preview (uses thinkingLevel)", () => {
+    const payload: { config: Record<string, unknown> } = { config: {} };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-3-flash-preview",
+      thinkingLevel: "off",
+    });
+    expect(payload.config).not.toHaveProperty("thinkingConfig");
+  });
+
+  it("does NOT inject thinkingBudget for gemma-4-27b (uses thinkingLevel)", () => {
+    const payload: { config: Record<string, unknown> } = { config: {} };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemma-4-27b-it",
+      thinkingLevel: "off",
+    });
+    expect(payload.config).not.toHaveProperty("thinkingConfig");
+  });
+
+  it("does NOT inject thinkingBudget when thinkingLevel is not off", () => {
+    const payload: { config: Record<string, unknown> } = { config: {} };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-flash",
+      thinkingLevel: "medium",
+    });
+    expect(payload.config).not.toHaveProperty("thinkingConfig");
+  });
+
+  it("FORCES thinkingBudget=0 over an existing non-zero budget when thinkingLevel=off", () => {
+    const payload = {
+      config: {
+        thinkingConfig: { thinkingBudget: 2048, includeThoughts: true },
+      },
+    };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-flash",
+      thinkingLevel: "off",
+    });
+    // Caller explicitly asked for thinking-off; overwrite any upstream default
+    // so the provider actually runs without thinking. Other thinkingConfig
+    // keys (includeThoughts etc.) are preserved.
+    expect(payload.config.thinkingConfig).toEqual({
+      thinkingBudget: 0,
+      includeThoughts: true,
+    });
+  });
+
+  it("does NOT inject when modelId is missing", () => {
+    const payload: { config: Record<string, unknown> } = { config: {} };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      thinkingLevel: "off",
+    });
+    expect(payload.config).not.toHaveProperty("thinkingConfig");
+  });
+
+  it("creates generationConfig.thinkingConfig.thinkingBudget=0 when payload has NEITHER config nor generationConfig", () => {
+    // Covers the outer-level fallback: without this, an upstream caller that
+    // builds a payload without either container would silently pay Google's
+    // default thinking budget even though thinkingLevel was "off".
+    const payload: Record<string, unknown> = {};
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-flash",
+      thinkingLevel: "off",
+    });
+    expect(payload).toEqual({
+      generationConfig: { thinkingConfig: { thinkingBudget: 0 } },
+    });
+  });
+
+  it("does NOT create a container when thinkingLevel is not off (NEITHER-container fallback is gated on off)", () => {
+    const payload: Record<string, unknown> = {};
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-flash",
+      thinkingLevel: "medium",
+    });
+    expect(payload).toEqual({});
+  });
+
+  it("does NOT create a container for thinking-required models even when both containers are absent", () => {
+    const payload: Record<string, unknown> = {};
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-pro",
+      thinkingLevel: "off",
+    });
+    expect(payload).toEqual({});
+  });
+
+  it("leaves an existing empty config container alone (commit-1 branch handles it, fallback skips)", () => {
+    // When config is present (even empty), the fallback should NOT fire —
+    // commit-1's in-container branch handles seeding thinkingConfig.
+    const payload: { config: Record<string, unknown> } = { config: {} };
+    sanitizeGoogleThinkingPayload({
+      payload,
+      modelId: "gemini-2.5-flash",
+      thinkingLevel: "off",
+    });
+    // generationConfig should NOT be created — only config gets thinkingConfig.
+    expect(payload).not.toHaveProperty("generationConfig");
+    expect(payload.config).toEqual({ thinkingConfig: { thinkingBudget: 0 } });
+  });
+});
