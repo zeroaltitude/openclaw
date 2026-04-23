@@ -1717,6 +1717,12 @@ export async function runEmbeddedAttempt(
           sessionKey: sandboxSessionKey,
           sessionId: params.sessionId,
           agentId: sessionAgentId,
+          sourceProvider: params.sourceProvider ?? undefined,
+          senderId: params.senderId ?? null,
+          senderName: params.senderName ?? null,
+          senderIsOwner: params.senderIsOwner,
+          groupId: params.groupId ?? null,
+          spawnedBy: params.spawnedBy ?? null,
           builtinToolNames,
           internalEvents: params.internalEvents,
         }),
@@ -1885,8 +1891,14 @@ export async function runEmbeddedAttempt(
           modelProviderId: params.model.provider,
           modelId: params.model.id,
           messageProvider: params.messageProvider ?? undefined,
+          sourceProvider: params.sourceProvider ?? undefined,
           trigger: params.trigger,
           channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+          senderId: params.senderId ?? null,
+          senderName: params.senderName ?? null,
+          senderIsOwner: params.senderIsOwner,
+          groupId: params.groupId ?? null,
+          spawnedBy: params.spawnedBy ?? null,
         };
         const hookResult = await resolvePromptBuildHookResult({
           prompt: params.prompt,
@@ -2106,7 +2118,14 @@ export async function runEmbeddedAttempt(
                   messageProvider: params.messageProvider ?? undefined,
                   trigger: params.trigger,
                   channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+                  sourceProvider: params.sourceProvider ?? undefined,
+                  senderId: params.senderId ?? null,
+                  senderName: params.senderName ?? null,
+                  senderIsOwner: params.senderIsOwner,
+                  groupId: params.groupId ?? null,
+                  spawnedBy: params.spawnedBy ?? null,
                 },
+
               )
               .catch((err) => {
                 log.warn(`llm_input hook failed: ${String(err)}`);
@@ -2507,7 +2526,14 @@ export async function runEmbeddedAttempt(
                 messageProvider: params.messageProvider ?? undefined,
                 trigger: params.trigger,
                 channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+                  sourceProvider: params.sourceProvider ?? undefined,
+                  senderId: params.senderId ?? null,
+                  senderName: params.senderName ?? null,
+                  senderIsOwner: params.senderIsOwner,
+                  groupId: params.groupId ?? null,
+                  spawnedBy: params.spawnedBy ?? null,
               },
+
             )
             .catch((err) => {
               log.warn(`agent_end hook failed: ${err}`);
@@ -2609,6 +2635,7 @@ export async function runEmbeddedAttempt(
               trigger: params.trigger,
               channelId: params.messageChannel ?? params.messageProvider ?? undefined,
             },
+
           )
           .catch((err) => {
             log.warn(`llm_output hook failed: ${String(err)}`);

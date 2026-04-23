@@ -107,6 +107,12 @@ export type CompactionHookRunner = {
       sessionKey: string;
       workspaceDir: string;
       messageProvider?: string;
+      sourceProvider?: string;
+      senderId?: string | null;
+      senderName?: string | null;
+      senderIsOwner?: boolean;
+      groupId?: string | null;
+      spawnedBy?: string | null;
     },
   ) => Promise<void> | void;
   runAfterCompaction?: (
@@ -122,6 +128,12 @@ export type CompactionHookRunner = {
       sessionKey: string;
       workspaceDir: string;
       messageProvider?: string;
+      sourceProvider?: string;
+      senderId?: string | null;
+      senderName?: string | null;
+      senderIsOwner?: boolean;
+      groupId?: string | null;
+      spawnedBy?: string | null;
     },
   ) => Promise<void> | void;
 };
@@ -177,6 +189,12 @@ export async function runBeforeCompactionHooks(params: {
   sessionAgentId: string;
   workspaceDir: string;
   messageProvider?: string;
+  sourceProvider?: string;
+  senderId?: string | null;
+  senderName?: string | null;
+  senderIsOwner?: boolean;
+  groupId?: string | null;
+  spawnedBy?: string | null;
   metrics: ReturnType<typeof buildBeforeCompactionHookMetrics>;
 }) {
   const missingSessionKey = !params.sessionKey || !params.sessionKey.trim();
@@ -210,6 +228,12 @@ export async function runBeforeCompactionHooks(params: {
           sessionKey: hookSessionKey,
           workspaceDir: params.workspaceDir,
           messageProvider: params.messageProvider,
+          sourceProvider: params.sourceProvider,
+          senderId: params.senderId ?? null,
+          senderName: params.senderName ?? null,
+          senderIsOwner: params.senderIsOwner,
+          groupId: params.groupId ?? null,
+          spawnedBy: params.spawnedBy ?? null,
         },
       );
     } catch (err) {
@@ -254,6 +278,12 @@ export async function runAfterCompactionHooks(params: {
   missingSessionKey: boolean;
   workspaceDir: string;
   messageProvider?: string;
+  sourceProvider?: string;
+  senderId?: string | null;
+  senderName?: string | null;
+  senderIsOwner?: boolean;
+  groupId?: string | null;
+  spawnedBy?: string | null;
   messageCountAfter: number;
   tokensAfter?: number;
   compactedCount: number;
@@ -296,6 +326,12 @@ export async function runAfterCompactionHooks(params: {
           sessionKey: params.hookSessionKey,
           workspaceDir: params.workspaceDir,
           messageProvider: params.messageProvider,
+          sourceProvider: params.sourceProvider,
+          senderId: params.senderId ?? null,
+          senderName: params.senderName ?? null,
+          senderIsOwner: params.senderIsOwner,
+          groupId: params.groupId ?? null,
+          spawnedBy: params.spawnedBy ?? null,
         },
       );
     } catch (err) {

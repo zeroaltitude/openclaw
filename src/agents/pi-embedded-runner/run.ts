@@ -305,6 +305,13 @@ export async function runEmbeddedPiAgent(
         messageProvider: params.messageProvider ?? undefined,
         trigger: params.trigger,
         channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+        // Identity fields for trust-aware hooks (before_model_resolve, before_agent_start)
+        sourceProvider: params.sourceProvider ?? undefined,
+        senderId: params.senderId ?? null,
+        senderName: params.senderName ?? null,
+        senderIsOwner: params.senderIsOwner ?? undefined,
+        groupId: params.groupId ?? null,
+        spawnedBy: params.spawnedBy ?? null,
       };
 
       const hookSelection = await resolveHookModelSelection({
@@ -705,6 +712,7 @@ export async function runEmbeddedPiAgent(
             groupSpace: params.groupSpace,
             memberRoleIds: params.memberRoleIds,
             spawnedBy: params.spawnedBy,
+            sourceProvider: params.sourceProvider,
             isCanonicalWorkspace,
             senderId: params.senderId,
             senderName: params.senderName,
