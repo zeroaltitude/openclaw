@@ -1742,7 +1742,7 @@ export class QmdMemoryManager implements MemorySearchManager {
 
   private async runQmd(
     args: string[],
-    opts?: { timeoutMs?: number; discardOutput?: boolean },
+    opts?: { timeoutMs?: number; discardOutput?: boolean; signal?: AbortSignal },
   ): Promise<{ stdout: string; stderr: string }> {
     return await runCliCommand({
       commandSummary: `qmd ${args.join(" ")}`,
@@ -1758,6 +1758,7 @@ export class QmdMemoryManager implements MemorySearchManager {
       maxOutputChars: this.maxQmdOutputChars,
       // Large `qmd update` runs can easily exceed the output cap; keep only stderr.
       discardStdout: opts?.discardOutput,
+      signal: opts?.signal,
     });
   }
 
@@ -2828,14 +2829,51 @@ export class QmdMemoryManager implements MemorySearchManager {
     command: "query" | "search" | "vsearch",
   ): Promise<QmdQueryResult[]> {
     log.debug(
-      `qmd ${command} multi-collection workaround active (${collectionNames.length} collections)`,
+      `qmd ${command} multi-collection workaround active (${collectionNames.length} collections, parallel)`,
     );
+    // Fire all per-collection qmd invocations in parallel. Each qmd spawn is
+    // an independent subprocess with no shared state, and each invocation
+    // incurs ~500ms of Node/SQLite startup cost on top of a sub-millisecond
+    // BM25 query. Serializing the loop multiplies that startup cost by the
+    // number of collections (5+ in typical setups), dominating memory_search
+    // latency. Parallelizing collapses it to a single invocation's worth of
+    // wall time while preserving the per-collection merge+dedup semantics.
+    //
+    // Tie all per-collection invocations to a single AbortController. When
+    // Promise.all rejects on the first failure (e.g. an unsupported-flag
+    // error on an older qmd build), abort the siblings so the catch block's
+    // `query`-mode fallback wave doesn't have to contend with orphaned
+    // in-flight subprocesses from the `search` wave. Without this, the brief
+    // overlap is bounded only by timeoutMs and can reach 2×N concurrent qmd
+    // processes on the fallback path.
+    const controller = new AbortController();
+    try {
+      const perCollectionResults = await Promise.all(
+        collectionNames.map(async (collectionName) => {
+          const args = this.buildSearchArgs(command, query, limit);
+          args.push("-c", collectionName);
+          const result = await this.runQmd(args, {
+            timeoutMs: this.qmd.limits.timeoutMs,
+            signal: controller.signal,
+          });
+          const parsed = parseQmdQueryJson(result.stdout, result.stderr);
+          return { collectionName, parsed };
+        }),
+      );
+      return this.mergePerCollectionResults(perCollectionResults);
+    } catch (err) {
+      // Abort siblings still running so their subprocesses are torn down
+      // before the caller's fallback path spawns a fresh parallel wave.
+      controller.abort();
+      throw err;
+    }
+  }
+
+  private mergePerCollectionResults(
+    perCollectionResults: Array<{ collectionName: string; parsed: QmdQueryResult[] }>,
+  ): QmdQueryResult[] {
     const bestByResultKey = new Map<string, QmdQueryResult>();
-    for (const collectionName of collectionNames) {
-      const args = this.buildSearchArgs(command, query, limit);
-      args.push("-c", collectionName);
-      const result = await this.runQmd(args, { timeoutMs: this.qmd.limits.timeoutMs });
-      const parsed = parseQmdQueryJson(result.stdout, result.stderr);
+    for (const { collectionName, parsed } of perCollectionResults) {
       for (const entry of parsed) {
         const normalizedHints = this.normalizeDocHints({
           preferredCollection: entry.collection ?? collectionName,
