@@ -78,6 +78,7 @@ export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPi
         messageProvider: params.messageProvider,
         trigger: params.trigger,
         channelId: params.messageChannel ?? params.messageProvider,
+        senderIsOwner: params.senderIsOwner,
       } as const;
       const hookResult = await hookRunner.runBeforeAgentReply(
         { cleanedBody: params.prompt },
@@ -151,6 +152,7 @@ export async function runPreparedCliAgent(
     workspaceDir: params.workspaceDir,
     messageProvider: params.messageProvider,
     trigger: params.trigger,
+    senderIsOwner: params.senderIsOwner,
     channelId: params.messageChannel ?? params.messageProvider,
   } as const;
 
