@@ -96,6 +96,10 @@ export {
 } from "./src/monitor/allow-list.js";
 export { probeSlack, type SlackProbe } from "./src/probe.js";
 export { collectSlackSecurityAuditFindings } from "./src/security-audit.js";
+// Explicit named exports (project-wide pattern as of main) keep test-only
+// helpers _flushPersist/_resetForTests internal — a wildcard export would
+// re-export them and allow same-process consumers to redirect the persist
+// path and trigger arbitrary writes (clawsweeper review on PR #33845).
 export {
   clearSlackThreadParticipationCache,
   hasSlackThreadParticipation,
