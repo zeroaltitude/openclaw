@@ -2,6 +2,7 @@
  * LLM-based slug generator for session memory filenames
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -59,8 +60,16 @@ Reply with ONLY the slug, nothing else. Examples: "vendor-pitch", "api-design", 
     });
     const timeoutMs = resolveSlugGeneratorTimeoutMs(params.cfg);
 
+    // Security: disable tools for this one-shot call.  The prompt embeds
+    // up to 2 000 chars of raw conversation content, which is attacker-
+    // controllable.  Without disableTools the embedded agent inherits the
+    // full tool set (exec, file write, messaging, …), so a crafted
+    // conversation could prompt-inject the slug-generation call into
+    // executing arbitrary side-effects *before* the (well-sanitised) slug
+    // text is extracted.  Slug generation is pure text — it never needs
+    // tool access.
     const result = await runEmbeddedPiAgent({
-      sessionId: `slug-generator-${Date.now()}`,
+      sessionId: `slug-generator-${crypto.randomUUID()}`,
       sessionKey: "temp:slug-generator",
       agentId,
       sessionFile: tempSessionFile,
@@ -70,8 +79,9 @@ Reply with ONLY the slug, nothing else. Examples: "vendor-pitch", "api-design", 
       prompt,
       provider,
       model,
+      disableTools: true,
       timeoutMs,
-      runId: `slug-gen-${Date.now()}`,
+      runId: `slug-gen-${crypto.randomUUID()}`,
       cleanupBundleMcpOnRunEnd: true,
     });
 
