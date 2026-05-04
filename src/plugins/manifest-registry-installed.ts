@@ -1,13 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveCompatibilityHostVersion } from "../version.js";
+import { getCurrentPluginMetadataSnapshot } from "./current-plugin-metadata-snapshot.js";
 import type { PluginCandidate } from "./discovery.js";
 import { hashJson } from "./installed-plugin-index-hash.js";
-import { resolveInstalledPluginIndexStorePath } from "./installed-plugin-index-store-path.js";
 import type { InstalledPluginIndex, InstalledPluginIndexRecord } from "./installed-plugin-index.js";
 import { extractPluginInstallRecordsFromInstalledPluginIndex } from "./installed-plugin-index.js";
-import { loadPluginManifestRegistry, type PluginManifestRegistry } from "./manifest-registry.js";
+import {
+  loadPluginManifestRegistry,
+  type PluginManifestRecord,
+  type PluginManifestRegistry,
+} from "./manifest-registry.js";
 import type { BundledChannelConfigCollector } from "./manifest-registry.js";
 import {
   DEFAULT_PLUGIN_ENTRY_CANDIDATES,
@@ -18,102 +21,17 @@ import {
 import { tracePluginLifecyclePhase } from "./plugin-lifecycle-trace.js";
 
 // ---------------------------------------------------------------------------
-// Bounded LRU memoization cache
+// Caller-owned snapshot reuse (no module-level cache).
+//
+// Per `src/plugins/AGENTS.md`, control-plane discovery/manifest answers must
+// stay fresh unless a caller owns an explicit `PluginMetadataSnapshot`,
+// `PluginLookUpTable`, or manifest registry for the current flow. The Gateway
+// publishes its long-lived metadata snapshot through the single-slot
+// `current-plugin-metadata-snapshot` handoff at startup; we reuse the
+// snapshot's pre-built `manifestRegistry` when the caller's `index` matches
+// the snapshot's `index` fingerprint and the workspace/config gates pass.
+// Otherwise we rebuild from disk — no persistent metadata cache lives here.
 // ---------------------------------------------------------------------------
-
-const MANIFEST_REGISTRY_INSTALLED_CACHE_MAX_ENTRIES = 16;
-
-type ManifestRegistryCacheEntry = {
-  registry: PluginManifestRegistry;
-  /** mtime (ms) of the persisted installs.json at the time the entry was built; null if the file was absent. */
-  indexMtimeMs: number | null;
-  /** env used to locate the persisted index path, so we can re-stat the same file on hit. */
-  env: NodeJS.ProcessEnv;
-};
-
-/**
- * Module-level LRU cache.  Map insertion order == LRU order: oldest (least
- * recently used) entry is the first key returned by `map.keys()`.
- */
-const manifestRegistryInstalledCache = new Map<string, ManifestRegistryCacheEntry>();
-
-function buildManifestRegistryCacheKey(params: {
-  index: InstalledPluginIndex;
-  env: NodeJS.ProcessEnv;
-  workspaceDir?: string;
-  pluginIds?: readonly string[] | null;
-  includeDisabled?: boolean;
-}): string {
-  const sortedPluginIds = params.pluginIds?.length ? [...params.pluginIds].toSorted() : null;
-  // Use the full index fingerprint (includes per-manifest safeFileSignature/mtime)
-  // rather than just policyHash so that manifest file edits invalidate the key.
-  // resolveInstalledManifestRegistryIndexFingerprint does O(n) statSync calls,
-  // which is far cheaper than the O(n) readFileSync+JSON.parse calls we're caching.
-  const indexFingerprint = resolveInstalledManifestRegistryIndexFingerprint(params.index);
-  return hashJson({
-    indexFingerprint,
-    includeDisabled: params.includeDisabled ?? false,
-    pluginIds: sortedPluginIds,
-    workspaceDir: params.workspaceDir ?? "",
-    hostContractVersion: resolveCompatibilityHostVersion(params.env),
-  });
-}
-
-function resolveIndexStoreMtimeMs(env: NodeJS.ProcessEnv): number | null {
-  try {
-    const indexPath = resolveInstalledPluginIndexStorePath({ env });
-    return fs.statSync(indexPath).mtimeMs;
-  } catch {
-    return null;
-  }
-}
-
-function getCachedManifestRegistry(key: string): ManifestRegistryCacheEntry | undefined {
-  const entry = manifestRegistryInstalledCache.get(key);
-  if (!entry) {
-    return undefined;
-  }
-  // Defensive secondary: if installs.json is newer than when we cached, evict.
-  const currentMtimeMs = resolveIndexStoreMtimeMs(entry.env);
-  if (
-    currentMtimeMs !== null &&
-    (entry.indexMtimeMs === null || currentMtimeMs > entry.indexMtimeMs)
-  ) {
-    manifestRegistryInstalledCache.delete(key);
-    return undefined;
-  }
-  // Refresh LRU position (move to end).
-  manifestRegistryInstalledCache.delete(key);
-  manifestRegistryInstalledCache.set(key, entry);
-  return entry;
-}
-
-function setCachedManifestRegistry(key: string, entry: ManifestRegistryCacheEntry): void {
-  if (
-    manifestRegistryInstalledCache.size >= MANIFEST_REGISTRY_INSTALLED_CACHE_MAX_ENTRIES &&
-    !manifestRegistryInstalledCache.has(key)
-  ) {
-    // Evict least-recently-used (first entry in insertion-order Map).
-    const oldestKey = manifestRegistryInstalledCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      manifestRegistryInstalledCache.delete(oldestKey);
-    }
-  }
-  // Delete first so the re-set moves the key to the end (latest position).
-  manifestRegistryInstalledCache.delete(key);
-  manifestRegistryInstalledCache.set(key, entry);
-}
-
-/**
- * Clears the entire manifest-registry-installed LRU cache.
- *
- * Called by `clearCurrentPluginMetadataSnapshotState()` co-callers in
- * `installed-plugin-index-store.ts` whenever the persisted index is written,
- * ensuring stale entries are never served after an install/refresh.
- */
-export function clearManifestRegistryInstalledCache(): void {
-  manifestRegistryInstalledCache.clear();
-}
 
 function resolvePackageJsonPath(record: InstalledPluginIndexRecord): string | undefined {
   if (!record.packageJson?.path) {
@@ -255,6 +173,44 @@ function toPluginCandidate(record: InstalledPluginIndexRecord): PluginCandidate 
   };
 }
 
+/**
+ * Produce a filtered `PluginManifestRegistry` view of an existing snapshot's
+ * pre-built registry. Snapshots are constructed with `includeDisabled: true`
+ * and no `pluginIds` filter (see `loadPluginMetadataSnapshotImpl`), so
+ * per-caller filters are derived purely in-memory here.
+ */
+function deriveRegistryFromSnapshot(params: {
+  snapshotRegistry: PluginManifestRegistry;
+  index: InstalledPluginIndex;
+  pluginIds: ReadonlySet<string> | null;
+  includeDisabled: boolean;
+}): PluginManifestRegistry {
+  const enabledIds = params.includeDisabled
+    ? null
+    : new Set(
+        params.index.plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.pluginId),
+      );
+  const allowed = (id: string | undefined): boolean => {
+    if (!id) {
+      return true;
+    }
+    if (params.pluginIds && !params.pluginIds.has(id)) {
+      return false;
+    }
+    if (enabledIds && !enabledIds.has(id)) {
+      return false;
+    }
+    return true;
+  };
+  const plugins: PluginManifestRecord[] = params.snapshotRegistry.plugins.filter((plugin) =>
+    allowed(plugin.id),
+  );
+  const diagnostics = params.snapshotRegistry.diagnostics.filter((diagnostic) =>
+    allowed(diagnostic.pluginId),
+  );
+  return { plugins, diagnostics };
+}
+
 export function loadPluginManifestRegistryForInstalledIndex(params: {
   index: InstalledPluginIndex;
   config?: OpenClawConfig;
@@ -264,35 +220,53 @@ export function loadPluginManifestRegistryForInstalledIndex(params: {
   includeDisabled?: boolean;
   bundledChannelConfigCollector?: BundledChannelConfigCollector;
 }): PluginManifestRegistry {
-  // Short-circuit: empty pluginIds is always an empty registry — no need to cache.
+  // Short-circuit: empty pluginIds is always an empty registry.
   if (params.pluginIds && params.pluginIds.length === 0) {
     return { plugins: [], diagnostics: [] };
   }
 
   const env = params.env ?? process.env;
 
-  // Bypass cache when a bundledChannelConfigCollector is supplied (stateful
-  // collector; result must not be shared across callers).
-  if (!params.bundledChannelConfigCollector) {
-    const cacheKey = buildManifestRegistryCacheKey({
-      index: params.index,
-      env,
+  // Caller-owned snapshot reuse: when the Gateway has published a
+  // PluginMetadataSnapshot whose `index` fingerprint matches this caller's
+  // `params.index`, derive the requested view from the snapshot's pre-built
+  // `manifestRegistry` instead of rebuilding it from disk.
+  //
+  // Conservative gates (in order):
+  //   - skip when a stateful `bundledChannelConfigCollector` is wired (the
+  //     collector must observe the actual build pass);
+  //   - the published snapshot must originate from a real Gateway boot, i.e.
+  //     it must carry a `workspaceDir` matching the caller's request — this
+  //     filters out synthetic test snapshots that leak across vitest workers;
+  //   - the published snapshot must have a `manifestRegistry` already built
+  //     (snapshots produced from cached metadata may omit it);
+  //   - the snapshot's index fingerprint must match the caller's index
+  //     fingerprint exactly (both `safeFileSignature` mtimes and `policyHash`
+  //     are folded into the fingerprint, so any drift forces a rebuild).
+  if (
+    !params.bundledChannelConfigCollector &&
+    params.workspaceDir !== undefined &&
+    params.config !== undefined
+  ) {
+    const snapshot = getCurrentPluginMetadataSnapshot({
+      config: params.config,
       workspaceDir: params.workspaceDir,
-      pluginIds: params.pluginIds ?? null,
-      includeDisabled: params.includeDisabled,
     });
-    const hit = getCachedManifestRegistry(cacheKey);
-    if (hit) {
-      return hit.registry;
+    if (
+      snapshot &&
+      snapshot.workspaceDir !== undefined &&
+      snapshot.manifestRegistry &&
+      resolveInstalledManifestRegistryIndexFingerprint(snapshot.index) ===
+        resolveInstalledManifestRegistryIndexFingerprint(params.index)
+    ) {
+      const pluginIdSet = params.pluginIds?.length ? new Set(params.pluginIds) : null;
+      return deriveRegistryFromSnapshot({
+        snapshotRegistry: snapshot.manifestRegistry,
+        index: params.index,
+        pluginIds: pluginIdSet,
+        includeDisabled: params.includeDisabled === true,
+      });
     }
-
-    const registry = buildManifestRegistry(params, env);
-    setCachedManifestRegistry(cacheKey, {
-      registry,
-      indexMtimeMs: resolveIndexStoreMtimeMs(env),
-      env,
-    });
-    return registry;
   }
 
   return buildManifestRegistry(params, env);

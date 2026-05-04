@@ -4,6 +4,10 @@ Docs: https://docs.openclaw.ai
 
 ## Unreleased
 
+### Performance
+
+- Plugins: route hot `loadPluginManifestRegistryForInstalledIndex` callers through the existing caller-owned `PluginMetadataSnapshot` single-slot handoff (`current-plugin-metadata-snapshot`) so per-LLM-attempt tool builds reuse the gateway-published manifest registry instead of re-reading every installed plugin manifest from disk. Drops the per-attempt manifest-registry rebuild from ~3 s of synchronous fs I/O to a sub-millisecond filtered view; freshness still flips with the snapshot, which is cleared on every persisted-index write. (#77451)
+
 ### Fixes
 
 - Gateway/config: report failed backup restores as failed in logs and config observe audit records instead of marking them valid. (#70515) Thanks @davidangularme.
