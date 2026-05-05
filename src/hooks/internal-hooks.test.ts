@@ -444,6 +444,184 @@ describe("hooks", () => {
     });
   });
 
+  describe("postHookActions", () => {
+    it("executes post-hook actions after all handlers complete", async () => {
+      const order: string[] = [];
+
+      registerInternalHook("command:new", async (event) => {
+        order.push("handler-1");
+        event.postHookActions!.push(async () => {
+          order.push("post-action-1");
+        });
+      });
+
+      registerInternalHook("command:new", async () => {
+        order.push("handler-2");
+      });
+
+      const event = createInternalHookEvent("command", "new", "test-session");
+      await triggerInternalHook(event);
+
+      expect(order).toEqual(["handler-1", "handler-2", "post-action-1"]);
+    });
+
+    it("post-hook actions see context set by later handlers", async () => {
+      let sawFlag = false;
+
+      registerInternalHook("command:new", async (event) => {
+        event.postHookActions!.push(async () => {
+          sawFlag = event.context.myFlag === true;
+        });
+      });
+
+      registerInternalHook("command:new", async (event) => {
+        event.context.myFlag = true;
+      });
+
+      const event = createInternalHookEvent("command", "new", "test-session");
+      await triggerInternalHook(event);
+
+      expect(sawFlag).toBe(true);
+    });
+
+    it("post-hook action errors don't prevent other post-hook actions", async () => {
+      const executed: string[] = [];
+
+      registerInternalHook("command:new", async (event) => {
+        event.postHookActions!.push(async () => {
+          throw new Error("boom");
+        });
+        event.postHookActions!.push(async () => {
+          executed.push("second-action");
+        });
+      });
+
+      const event = createInternalHookEvent("command", "new", "test-session");
+      await triggerInternalHook(event);
+
+      expect(executed).toEqual(["second-action"]);
+    });
+
+    it("multiple handlers can push post-hook actions; all execute in order", async () => {
+      const order: string[] = [];
+
+      registerInternalHook("command:new", async (event) => {
+        event.postHookActions!.push(() => {
+          order.push("from-handler-1");
+        });
+      });
+
+      registerInternalHook("command:new", async (event) => {
+        event.postHookActions!.push(() => {
+          order.push("from-handler-2");
+        });
+      });
+
+      const event = createInternalHookEvent("command", "new", "test-session");
+      await triggerInternalHook(event);
+
+      expect(order).toEqual(["from-handler-1", "from-handler-2"]);
+    });
+
+    it("initializes postHookActions as empty array", () => {
+      const event = createInternalHookEvent("command", "new", "test-session");
+      expect(event.postHookActions).toEqual([]);
+    });
+
+    it("drains post-hook actions even when no handlers are registered", async () => {
+      const event = createInternalHookEvent("command", "new", "test-session");
+      let ran = false;
+      event.postHookActions!.push(() => {
+        ran = true;
+      });
+      // No handlers registered — post-hooks should still drain
+      await triggerInternalHook(event);
+      expect(ran).toBe(true);
+    });
+
+    it("prevents self-appending action loops by snapshotting before draining (CWE-834 guard)", async () => {
+      // A buggy or malicious post-hook action could push another action
+      // back onto event.postHookActions during drain. Without a snapshot,
+      // a JS for..of iterator over a live array would re-read length on
+      // each iteration and yield the newly appended element — unbounded.
+      // The drainer protects by snapshotting + clearing before iterating.
+      const event = createInternalHookEvent("command", "new", "test-session");
+      let runs = 0;
+      const SAFETY_CAP = 1000;
+      event.postHookActions!.push(function selfAppender() {
+        runs += 1;
+        if (runs >= SAFETY_CAP) {
+          // We must never reach this in a working drainer. If we do,
+          // the snapshot guard is broken and the test fails the assertion
+          // below (rather than hanging the test runner indefinitely).
+          return;
+        }
+        event.postHookActions!.push(selfAppender);
+      });
+      await triggerInternalHook(event);
+      // Only the originally-pushed action runs in this drain cycle;
+      // the re-pushed action sits in event.postHookActions for a
+      // future cycle but does NOT extend this one. That's the DoS
+      // boundary — the for..of loop iterates a snapshot, not the live
+      // array, so it terminates regardless of pushes during drain.
+      expect(runs).toBe(1);
+      // The append-during-drain entry remains queued (would drain on
+      // a subsequent triggerInternalHook). What matters is that runs==1,
+      // proving this drain cycle did not loop unboundedly.
+      expect(event.postHookActions!.length).toBe(1);
+    });
+
+    it("tolerates manually-constructed events that omit postHookActions (SDK compat)", async () => {
+      // The SDK re-exports InternalHookEvent through plugin-sdk/hook-runtime
+      // so plugins or tests may build events by hand rather than calling
+      // createInternalHookEvent. Pre-postHookActions plugins won't include
+      // the new field. The drainer must tolerate that gracefully (??= [])
+      // rather than throwing on `for..of undefined`. This is the public-
+      // surface compat test clawsweeper review on PR #38162 asked for.
+      let handlerRan = false;
+      registerInternalHook("command:new", () => {
+        handlerRan = true;
+      });
+      // Hand-built event — deliberately no postHookActions field.
+      const legacyEvent = {
+        type: "command" as const,
+        action: "new" as const,
+        sessionKey: "test-session",
+        context: {},
+        timestamp: new Date(),
+        messages: [] as string[],
+        // postHookActions: undefined (omitted on purpose)
+      };
+      // Must not throw despite missing field.
+      await triggerInternalHook(legacyEvent);
+      expect(handlerRan).toBe(true);
+    });
+
+    it("snapshots actions registered after the drain begins (multi-handler stacking)", async () => {
+      // Sanity: handlers can push actions. All actions registered BEFORE
+      // the drain begins must run, in push order; actions registered by
+      // a later action are NOT extended into the same drain (snapshot
+      // semantics).
+      const order: string[] = [];
+      registerInternalHook("command:new", () => {
+        order.push("handler");
+      });
+      const event = createInternalHookEvent("command", "new", "test-session");
+      event.postHookActions!.push(() => {
+        order.push("first");
+        // This push happens DURING drain — dropped by the snapshot guard.
+        event.postHookActions!.push(() => {
+          order.push("appended-during-drain");
+        });
+      });
+      event.postHookActions!.push(() => {
+        order.push("second");
+      });
+      await triggerInternalHook(event);
+      expect(order).toEqual(["handler", "first", "second"]);
+    });
+  });
+
   describe("getRegisteredEventKeys", () => {
     it("should return all registered event keys", () => {
       registerInternalHook("command:new", vi.fn());
