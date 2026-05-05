@@ -717,9 +717,13 @@ export async function ensureOpenClawModelsJson(
       if (matches) {
         await ensureModelsFileModeForModelsJson(targetPath);
         const result = { agentDir, wrote: false };
+        const modelsJsonHash = await readModelsJsonContentHash(targetPath);
         // Populate readyCache so the next call with identical inputs
         // takes the warm-cache path above without re-reading disk.
-        MODELS_JSON_STATE.readyCache.set(cacheKey, Promise.resolve({ fingerprint, result }));
+        MODELS_JSON_STATE.readyCache.set(
+          cacheKey,
+          Promise.resolve({ fingerprint, modelsJsonHash, result }),
+        );
         return result;
       }
     }
