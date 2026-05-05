@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -650,18 +651,15 @@ describe("session-memory hook", () => {
     expect(memoryContent).toContain("assistant: Only message 2");
   });
 
-  // Helper to drain postHookActions with per-action error isolation,
-  // matching triggerInternalHook's actual drain behaviour.
-  async function drainPostHookActions(event: {
-    postHookActions?: Array<() => Promise<void> | void>;
-  }) {
-    for (const action of event.postHookActions ?? []) {
-      try {
-        await action();
-      } catch {
-        // Per-action isolation — one failure doesn't block others.
-      }
-    }
+  // Uses the exported drain utility from internal-hooks.ts so tests share
+  // the exact same drain semantics as production (snapshot → clear → sequential
+  // await). Errors are rethrown (rather than swallowed) so test failures surface
+  // the actual error message instead of a confusing downstream assertion failure.
+  async function drainActions(event: { postHookActions?: Array<() => Promise<void> | void> }) {
+    const { drainPostHookActions } = await import("../../internal-hooks.js");
+    await drainPostHookActions(event.postHookActions ?? [], (err) => {
+      throw err;
+    });
   }
 
   it("blockSessionSave (pre-set) prevents memory file creation", async () => {
@@ -681,7 +679,7 @@ describe("session-memory hook", () => {
     event.context.blockSessionSave = true;
 
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const memoryFiles = await fs.readdir(memoryDir).catch(() => [] as string[]);
@@ -714,10 +712,77 @@ describe("session-memory hook", () => {
     event.context.blockSessionSave = true;
 
     // Post-hook action retracts the file
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     memoryFiles = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
     expect(memoryFiles).toHaveLength(0);
+  });
+
+  it("late-block retraction restores pre-existing file instead of deleting (slug collision)", async () => {
+    const tempDir = await createCaseWorkspace("block-save-restore");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "first session" }]),
+    });
+
+    // Pin crypto.randomUUID AND timestamp to force deterministic fallback slug —
+    // both handler calls produce the same HHMMSS prefix (fixed timestamp)
+    // and the same random suffix (pinned UUID). LLM slug generation is
+    // disabled in the test environment (VITEST=true), so the collision
+    // is exercised entirely through the fallback path.  Without pinning
+    // the clock, a wall-clock second boundary between event1 and event2
+    // would produce different HHMMSS prefixes → no collision.
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("aaaa1111-2222-3333-4444-555566667777");
+    const fixedTimestamp = new Date("2024-01-15T12:34:56.000Z");
+
+    try {
+      // First handler: creates memory file with deterministic slug.
+      const event1 = createHookEvent("command", "new", "agent:main:main", {
+        cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+        previousSessionEntry: { sessionId: "s1", sessionFile },
+      });
+      event1.timestamp = fixedTimestamp;
+      await handler(event1);
+      await drainActions(event1);
+
+      const memoryDir = path.join(tempDir, "memory");
+      const files1 = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
+      expect(files1).toHaveLength(1);
+      const collidingFile = files1[0];
+      const collidingPath = path.join(memoryDir, collidingFile);
+      const originalContent = await fs.readFile(collidingPath, "utf-8");
+      expect(originalContent).toContain("first session");
+
+      // Second handler: same deterministic slug → overwrites the file (collision).
+      const sessionFile2 = await writeWorkspaceFile({
+        dir: sessionsDir,
+        name: "test-session2.jsonl",
+        content: createMockSessionContent([{ role: "user", content: "second session" }]),
+      });
+      const event2 = createHookEvent("command", "new", "agent:main:main", {
+        cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+        previousSessionEntry: { sessionId: "s2", sessionFile: sessionFile2 },
+      });
+      event2.timestamp = fixedTimestamp;
+      await handler(event2);
+
+      // Verify the file was overwritten by second handler.
+      const overwrittenContent = await fs.readFile(collidingPath, "utf-8");
+      expect(overwrittenContent).toContain("second session");
+
+      // Late-block: retraction should restore the FIRST session's content.
+      event2.context.blockSessionSave = true;
+      await drainActions(event2);
+
+      const restoredContent = await fs.readFile(collidingPath, "utf-8");
+      expect(restoredContent).toContain("first session");
+      expect(restoredContent).not.toContain("second session");
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("sessionSaveContent (pre-set) overrides saved content", async () => {
@@ -737,7 +802,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "Custom summary from upstream hook";
 
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
@@ -769,7 +834,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "Redacted by policy";
 
     // Post-hook action overwrites
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
@@ -795,7 +860,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "";
 
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
@@ -864,7 +929,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "Replacement content from policy hook";
 
     // Post-hook should create the directory and write the file
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const files = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
     expect(files.length).toBeGreaterThan(0);
@@ -890,7 +955,7 @@ describe("session-memory hook", () => {
     event.context.sessionSaveContent = "Should not appear";
 
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const memoryFiles = await fs.readdir(memoryDir).catch(() => [] as string[]);
@@ -919,11 +984,43 @@ describe("session-memory hook", () => {
     event.context.blockSessionSave = true;
     event.context.sessionSaveContent = "Should not appear";
 
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     const memoryDir = path.join(tempDir, "memory");
     const memoryFiles = (await fs.readdir(memoryDir)).filter((f) => f.endsWith(".md"));
     expect(memoryFiles).toHaveLength(0);
+  });
+
+  it("blockSessionSave pre-set then cleared without sessionSaveContent warns and writes nothing", async () => {
+    const tempDir = await createCaseWorkspace("block-cleared-no-content");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "will not be saved" }]),
+    });
+
+    const event = createHookEvent("command", "new", "agent:main:main", {
+      cfg: { agents: { defaults: { workspace: tempDir } } } satisfies OpenClawConfig,
+      previousSessionEntry: { sessionId: "s1", sessionFile },
+    });
+
+    // Pre-set blockSessionSave — handler skips transcript loading + inline write
+    event.context.blockSessionSave = true;
+
+    await handler(event);
+
+    // A later hook clears blockSessionSave but forgets to set sessionSaveContent.
+    // Since the transcript was never loaded, no file can be produced.
+    event.context.blockSessionSave = false;
+
+    await drainActions(event);
+
+    // No memory file should exist — the transcript was never loaded
+    const memoryDir = path.join(tempDir, "memory");
+    const memoryFiles = await fs.readdir(memoryDir).catch(() => [] as string[]);
+    expect(memoryFiles.filter((f) => f.endsWith(".md"))).toHaveLength(0);
   });
 
   it("sessionSaveRedirectPath writes to alternate location", async () => {
@@ -1110,7 +1207,7 @@ describe("session-memory hook", () => {
       event.context.blockSessionSave = true;
     });
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
     // Retraction semantics through a symlink: the snapshot of the
     // pre-existing target content ("pre-existing") is restored at the
     // canonical path. Importantly, retraction must NOT escape the
@@ -1163,7 +1260,7 @@ describe("session-memory hook", () => {
       previousSessionEntry: { sessionId: "s1", sessionFile },
     });
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
     // The handler should have produced a memory file containing the tail
     // markers (proving we read the END of the large file, not the
     // beginning, and that we didn't OOM along the way).
@@ -1227,7 +1324,7 @@ describe("session-memory hook", () => {
       event.context.blockSessionSave = true;
     });
     await handler(event);
-    await drainPostHookActions(event);
+    await drainActions(event);
     // The fix: rollback writes through writtenFilePath (realpath at
     // write time) = targetA, restoring "original-A".
     // Without the fix: rollback writes through writeRelativePath, which
@@ -1281,7 +1378,7 @@ describe("session-memory hook", () => {
       });
       event.context.sessionSaveRedirectPath = redirectFile;
       await handler(event);
-      await drainPostHookActions(event);
+      await drainActions(event);
     } finally {
       lstatSpy.mockRestore();
     }
@@ -1352,7 +1449,7 @@ describe("session-memory hook", () => {
     // A later hook blocks all saves — blockSessionSave is a security
     // primitive meaning "no persistence, period" and wins over redirects.
     event.context.blockSessionSave = true;
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     // The redirected file should be retracted
     const exists = await fs.stat(redirectFile).then(
@@ -1385,7 +1482,7 @@ describe("session-memory hook", () => {
 
     // A later hook tries to override content — should be ignored for redirects
     event.context.sessionSaveContent = "This should NOT replace redirect content";
-    await drainPostHookActions(event);
+    await drainActions(event);
 
     // Original redirect content should be preserved
     const content = await fs.readFile(redirectFile, "utf-8");

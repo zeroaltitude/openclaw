@@ -287,20 +287,15 @@ export async function triggerInternalHook(event: InternalHookEvent): Promise<voi
   if (!internalHooksEnabledState.enabled) {
     return;
   }
+
+  // Normalize postHookActions before entering the handler loop.
+  event.postHookActions ??= [];
   if (!hasInternalHookListeners(event.type, event.action)) {
     // No handlers, but still drain any pre-populated postHookActions.
-    if (event.postHookActions?.length) {
-      const pending = [...event.postHookActions];
-      event.postHookActions.length = 0;
-      for (const action of pending) {
-        try {
-          await action();
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          log.error(`Post-hook action error [${event.type}:${event.action}]: ${message}`);
-        }
-      }
-    }
+    await drainPostHookActions(event.postHookActions, (err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error(`Post-hook action error [${event.type}:${event.action}]: ${message}`);
+    });
     return;
   }
 
@@ -322,27 +317,51 @@ export async function triggerInternalHook(event: InternalHookEvent): Promise<voi
   // Actions execute in push order; errors are caught per-action so one
   // failure doesn't block others.
   //
-  // SECURITY: snapshot the actions array and clear it BEFORE iterating
-  // so an action that pushes another action onto event.postHookActions
-  // cannot extend this drain cycle indefinitely. Without the snapshot,
-  // a JS for..of iterator over a live array would re-read length on
-  // each step, creating a self-appending infinite-loop / DoS surface
-  // (CWE-834). Newly pushed actions are silently dropped — callers that
-  // need re-entrant semantics must trigger a fresh hook event.
-  //
-  // Guard against manually constructed events that omit postHookActions.
-  // createInternalHookEvent always initializes it, but callers building
-  // events by hand (tests, JS integrations) may not.
-  const pending = [...(event.postHookActions ?? [])];
-  if (event.postHookActions) {
-    event.postHookActions.length = 0;
-  }
+  // Snapshot the array before draining so that actions pushed *by* post-hook
+  // callbacks do not execute in this drain cycle. Without this, a self-
+  // scheduling action (one that pushes another action) could loop infinitely
+  // because Array's for...of iterator is live and re-reads length each step.
+  await drainPostHookActions(event.postHookActions, (err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error(`Post-hook action error [${event.type}:${event.action}]: ${message}`);
+  });
+}
+
+/**
+ * Drain an array of post-hook action callbacks.
+ *
+ * Snapshots the array before iterating so that self-scheduling actions
+ * (ones that push new callbacks) do not execute in the same drain cycle.
+ * Clears the source array after snapshotting so an immediate re-drain with
+ * no intervening pushes is a no-op.  Note: if an action pushes new callbacks
+ * *during* its own execution, those entries land in the already-cleared source
+ * array and will persist after this function returns — a subsequent drain
+ * call will execute them.
+ * Errors are caught per-action via try/catch.  Per-action isolation (one
+ * failure doesn't block others) holds only when `onError` does not rethrow.
+ * If `onError` rethrows, subsequent actions are skipped — callers that want
+ * fail-fast semantics (e.g. tests) can use this intentionally.
+ *
+ * Exported for use in tests that need to drain post-hook actions without
+ * going through the full triggerInternalHook pipeline, ensuring they
+ * share the same drain semantics as production.
+ *
+ * @param actions - The postHookActions array to drain (mutated: cleared after snapshot).
+ * @param onError - Per-action error handler. Required to force callers to be explicit
+ *   about error handling — pass a logger in production, a rethrower in tests, or
+ *   `() => {}` only when intentionally swallowing errors.
+ */
+export async function drainPostHookActions(
+  actions: Array<() => Promise<void> | void>,
+  onError: (err: unknown) => void,
+): Promise<void> {
+  const pending = [...actions];
+  actions.length = 0;
   for (const action of pending) {
     try {
       await action();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error(`Post-hook action error [${event.type}:${event.action}]: ${message}`);
+      onError(err);
     }
   }
 }

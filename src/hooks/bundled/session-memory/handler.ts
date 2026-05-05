@@ -372,6 +372,22 @@ const saveSessionToMemory: HookHandler = async (event) => {
     // is written inline (fail-safe: if postHookActions never runs, data is
     // preserved on disk).  The post-hook callback handles retraction
     // (blockSessionSave) and content replacement (sessionSaveContent).
+    //
+    // PRIVACY NOTE (gpt-5.5 deep-review P2-1):
+    // When sessionSaveContent is set by a LATER hook (after this handler
+    // has already run), the LLM-generated slug from the original transcript
+    // is already baked into the filename. The post-hook callback rewrites
+    // the file CONTENT but cannot change the filename, so the conversation
+    // topic may still be inferable from the file name on disk. This is a
+    // design limitation of the late-set redaction path — not a bug.
+    //
+    // For privacy-critical scenarios, hooks should choose between:
+    //   1. blockSessionSave = true (full suppression — file deleted entirely)
+    //   2. PRE-SET sessionSaveContent BEFORE this handler runs, so transcript
+    //      loading and LLM slug generation are skipped (see blockPreSet /
+    //      hasCustomContent fast paths below).
+    // Late-set sessionSaveContent is appropriate for content redaction where
+    // the topic itself is not sensitive.
 
     const cfg = context.cfg as OpenClawConfig | undefined;
     const contextWorkspaceDir =

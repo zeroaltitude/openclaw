@@ -2,6 +2,7 @@
  * LLM-based slug generator for session memory filenames
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -68,7 +69,7 @@ Reply with ONLY the slug, nothing else. Examples: "vendor-pitch", "api-design", 
     // text is extracted.  Slug generation is pure text — it never needs
     // tool access.
     const result = await runEmbeddedPiAgent({
-      sessionId: `slug-generator-${Date.now()}`,
+      sessionId: `slug-generator-${crypto.randomUUID()}`,
       sessionKey: "temp:slug-generator",
       agentId,
       sessionFile: tempSessionFile,
@@ -80,7 +81,7 @@ Reply with ONLY the slug, nothing else. Examples: "vendor-pitch", "api-design", 
       model,
       disableTools: true,
       timeoutMs,
-      runId: `slug-gen-${Date.now()}`,
+      runId: `slug-gen-${crypto.randomUUID()}`,
       cleanupBundleMcpOnRunEnd: true,
     });
 

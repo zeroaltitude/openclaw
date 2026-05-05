@@ -539,12 +539,28 @@ describe("hooks", () => {
       expect(ran).toBe(true);
     });
 
+    it("clears postHookActions after drain — re-trigger is a no-op", async () => {
+      const event = createInternalHookEvent("command", "new", "test-session");
+      let count = 0;
+      event.postHookActions!.push(() => {
+        count++;
+      });
+      await triggerInternalHook(event);
+      expect(count).toBe(1);
+      // Second trigger on same event should not re-execute
+      await triggerInternalHook(event);
+      expect(count).toBe(1);
+      expect(event.postHookActions).toEqual([]);
+    });
+
     it("prevents self-appending action loops by snapshotting before draining (CWE-834 guard)", async () => {
       // A buggy or malicious post-hook action could push another action
-      // back onto event.postHookActions during drain. Without a snapshot,
-      // a JS for..of iterator over a live array would re-read length on
-      // each iteration and yield the newly appended element — unbounded.
-      // The drainer protects by snapshotting + clearing before iterating.
+      // onto event.postHookActions during drain. Without a snapshot, a JS
+      // for..of iterator over a live array would re-read length on each
+      // step and yield the newly appended element — unbounded execution.
+      // drainPostHookActions takes a snapshot and clears the source array
+      // before iterating, so the drain cycle terminates regardless of
+      // pushes during execution.
       const event = createInternalHookEvent("command", "new", "test-session");
       let runs = 0;
       const SAFETY_CAP = 1000;
@@ -560,14 +576,11 @@ describe("hooks", () => {
       });
       await triggerInternalHook(event);
       // Only the originally-pushed action runs in this drain cycle;
-      // the re-pushed action sits in event.postHookActions for a
-      // future cycle but does NOT extend this one. That's the DoS
-      // boundary — the for..of loop iterates a snapshot, not the live
-      // array, so it terminates regardless of pushes during drain.
+      // the re-pushed action is queued for a future cycle but does NOT
+      // extend this one. That's the DoS boundary.
       expect(runs).toBe(1);
-      // The append-during-drain entry remains queued (would drain on
-      // a subsequent triggerInternalHook). What matters is that runs==1,
-      // proving this drain cycle did not loop unboundedly.
+      // The append-during-drain entry remains queued; it would drain on
+      // a subsequent triggerInternalHook call.
       expect(event.postHookActions!.length).toBe(1);
     });
 
@@ -609,7 +622,8 @@ describe("hooks", () => {
       const event = createInternalHookEvent("command", "new", "test-session");
       event.postHookActions!.push(() => {
         order.push("first");
-        // This push happens DURING drain — dropped by the snapshot guard.
+        // This push happens DURING drain — dropped from the current cycle
+        // by the snapshot guard, queued for a subsequent trigger.
         event.postHookActions!.push(() => {
           order.push("appended-during-drain");
         });
@@ -619,6 +633,8 @@ describe("hooks", () => {
       });
       await triggerInternalHook(event);
       expect(order).toEqual(["handler", "first", "second"]);
+      // The action appended during drain is queued.
+      expect(event.postHookActions!.length).toBe(1);
     });
   });
 
