@@ -10,6 +10,12 @@ Docs: https://docs.openclaw.ai
 
 ### Changes
 
+### Highlights
+
+- Google Meet/Voice Call: make Twilio dial-in joins speak through the realtime Gemini voice bridge with paced audio streaming, backpressure-aware buffering, barge-in queue clearing, and no TwiML fallback during realtime speech, giving Meet participants a much snappier OpenClaw voice agent. (#77064) Thanks @scoootscooob.
+
+### Changes
+
 - Gateway/Windows: bind the default loopback gateway listener only to `127.0.0.1` on Windows so libuv's dual-stack `::1` behavior cannot wedge localhost HTTP requests. (#69701, fixes #69674) Thanks @SARAMALI15792.
 - Plugins/migration: emit catalog-backed install hints when `plugins.entries` or `plugins.allow` references an official external plugin that is not installed, so upgraded configs point operators to `openclaw plugins install <spec>` instead of telling them to remove valid plugin config. (#77483) Thanks @hclsys.
 - OpenAI/Codex media: advertise Codex audio transcription in runtime and manifest metadata and route active Codex chat models to the OpenAI transcription default instead of sending chat model ids to audio transcription. Thanks @vincentkoc.
@@ -61,6 +67,7 @@ Docs: https://docs.openclaw.ai
 - Plugins/runtime state: add `registerIfAbsent` for atomic keyed-store dedupe claims that return whether a plugin successfully claimed a key without overwriting an existing live value. Thanks @amknight.
 - Plugin SDK: add plugin-owned `SessionEntry` slot projection and scoped trusted-policy session extension reads. (#75609; replaces part of #73384/#74483) Thanks @100yenadmin.
 - Tasks/maintenance: add `tasks.retentionMs` and `tasks.sweepIntervalMs` config keys (defaults 7 days and 60 seconds; the `openclaw.json` schema only accepts positive integers and rejects non-positive, non-integer, or non-finite values at config-load time so the defaults remain in effect), index-driven task registry sweeps that reuse a top-of-sweep snapshot and fast-skip non-due/non-ACP records, and `openclaw tasks maintenance` now honors the configured retention/interval through the same shared runtime-config seam as the gateway scheduler. (#77395)
+- Memory/QMD: persist a per-file export-state cache to `<qmdDir>/sessions/.export-state.json` and add a size/mtime stat fast path before `buildSessionEntry()` in `qmd-manager.exportSessions()`, so agents with thousands of session transcripts skip the full JSONL read, parse, redact, hash, and render pipeline when the source file is unchanged across boot and 5-minute interval syncs. The cache is gated by `SESSION_EXPORT_RENDER_VERSION` and the resolved export directory and is invalidated cleanly on schema, render-version, or `exportDir` mismatch. Thanks @zeroaltitude.
 
 ### Fixes
 
