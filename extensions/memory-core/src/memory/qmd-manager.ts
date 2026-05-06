@@ -9,12 +9,13 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { withFileLock } from "openclaw/plugin-sdk/file-lock";
 import {
   createSubsystemLogger,
+  isPathInside,
+  root,
   resolveAgentContextLimits,
   resolveMemorySearchSyncConfig,
   resolveAgentWorkspaceDir,
   resolveGlobalSingleton,
   resolveStateDir,
-  writeFileWithinRoot,
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import {
@@ -1311,7 +1312,15 @@ export class QmdMemoryManager implements MemorySearchManager {
     if (!absPath.endsWith(".md")) {
       throw new Error("path required");
     }
-    const statResult = await statRegularFile(absPath);
+    let statResult: Awaited<ReturnType<typeof statRegularFile>>;
+    try {
+      statResult = await statRegularFile(absPath);
+    } catch (err) {
+      if (err instanceof Error && err.message === "path must be a regular file") {
+        throw new Error("path required", { cause: err });
+      }
+      throw err;
+    }
     if (statResult.missing) {
       return { text: "", path: relPath };
     }
@@ -2216,6 +2225,7 @@ export class QmdMemoryManager implements MemorySearchManager {
       await this.loadExportedSessionState();
       this.exportedSessionStateLoaded = true;
     }
+    const exportRoot = await root(exportDir);
     const files = await listSessionFilesForAgent(this.agentId);
     const keep = new Set<string>();
     const tracked = new Set<string>();
@@ -2274,10 +2284,7 @@ export class QmdMemoryManager implements MemorySearchManager {
         cached.hash !== entry.hash ||
         cached.mtimeMs !== entry.mtimeMs
       ) {
-        await writeFileWithinRoot({
-          rootDir: exportDir,
-          relativePath: targetName,
-          data: this.renderSessionMarkdown(entry),
+        await exportRoot.write(targetName, this.renderSessionMarkdown(entry), {
           encoding: "utf-8",
         });
       }
@@ -2290,19 +2297,19 @@ export class QmdMemoryManager implements MemorySearchManager {
       stateMutated = true;
       keep.add(target);
     }
-    const exported = await fs.readdir(exportDir).catch(() => []);
+    const exported = await exportRoot.list(".").catch(() => []);
     for (const name of exported) {
       if (!name.endsWith(".md")) {
         continue;
       }
       const full = path.join(exportDir, name);
       if (!keep.has(full)) {
-        await fs.rm(full, { force: true });
+        await exportRoot.remove(name).catch(() => undefined);
         stateMutated = true;
       }
     }
     for (const [sessionFile, state] of this.exportedSessionState) {
-      if (!tracked.has(sessionFile) || !state.target.startsWith(exportDir + path.sep)) {
+      if (!tracked.has(sessionFile) || !isPathInside(exportDir, state.target)) {
         this.exportedSessionState.delete(sessionFile);
         stateMutated = true;
       }
@@ -2410,10 +2417,8 @@ export class QmdMemoryManager implements MemorySearchManager {
       entries,
     });
     try {
-      await writeFileWithinRoot({
-        rootDir: this.sessionExporter.dir,
-        relativePath: SESSION_EXPORT_STATE_FILE,
-        data: payload,
+      const persistRoot = await root(this.sessionExporter.dir);
+      await persistRoot.write(SESSION_EXPORT_STATE_FILE, payload, {
         encoding: "utf-8",
       });
     } catch (err) {
@@ -2956,23 +2961,11 @@ export class QmdMemoryManager implements MemorySearchManager {
   }
 
   private isWithinWorkspace(absPath: string): boolean {
-    const normalizedWorkspace = this.workspaceDir.endsWith(path.sep)
-      ? this.workspaceDir
-      : `${this.workspaceDir}${path.sep}`;
-    if (absPath === this.workspaceDir) {
-      return true;
-    }
-    const candidate = absPath.endsWith(path.sep) ? absPath : `${absPath}${path.sep}`;
-    return candidate.startsWith(normalizedWorkspace);
+    return isPathInside(this.workspaceDir, absPath);
   }
 
   private isWithinRoot(root: string, candidate: string): boolean {
-    const normalizedRoot = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (candidate === root) {
-      return true;
-    }
-    const next = candidate.endsWith(path.sep) ? candidate : `${candidate}${path.sep}`;
-    return next.startsWith(normalizedRoot);
+    return isPathInside(root, candidate);
   }
 
   private clampResultsByInjectedChars(results: MemorySearchResult[]): MemorySearchResult[] {
