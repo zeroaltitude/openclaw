@@ -965,7 +965,97 @@ async function readExistingProviderMatchesConfig(
     return false;
   }
 
+  // Model-list subset check (Codex P1 round-8 on PR #73261:
+  // "Compare configured models before short-circuiting provider hit").
+  // The prior per-model loop only validated TRANSPORT shape; it never
+  // checked that the set of configured model ids was reflected on
+  // disk.  Result: a config edit that adds a new model (without
+  // touching apiKey / baseUrl / api / headers / auth) hits the
+  // short-circuit, leaves models.json stale, and `resolveModelAsync`
+  // misses the newly configured model until some later full reconcile.
+  // With this commit wiring `targetProvider` into the embedded
+  // runner paths, that staleness window is now reachable from
+  // gateway hot paths and must be closed.
+  //
+  // Contract: when `configuredProvider.models` is a non-empty array
+  // (explicit mode — user enumerated which models they want), every
+  // configured model id MUST appear on disk.  Disk may legitimately
+  // contain MORE models than config (implicit discovery /
+  // plugin-contributed entries), so we use a subset check, not
+  // strict equality.  Implicit-only mode (`models: []` or omitted)
+  // skips the comparison — the disk content reflects discovery, not
+  // config, and the transport check above is sufficient.
+  //
+  // Adversarial / malformed configured.models entries (non-record
+  // non-string, missing id, prototype-key collision) fail closed:
+  // we cannot reason about them, so we refuse the short-circuit.
+  const configuredIds = collectShortCircuitModelIds(configuredProvider.models);
+  if (configuredIds === null) {
+    return false;
+  }
+  if (configuredIds.size > 0) {
+    const diskIds = collectShortCircuitModelIds(diskProvider.models);
+    if (diskIds === null) {
+      return false;
+    }
+    for (const id of configuredIds) {
+      if (!diskIds.has(id)) {
+        return false;
+      }
+    }
+  }
+
   return true;
+}
+
+/**
+ * Extract a Set of model ids from a provider's `models` field for the
+ * targetProvider short-circuit subset check (Codex P1 round-8 on PR
+ * #73261).  Accepts the two shapes the runtime produces:
+ *  - bare string entries (e.g. `"gpt-5"`)
+ *  - record entries with a string `id` field (e.g. `{ id: "gpt-5", ... }`)
+ *
+ * Returns:
+ *  - `null` when the input is malformed in a way that should fail closed
+ *    (non-array with non-undefined value, non-record/non-string entries,
+ *    record entries missing a string `id`, prototype-chain id collisions).
+ *  - an empty Set when `models` is undefined OR an empty array (legitimate
+ *    "implicit-only" mode — caller skips the subset check in that case).
+ *  - a populated Set otherwise.
+ */
+function collectShortCircuitModelIds(models: unknown): Set<string> | null {
+  if (models === undefined) {
+    return new Set();
+  }
+  if (!Array.isArray(models)) {
+    return null;
+  }
+  const ids = new Set<string>();
+  for (const entry of models) {
+    if (typeof entry === "string") {
+      const trimmed = entry.trim();
+      if (!trimmed) {
+        return null;
+      }
+      ids.add(trimmed);
+      continue;
+    }
+    if (!isRecord(entry)) {
+      return null;
+    }
+    // Use Object.hasOwn to refuse prototype-chain id collisions
+    // (consistent with the same guard around `parsed.providers`
+    // earlier in this function).
+    if (!Object.hasOwn(entry, "id")) {
+      return null;
+    }
+    const id = (entry as { id: unknown }).id;
+    if (typeof id !== "string" || !id.trim()) {
+      return null;
+    }
+    ids.add(id.trim());
+  }
+  return ids;
 }
 
 /**

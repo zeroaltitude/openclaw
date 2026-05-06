@@ -781,6 +781,165 @@ describe("ensureOpenClawModelsJson targetProvider short-circuit", () => {
     expect(resolveImplicitProvidersCallCount).toBe(1);
   });
 
+  it("miss-on-newly-configured-model: short-circuit rejects when config adds a model that is not on disk (Codex P1 round-8)", async () => {
+    // Codex P1 round-8 on PR #73261: "Compare configured models
+    // before short-circuiting provider hit". A config edit that
+    // adds a new model id (without touching apiKey / baseUrl / api /
+    // headers / auth) used to hit the short-circuit and leave
+    // models.json stale; resolveModelAsync would miss the new model.
+    // After this fix, the subset check (every configuredProvider.models
+    // id must appear on disk) catches the add and forces a re-plan.
+    const agentDir = await fixtureSuite.createCaseDir("agent");
+    const cfg: OpenClawConfig = {
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: "sk-tes\u2026alue",
+            api: "openai-completions" as const,
+            models: [
+              { id: "gpt-5" },
+            ] as unknown as import("../config/types.models.js").ModelDefinitionConfig[],
+          },
+        },
+      },
+    };
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+
+    // Confirm disk picked up the configured model.
+    const targetPath = path.join(agentDir, "models.json");
+    const parsed = JSON.parse(await fs.readFile(targetPath, "utf8"));
+    expect(Array.isArray(parsed.providers.openai.models)).toBe(true);
+
+    // Now config adds a new model (transport unchanged).
+    const cfgWithNewModel: OpenClawConfig = {
+      models: {
+        providers: {
+          openai: {
+            ...cfg.models!.providers!.openai,
+            models: [
+              { id: "gpt-5" },
+              { id: "gpt-6-newly-configured" },
+            ] as unknown as import("../config/types.models.js").ModelDefinitionConfig[],
+          },
+        },
+      },
+    };
+
+    resetModelsJsonReadyCacheForTest();
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfgWithNewModel, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+  });
+
+  it("miss-on-config-only-bare-string-model-add: short-circuit rejects when configured.models adds a bare string id missing from disk (Codex P1 round-8)", async () => {
+    // Bare-string model entry shape: `models: ["gpt-5"]`.  The
+    // round-8 collector accepts both shapes; verify the bare-string
+    // path also forces a re-plan when a new id is added.
+    const agentDir = await fixtureSuite.createCaseDir("agent");
+    const cfg: OpenClawConfig = {
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: "sk-tes\u2026alue",
+            api: "openai-completions" as const,
+            models: [
+              { id: "gpt-5" },
+            ] as unknown as import("../config/types.models.js").ModelDefinitionConfig[],
+          },
+        },
+      },
+    };
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+
+    const cfgBareString: OpenClawConfig = {
+      models: {
+        providers: {
+          openai: {
+            ...cfg.models!.providers!.openai,
+            models: [
+              "gpt-5",
+              "gpt-6-newly-configured",
+            ] as unknown as import("../config/types.models.js").ModelDefinitionConfig[],
+          },
+        },
+      },
+    };
+
+    resetModelsJsonReadyCacheForTest();
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfgBareString, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+  });
+
+  it("hit-on-implicit-only-models-list: empty configured.models still short-circuits when transport matches (Codex P1 round-8)", async () => {
+    // Implicit-discovery mode: `models: []` means "the planner fills
+    // it in via discovery". The round-8 subset check skips the
+    // model comparison in this case (configuredIds is empty), so
+    // transport-only checks decide the short-circuit — preserving
+    // the perf path for the dominant implicit-mode setup.
+    const agentDir = await fixtureSuite.createCaseDir("agent");
+    const cfg = createOpenAiConfig(); // explicit apiKey, models: []
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+
+    // Second pass with identical transport-shape config: short-circuit
+    // hits, no re-plan.  models: [] means we don't gate on the
+    // model-list subset.
+    resetModelsJsonReadyCacheForTest();
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(0);
+  });
+
+  it("miss-on-malformed-configured-model-entry: refuses short-circuit when configured.models has an entry with non-string id (Codex P1 round-8)", async () => {
+    // Fail-closed for adversarial / malformed configured.models
+    // shapes (record without an id, id of wrong type, etc.).  The
+    // collector returns null and the short-circuit refuses, so a
+    // hostile / partially-typed config can't sneak past via
+    // unparseable model entries.
+    const agentDir = await fixtureSuite.createCaseDir("agent");
+    const cfg: OpenClawConfig = {
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://api.openai.com/v1",
+            apiKey: "sk-tes\u2026alue",
+            api: "openai-completions" as const,
+            models: [
+              { id: "gpt-5" },
+            ] as unknown as import("../config/types.models.js").ModelDefinitionConfig[],
+          },
+        },
+      },
+    };
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+
+    // Inject a malformed model entry into the next-pass config.
+    const cfgMalformed: OpenClawConfig = {
+      models: {
+        providers: {
+          openai: {
+            ...cfg.models!.providers!.openai,
+            models: [
+              { id: "gpt-5" },
+              { id: 1234 },
+            ] as unknown as import("../config/types.models.js").ModelDefinitionConfig[],
+          },
+        },
+      },
+    };
+
+    resetModelsJsonReadyCacheForTest();
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfgMalformed, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+  });
+
   it("miss-on-malformed-disk-apiKey: non-string disk apiKey rejects the short-circuit when config has no key", async () => {
     // Codex P2 on PR #73261: the previous fail-open branch accepted
     // any non-string disk apiKey when config had no apiKey, leaving
