@@ -52,8 +52,12 @@ const AUTH_PROFILE_VOLATILE_FIELDS: ReadonlySet<string> = new Set([
  * Hard cap on the bytes we will read + parse from auth-profiles.json when
  * computing the stable fingerprint hash.  Without a cap, a crafted/large
  * profile file becomes a CPU + memory exhaustion vector via fs.readFile +
- * JSON.parse + recursive walk + stableStringify.  Above the cap we hash
- * raw bytes instead.
+ * JSON.parse + recursive walk + stableStringify.  Above the cap,
+ * `safeReadFileOutcome` returns `{ kind: "uncacheable" }` and
+ * `ensureOpenClawModelsJson` bypasses the ready cache entirely (fail-closed)
+ * — the file is never partially hashed and an oversize auth-profiles.json
+ * cannot ride a stale cache entry. See the discriminated `ContentHashOutcome`
+ * type and `modelsContentOutcomesMatch` for the cache-hit semantics.
  */
 const MAX_AUTH_PROFILES_BYTES = 8 * 1024 * 1024;
 
