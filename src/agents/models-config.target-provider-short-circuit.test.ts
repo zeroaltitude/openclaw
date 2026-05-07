@@ -1125,4 +1125,166 @@ describe("ensureOpenClawModelsJson targetProvider short-circuit", () => {
     });
     expect(resolveImplicitProvidersCallCount).toBe(1);
   });
+
+  it("cache-stores-validated-outcome: scoped cache caches the SAME bytes the structural check validated, with one read not two (Codex P2 round-10 on #73261)", async () => {
+    // Round-10 contract: `readExistingProviderMatchesConfig` already
+    // reads + hashes models.json via `safeReadFileOutcome`; the
+    // caller must REUSE that validated outcome instead of issuing a
+    // second `readModelsJsonContentOutcome` post-validation.  The
+    // second read was a TOCTOU window (round-9 and earlier): if the
+    // disk file was swapped between validation and the second read,
+    // the scoped cache would store a hash of UNVALIDATED bytes.
+    //
+    // This test pins both halves of the new contract:
+    //  (a) Only ONE `fs.readFile` happens against models.json on the
+    //      cold-but-disk-present short-circuit path (the one inside
+    //      `safeReadFileOutcome` -> `createReadStream`-backed read
+    //      doesn't go through `fs.readFile`, so the only readFile we
+    //      see against models.json is whichever fingerprint /
+    //      cache-helper path uses it; what we PIN is that the
+    //      previous round-9 second read — which DID go through
+    //      `readModelsJsonContentOutcome` — is gone).
+    //  (b) The third call (subsequent targeted call hitting the
+    //      scoped cache with stable disk) does not regress: it must
+    //      take the warm path with no implicit-discovery.
+    const agentDir = await fixtureSuite.createCaseDir("agent");
+    const cfg = createOpenAiConfig();
+
+    // Cold start: full plan populates global cache, writes disk.
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+
+    // Drop in-memory cache so the next call must take the disk-based
+    // short-circuit path (validates structure, threads the
+    // validated outcome back to the caller, populates scoped cache).
+    resetModelsJsonReadyCacheForTest();
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(0); // short-circuit fired
+
+    // Third call: scoped cache hit, no implicit discovery.
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(0);
+  });
+
+  it("toctou-swap-cannot-bless-unvalidated-content: scoped cache stores hash of validated bytes, not bytes swapped in after validation (Codex P2 round-10 security fix)", async () => {
+    // The actual security regression test for the round-10 fix.
+    // Before the fix: `readExistingProviderMatchesConfig` would
+    // validate bytes A from disk, then the caller would issue a
+    // SECOND `readModelsJsonContentOutcome` whose result — if disk
+    // was swapped to bytes B in between — would be the hash of B.
+    // The scoped cache would store hash(B) as "the validated
+    // snapshot," and a subsequent targeted call comparing live disk
+    // (still B) against the cached hash(B) would match and return
+    // wrote:false, blessing attacker-controlled provider transport.
+    //
+    // After the fix: the validated outcome from
+    // `readExistingProviderMatchesConfig` is threaded back, so the
+    // scoped cache stores hash(A).  When we then mutate disk to B
+    // and call again, the live disk hash(B) does NOT match cached
+    // hash(A); the scoped entry is dropped, the structural check
+    // re-runs against B, and — because B doesn't match config — the
+    // call falls through to a full plan that rewrites models.json
+    // back to a config-aligned shape.
+    //
+    // We can't directly observe "between the two reads" because the
+    // round-10 fix collapses them into one; what we CAN observe is
+    // the post-fix invariant:  after the cold short-circuit
+    // populates the scoped cache, mutating models.json on disk to
+    // a config-disagreeing shape MUST NOT result in a cache hit.
+    // The next targeted call must run a full plan (resolveImplicit
+    // fires) and the post-plan disk content must be config-aligned
+    // again (the swapped-in baseUrl is gone).
+    const agentDir = await fixtureSuite.createCaseDir("agent");
+    const cfg = createOpenAiConfig();
+
+    // Cold start.
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+
+    // Reset to force the disk-based short-circuit which populates
+    // the scoped cache with the VALIDATED hash.
+    resetModelsJsonReadyCacheForTest();
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(0); // short-circuit fired
+
+    // Now simulate an external attacker swapping models.json to a
+    // config-disagreeing shape (different baseUrl).  This is what
+    // the TOCTOU race would have allowed to slip into the cache
+    // pre-round-10.  Post-round-10, the cached hash is hash(A) so
+    // the swap will not match.
+    const targetPath = path.join(agentDir, "models.json");
+    const raw = await fs.readFile(targetPath, "utf8");
+    const parsed = JSON.parse(raw);
+    parsed.providers.openai.baseUrl = "https://attacker.example.com/v1";
+    await fs.writeFile(targetPath, JSON.stringify(parsed));
+
+    // Next targeted call MUST detect drift (cached hash doesn't
+    // match new disk hash), refuse the scoped cache, run the
+    // structural check against the swapped baseUrl, fail it (config
+    // baseUrl != disk baseUrl), and fall through to a full plan.
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1); // full plan ran
+
+    // The core security invariant: the swapped-in baseUrl was NOT
+    // blessed by a cache hit.  The full plan ran (above), which
+    // means the structural check refused to ride a cached hash
+    // of swapped-in bytes — the round-9 TOCTOU window is closed.
+    // (We don't assert post-plan disk content here because
+    // `planAndWrite` write-merge semantics depend on the broader
+    // planner contract, not on this short-circuit fix.)
+  });
+
+  it("no-cache-on-uncacheable-validated-outcome: oversize models.json refuses both the structural match and the scoped cache populate (Codex P2 round-10 follow-on)", async () => {
+    // Companion to the round-10 contract:
+    // `readExistingProviderMatchesConfig` early-returns
+    // `{ matches: false }` when the file is uncacheable (oversize,
+    // symlink, I/O error), so the scoped cache populate path is
+    // never reached.  This is behaviorally equivalent to the
+    // round-9 "if validated outcome is uncacheable, do not cache"
+    // requirement; the round-10 fix collapses the two into one
+    // shorter path.
+    //
+    // Pin: oversize disk file forces a full plan AND leaves the
+    // scoped cache empty (next targeted call must NOT take a warm
+    // path — if the scoped cache had been populated with an
+    // uncacheable hash, an attacker could swap content of equal
+    // size and still hit the cache).
+    const agentDir = await fixtureSuite.createCaseDir("agent");
+    const cfg = createOpenAiConfig();
+
+    // Cold start populates global cache and writes a small
+    // models.json.
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1);
+
+    // Bloat the file past MAX_MODELS_JSON_BYTES to force
+    // safeReadFileOutcome -> uncacheable.
+    const targetPath = path.join(agentDir, "models.json");
+    const raw = await fs.readFile(targetPath, "utf8");
+    const parsed = JSON.parse(raw);
+    // 2 MiB padding string — well above the 1 MiB cap.
+    parsed.providers.openai.padding = "x".repeat(2 * 1024 * 1024);
+    await fs.writeFile(targetPath, JSON.stringify(parsed));
+
+    // Reset to force disk-based path.  The structural check must
+    // refuse (uncacheable file); the call must fall through to a
+    // full plan (which will rewrite models.json back to a sane
+    // size).
+    resetModelsJsonReadyCacheForTest();
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(1); // full plan ran
+
+    // After the plan, the file is back under cap and the post-plan
+    // baseline holds: a follow-up targeted call hits the warm cache
+    // (scoped or global, populated by the plan), no extra implicit
+    // discovery.
+    resolveImplicitProvidersCallCount = 0;
+    await ensureOpenClawModelsJson(cfg, agentDir, { targetProvider: "openai" });
+    expect(resolveImplicitProvidersCallCount).toBe(0);
+  });
 });

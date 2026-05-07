@@ -786,9 +786,9 @@ async function readExistingProviderMatchesConfig(
   env: NodeJS.ProcessEnv,
   secretDefaults: SecretDefaults | undefined,
   targetModelId: string | undefined,
-): Promise<boolean> {
+): Promise<{ matches: true; validatedModelsJsonOutcome: ContentHashOutcome } | { matches: false }> {
   if (!isRecord(configuredProviderRaw)) {
-    return false;
+    return { matches: false };
   }
   // Reject prototype-chain key collisions for targetProvider (Aisle
   // medium #3 on PR #73261).  String keys like "__proto__" /
@@ -798,7 +798,7 @@ async function readExistingProviderMatchesConfig(
     targetProvider === "constructor" ||
     targetProvider === "prototype"
   ) {
-    return false;
+    return { matches: false };
   }
   // Apply the same provider-policy normalization that
   // `normalizeProviders` runs before `planOpenClawModelsJson` writes
@@ -824,7 +824,7 @@ async function readExistingProviderMatchesConfig(
     configuredProviderRaw as ProviderConfig,
   ) as Record<string, unknown>;
   if (!isRecord(configuredProvider)) {
-    return false;
+    return { matches: false };
   }
   // Reuse the fingerprint-cache safe-read primitive (#73260):
   // O_NOFOLLOW open, lstat/fstat regular-file check, MAX_MODELS_JSON_BYTES
@@ -837,25 +837,25 @@ async function readExistingProviderMatchesConfig(
   // bypass full planning (CWE-345).
   const safe = await safeReadFileOutcome(targetPath, MAX_MODELS_JSON_BYTES);
   if (safe.kind !== "hashed") {
-    return false;
+    return { matches: false };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(safe.raw.toString("utf8"));
   } catch {
-    return false;
+    return { matches: false };
   }
   if (!isRecord(parsed) || !isRecord(parsed.providers)) {
-    return false;
+    return { matches: false };
   }
   // Use Object.hasOwn to refuse inherited keys — belt-and-suspenders
   // against prototype-chain access (Aisle medium #3).
   if (!Object.hasOwn(parsed.providers, targetProvider)) {
-    return false;
+    return { matches: false };
   }
   const diskProvider = parsed.providers[targetProvider];
   if (!isRecord(diskProvider)) {
-    return false;
+    return { matches: false };
   }
 
   // Symmetric baseUrl comparison.  The previous asymmetric check
@@ -875,7 +875,7 @@ async function readExistingProviderMatchesConfig(
       SHORT_CIRCUIT_COMPARE_MAX_DEPTH,
     )
   ) {
-    return false;
+    return { matches: false };
   }
 
   const resolvedConfiguredApiKey = resolveConfiguredApiKeyForCompare(
@@ -883,14 +883,14 @@ async function readExistingProviderMatchesConfig(
     env,
   );
   if (resolvedConfiguredApiKey === null) {
-    return false;
+    return { matches: false };
   }
   if (resolvedConfiguredApiKey !== undefined) {
     if (
       typeof diskProvider.apiKey !== "string" ||
       diskProvider.apiKey !== resolvedConfiguredApiKey
     ) {
-      return false;
+      return { matches: false };
     }
   } else if (
     diskProvider.apiKey !== undefined &&
@@ -914,7 +914,7 @@ async function readExistingProviderMatchesConfig(
     // (number, null, object, array, or a string not derivable from
     // the planner's env/aws-sdk paths) still falls through to full
     // planning, which will rewrite the file.
-    return false;
+    return { matches: false };
   }
 
   // Provider-level `api` drift check (Codex P1 round-5 on PR #73261).
@@ -935,7 +935,7 @@ async function readExistingProviderMatchesConfig(
   if (
     !stableEqualBounded(configuredProvider.api, diskProvider.api, SHORT_CIRCUIT_COMPARE_MAX_DEPTH)
   ) {
-    return false;
+    return { matches: false };
   }
   // Pre-normalize configuredProvider.headers the same way the planner
   // does before persisting (Codex P2 round-7 on PR #73261:
@@ -972,12 +972,12 @@ async function readExistingProviderMatchesConfig(
       SHORT_CIRCUIT_COMPARE_MAX_DEPTH,
     )
   ) {
-    return false;
+    return { matches: false };
   }
   if (
     !stableEqualBounded(configuredProvider.auth, diskProvider.auth, SHORT_CIRCUIT_COMPARE_MAX_DEPTH)
   ) {
-    return false;
+    return { matches: false };
   }
 
   // Per-model transport drift check (Codex P1 / Aisle High #2 on PR
@@ -991,18 +991,18 @@ async function readExistingProviderMatchesConfig(
   if (Array.isArray(diskProvider.models)) {
     for (const m of diskProvider.models) {
       if (!isRecord(m)) {
-        return false;
+        return { matches: false };
       }
       for (const f of PER_MODEL_TRANSPORT_FIELDS) {
         if (Object.hasOwn(m, f)) {
-          return false;
+          return { matches: false };
         }
       }
     }
   } else if (diskProvider.models !== undefined) {
     // models is present but not an array — malformed disk row.  Refuse
     // short-circuit so the planner rewrites a well-formed structure.
-    return false;
+    return { matches: false };
   }
 
   // Model-list subset check (Codex P1 round-8 on PR #73261:
@@ -1031,7 +1031,7 @@ async function readExistingProviderMatchesConfig(
   // we cannot reason about them, so we refuse the short-circuit.
   const configuredIds = collectShortCircuitModelIds(configuredProvider.models);
   if (configuredIds === null) {
-    return false;
+    return { matches: false };
   }
   // We only need diskIds when either explicit-mode subset check fires
   // or implicit-mode `targetModelId` is provided (Codex P2 round-9 on
@@ -1048,11 +1048,11 @@ async function readExistingProviderMatchesConfig(
   if (configuredIds.size > 0) {
     const ids = ensureDiskIds();
     if (ids === null) {
-      return false;
+      return { matches: false };
     }
     for (const id of configuredIds) {
       if (!ids.has(id)) {
-        return false;
+        return { matches: false };
       }
     }
   } else if (typeof targetModelId === "string" && targetModelId.length > 0) {
@@ -1077,14 +1077,14 @@ async function readExistingProviderMatchesConfig(
     // never had per-model assertions to begin with.
     const ids = ensureDiskIds();
     if (ids === null) {
-      return false;
+      return { matches: false };
     }
     if (!ids.has(targetModelId)) {
-      return false;
+      return { matches: false };
     }
   }
 
-  return true;
+  return { matches: true, validatedModelsJsonOutcome: { kind: "hashed", hash: safe.hash } };
 }
 
 /**
@@ -1377,7 +1377,7 @@ export async function ensureOpenClawModelsJson(
       : undefined;
     if (configuredProvider) {
       const env = createConfigRuntimeEnv(cfg);
-      const matches = await readExistingProviderMatchesConfig(
+      const matchOutcome = await readExistingProviderMatchesConfig(
         targetPath,
         targetProvider,
         configuredProvider,
@@ -1385,16 +1385,38 @@ export async function ensureOpenClawModelsJson(
         cfg.secrets?.defaults,
         scopedTargetModelId,
       );
-      if (matches) {
+      if (matchOutcome.matches) {
         await ensureModelsFileModeForModelsJson(targetPath);
         const result = { agentDir, wrote: false };
-        // Capture the post-validation models.json outcome so the
-        // scoped cache hit above can detect external edits between
-        // calls.  If the file is uncacheable here (e.g. it just grew
-        // past the cap), refuse to cache — the next call will
-        // re-validate from scratch instead of riding a fail-closed
-        // miss.
-        const modelsJsonOutcome = await readModelsJsonContentOutcome(targetPath);
+        // Cache the SAME models.json outcome that the structural
+        // check just validated, instead of issuing a second
+        // `readModelsJsonContentOutcome(targetPath)` here (Codex P2
+        // round-10 follow-up on PR #73261, models-config.ts:1397).
+        // The previous code did a second disk read AFTER
+        // validation, then stored THAT outcome in the scoped cache.
+        // If `models.json` was replaced on disk between the two
+        // reads (TOCTOU), the scoped cache would store the hash of
+        // UNVALIDATED bytes — and a later targeted call hitting that
+        // entry would compare current disk against the swapped-in
+        // hash and accept it as "the validated snapshot," blessing
+        // attacker-controlled provider transport (api / baseUrl /
+        // headers consumed by `pi-embedded-runner/model.ts`).
+        //
+        // By threading the validated outcome straight back from
+        // `readExistingProviderMatchesConfig` we close the window:
+        // the cached hash is provably the hash of the bytes the
+        // structural check actually inspected.  A subsequent
+        // disk-side swap is detected on the next call's
+        // drift-check (`modelsContentOutcomesMatch` against current
+        // disk), which falls through to a full plan.
+        //
+        // The validated outcome from the success path is always
+        // `hashed` (failure paths return `{ matches: false }` before
+        // we get here), so populating the cache is unconditional in
+        // practice; we keep the `kind !== "uncacheable"` guard as
+        // belt-and-suspenders against future shape drift in
+        // `ContentHashOutcome`.
+        const modelsJsonOutcome = matchOutcome.validatedModelsJsonOutcome;
         if (modelsJsonOutcome.kind !== "uncacheable") {
           MODELS_JSON_STATE.readyCache.set(
             scopedKey,
