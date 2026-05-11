@@ -13,7 +13,7 @@ For OpenClaw iMessage deployments, use `imsg` on a signed-in macOS Messages host
 </Note>
 
 <Warning>
-BlueBubbles support was removed. Migrate `channels.bluebubbles` configs to `channels.imessage`; OpenClaw supports iMessage through `imsg` only.
+BlueBubbles support was removed. Migrate `channels.bluebubbles` configs to `channels.imessage`; OpenClaw supports iMessage through `imsg` only. Start with [BlueBubbles removal and the imsg iMessage path](/announcements/bluebubbles-imessage) for the short announcement, or [Coming from BlueBubbles](/channels/imessage-from-bluebubbles) for the full migration table.
 </Warning>
 
 Status: native external CLI integration. Gateway spawns `imsg rpc` and communicates over JSON-RPC on stdio (no separate daemon/port). Advanced actions require `imsg launch` and a successful private API probe.
@@ -217,7 +217,7 @@ If SIP-disabled isn't acceptable for your threat model:
 
     Allowlist field: `channels.imessage.allowFrom`.
 
-    Allowlist entries can be handles or chat targets (`chat_id:*`, `chat_guid:*`, `chat_identifier:*`).
+    Allowlist entries can be handles, static sender access groups (`accessGroup:<name>`), or chat targets (`chat_id:*`, `chat_guid:*`, `chat_identifier:*`).
 
   </Tab>
 
@@ -229,6 +229,8 @@ If SIP-disabled isn't acceptable for your threat model:
     - `disabled`
 
     Group sender allowlist: `channels.imessage.groupAllowFrom`.
+
+    `groupAllowFrom` entries can also reference static sender access groups (`accessGroup:<name>`).
 
     Runtime fallback: if `groupAllowFrom` is unset, iMessage group sender checks fall back to `allowFrom` when available.
     Runtime note: if `channels.imessage` is completely missing, runtime falls back to `groupPolicy="allowlist"` and logs a warning (even if `channels.defaults.groupPolicy` is set).
@@ -778,6 +780,7 @@ openclaw channels status --probe --channel imessage
 ## Related
 
 - [Channels Overview](/channels) — all supported channels
+- [BlueBubbles removal and the imsg iMessage path](/announcements/bluebubbles-imessage) — announcement and migration summary
 - [Coming from BlueBubbles](/channels/imessage-from-bluebubbles) — config translation table and step-by-step cutover
 - [Pairing](/channels/pairing) — DM authentication and pairing flow
 - [Groups](/channels/groups) — group chat behavior and mention gating

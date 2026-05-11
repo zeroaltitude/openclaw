@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import * as agentEvents from "../infra/agent-events.js";
 import {
@@ -126,7 +126,6 @@ describe("subscribeEmbeddedPiSession", () => {
     expected: { text: string; mediaUrls?: string[] },
   ): void {
     const payload = findBlockReplyPayload(onBlockReply, expected.text);
-    expect(payload).toBeDefined();
     if (!payload) {
       throw new Error(`Expected block reply text: ${expected.text}`);
     }
@@ -145,7 +144,9 @@ describe("subscribeEmbeddedPiSession", () => {
         item.livenessState === expected.livenessState &&
         item.replayInvalid === expected.replayInvalid,
     );
-    expect(payload).toBeDefined();
+    if (!payload) {
+      throw new Error(`Expected lifecycle payload for phase ${expected.phase}`);
+    }
   }
 
   it("captures usage from completions timings on done events", () => {
@@ -1057,8 +1058,10 @@ describe("subscribeEmbeddedPiSession", () => {
     // Look for lifecycle:error event
     const lifecycleError = findLifecycleErrorAgentEvent(onAgentEvent.mock.calls);
 
-    expect(lifecycleError).toBeDefined();
-    const error = (lifecycleError?.data as { error?: unknown } | undefined)?.error;
+    if (!lifecycleError) {
+      throw new Error("Expected lifecycle error event");
+    }
+    const error = (lifecycleError.data as { error?: unknown } | undefined)?.error;
     expect(typeof error).toBe("string");
     expect(error).toContain("API rate limit reached");
   });
