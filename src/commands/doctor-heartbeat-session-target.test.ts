@@ -100,7 +100,11 @@ describe("describeHeartbeatSessionTargetIssues", () => {
 
   it("warns when an explicit heartbeat inherits a default session", () => {
     const cfg = cfgWithDefaultHeartbeat("slack:channel:c123");
-    cfg.agents!.list![0]!.heartbeat = {};
+    const agent = cfg.agents?.list?.[0];
+    if (!agent) {
+      throw new Error("expected test config to include an agent");
+    }
+    agent.heartbeat = {};
     writeStore(cfg, {});
 
     const warnings = describeHeartbeatSessionTargetIssues(cfg);
