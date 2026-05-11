@@ -1,7 +1,8 @@
-import { listAgentEntries, resolveAgentConfig } from "../agents/agent-scope.js";
+import { listAgentEntries, listAgentIds, resolveAgentConfig } from "../agents/agent-scope.js";
 import { canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
 import { loadSessionStore } from "../config/sessions/store-load.js";
+import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   normalizeAgentId,
@@ -10,6 +11,34 @@ import {
 } from "../routing/session-key.js";
 import { isSubagentSessionKey } from "../sessions/session-key-utils.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
+
+type HeartbeatConfig = AgentDefaultsConfig["heartbeat"];
+
+function hasExplicitHeartbeatAgents(cfg: OpenClawConfig) {
+  return listAgentEntries(cfg).some((entry) => Boolean(entry?.heartbeat));
+}
+
+function resolveHeartbeatConfig(cfg: OpenClawConfig, agentId: string): HeartbeatConfig | undefined {
+  const defaults = cfg.agents?.defaults?.heartbeat;
+  const overrides = resolveAgentConfig(cfg, agentId)?.heartbeat;
+  if (!defaults && !overrides) {
+    return overrides;
+  }
+  return { ...defaults, ...overrides };
+}
+
+function listHeartbeatDoctorAgents(cfg: OpenClawConfig) {
+  if (hasExplicitHeartbeatAgents(cfg)) {
+    return listAgentEntries(cfg)
+      .filter((entry) => entry?.heartbeat)
+      .map((entry) => normalizeAgentId(entry.id))
+      .filter((agentId) => agentId);
+  }
+  if (cfg.agents?.defaults?.heartbeat) {
+    return listAgentIds(cfg);
+  }
+  return [];
+}
 
 /**
  * Detect heartbeat configs that pin a non-existent session. The runtime
@@ -27,14 +56,12 @@ import { normalizeOptionalString } from "../shared/string-coerce.js";
 export function describeHeartbeatSessionTargetIssues(cfg: OpenClawConfig): string[] {
   const warnings: string[] = [];
   const sessionScope = cfg.session?.scope ?? "per-sender";
-  for (const agentEntry of listAgentEntries(cfg)) {
-    const agentId = typeof agentEntry.id === "string" ? agentEntry.id.trim() : "";
+  for (const agentId of listHeartbeatDoctorAgents(cfg)) {
     if (!agentId) {
       continue;
     }
     const resolvedAgentId = normalizeAgentId(agentId);
-    const agentConfig = resolveAgentConfig(cfg, agentId);
-    const heartbeatConfig = agentConfig?.heartbeat;
+    const heartbeatConfig = resolveHeartbeatConfig(cfg, resolvedAgentId);
     if (!heartbeatConfig) {
       continue;
     }

@@ -35,6 +35,29 @@ describe("describeHeartbeatSessionTargetIssues", () => {
     } as OpenClawConfig;
   }
 
+  function cfgWithDefaultHeartbeat(
+    session: string,
+    target: string | null = "slack",
+  ): OpenClawConfig {
+    const heartbeat = target === null ? { session } : { session, target };
+    return {
+      session: {
+        mainKey: "work",
+        store: path.join(tmpDir, "agents", "{agentId}", "sessions", "sessions.json"),
+      },
+      agents: {
+        defaults: {
+          heartbeat,
+        },
+        list: [
+          {
+            id: "ops",
+          },
+        ],
+      },
+    } as OpenClawConfig;
+  }
+
   function writeStore(cfg: OpenClawConfig, entries: Record<string, unknown>) {
     const storePath = resolveStorePath(cfg.session?.store, { agentId: "ops" });
     fs.mkdirSync(path.dirname(storePath), { recursive: true });
@@ -62,6 +85,28 @@ describe("describeHeartbeatSessionTargetIssues", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("resolved to agent:ops:slack:channel:c123");
     expect(warnings[0]).toContain('reason="no-target"');
+  });
+
+  it("warns when a default-only heartbeat session is missing", () => {
+    const cfg = cfgWithDefaultHeartbeat("slack:channel:c123");
+    writeStore(cfg, {});
+
+    const warnings = describeHeartbeatSessionTargetIssues(cfg);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("Agent ops heartbeat.session pins slack:channel:c123");
+    expect(warnings[0]).toContain("resolved to agent:ops:slack:channel:c123");
+  });
+
+  it("warns when an explicit heartbeat inherits a default session", () => {
+    const cfg = cfgWithDefaultHeartbeat("slack:channel:c123");
+    cfg.agents!.list![0]!.heartbeat = {};
+    writeStore(cfg, {});
+
+    const warnings = describeHeartbeatSessionTargetIssues(cfg);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("resolved to agent:ops:slack:channel:c123");
   });
 
   it("does not warn when target is omitted because runtime defaults to none", () => {
