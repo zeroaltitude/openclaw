@@ -27,6 +27,17 @@ function makeTempDir() {
   return makeTrackedTempDir("openclaw-doctor-plugin-registry", tempDirs);
 }
 
+async function readRequiredPersistedInstalledPluginIndex(
+  stateDir: string,
+): Promise<InstalledPluginIndex> {
+  const persisted = await readPersistedInstalledPluginIndex({ stateDir });
+  expect(persisted).not.toBeNull();
+  if (!persisted) {
+    throw new Error("Expected persisted installed plugin index");
+  }
+  return persisted;
+}
+
 function hermeticEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     OPENCLAW_BUNDLED_PLUGINS_DIR: undefined,
@@ -226,14 +237,25 @@ describe("maybeRepairPluginRegistryState", () => {
     });
 
     expect(nextConfig).toStrictEqual({});
-    await expect(readPersistedInstalledPluginIndex({ stateDir })).resolves.toMatchObject({
-      refreshReason: "migration",
-      plugins: [
-        expect.objectContaining({
-          pluginId: "demo",
-        }),
-      ],
-    });
+    const persisted = await readRequiredPersistedInstalledPluginIndex(stateDir);
+    expect(persisted.refreshReason).toBe("migration");
+    expect(persisted.plugins).toStrictEqual([
+      expect.objectContaining({
+        compat: [],
+        enabled: true,
+        manifestPath: path.join(pluginDir, "openclaw.plugin.json"),
+        origin: "global",
+        pluginId: "demo",
+        rootDir: pluginDir,
+        source: path.join(pluginDir, "index.ts"),
+        startup: {
+          agentHarnesses: [],
+          deferConfiguredChannelFullLoadUntilAfterListen: false,
+          memory: false,
+          sidecar: false,
+        },
+      }),
+    ]);
   });
 
   it("does not repair when registry migration is disabled", async () => {
@@ -341,16 +363,27 @@ describe("maybeRepairPluginRegistryState", () => {
     expect(
       JSON.parse(fs.readFileSync(path.join(stateDir, "npm", "package.json"), "utf8")),
     ).not.toHaveProperty("dependencies");
-    await expect(readPersistedInstalledPluginIndex({ stateDir })).resolves.toMatchObject({
-      refreshReason: "migration",
-      plugins: [
-        expect.objectContaining({
-          pluginId: "google-meet",
-          origin: "bundled",
-          rootDir: bundledDir,
-        }),
-      ],
-    });
+    const persisted = await readRequiredPersistedInstalledPluginIndex(stateDir);
+    expect(persisted.refreshReason).toBe("migration");
+    expect(persisted.plugins).toStrictEqual([
+      expect.objectContaining({
+        compat: [],
+        enabled: true,
+        manifestPath: path.join(bundledDir, "openclaw.plugin.json"),
+        origin: "bundled",
+        packageName: "@openclaw/google-meet",
+        packageVersion: "2026.5.3",
+        pluginId: "google-meet",
+        rootDir: bundledDir,
+        source: path.join(bundledDir, "index.ts"),
+        startup: {
+          agentHarnesses: [],
+          deferConfiguredChannelFullLoadUntilAfterListen: false,
+          memory: false,
+          sidecar: false,
+        },
+      }),
+    ]);
     expect(vi.mocked(note).mock.calls.join("\n")).toContain(
       "Removed stale managed npm plugin package",
     );
@@ -402,17 +435,28 @@ describe("maybeRepairPluginRegistryState", () => {
     });
 
     expect(fs.existsSync(managed.packageDir)).toBe(false);
-    await expect(readPersistedInstalledPluginIndex({ stateDir })).resolves.toMatchObject({
-      installRecords: {},
-      refreshReason: "migration",
-      plugins: [
-        expect.objectContaining({
-          pluginId: "google-meet",
-          origin: "bundled",
-          rootDir: bundledDir,
-        }),
-      ],
-    });
+    const persisted = await readRequiredPersistedInstalledPluginIndex(stateDir);
+    expect(persisted.installRecords).toStrictEqual({});
+    expect(persisted.refreshReason).toBe("migration");
+    expect(persisted.plugins).toStrictEqual([
+      expect.objectContaining({
+        compat: [],
+        enabled: true,
+        manifestPath: path.join(bundledDir, "openclaw.plugin.json"),
+        origin: "bundled",
+        packageName: "@openclaw/google-meet",
+        packageVersion: "2026.5.3",
+        pluginId: "google-meet",
+        rootDir: bundledDir,
+        source: path.join(bundledDir, "index.ts"),
+        startup: {
+          agentHarnesses: [],
+          deferConfiguredChannelFullLoadUntilAfterListen: false,
+          memory: false,
+          sidecar: false,
+        },
+      }),
+    ]);
   });
 
   it("removes stale managed npm packages from the package lock during repair", async () => {

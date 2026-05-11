@@ -52,7 +52,7 @@ import {
 import {
   localeLowercasePreservingWhitespace,
   normalizeLowercaseStringOrEmpty,
-} from "openclaw/plugin-sdk/text-runtime";
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import { asRecord } from "../dreaming-shared.js";
 import { resolveQmdCollectionPatternFlags, type QmdCollectionPatternFlag } from "./qmd-compat.js";
 
@@ -153,10 +153,6 @@ function getQmdUpdateQueueState(): QmdUpdateQueueState {
   return resolveGlobalSingleton<QmdUpdateQueueState>(QMD_UPDATE_QUEUE_KEY, () => ({
     tails: new Map<string, Promise<void>>(),
   }));
-}
-
-function _hasHanScript(value: string): boolean {
-  return HAN_SCRIPT_RE.test(value);
 }
 
 function normalizeHanBm25Query(query: string): string {
@@ -2729,15 +2725,6 @@ export class QmdMemoryManager implements MemorySearchManager {
       "-",
     );
     return `${normalizedName || fallbackName || "file"}${normalizedExt}`;
-  }
-
-  private extractSnippetLines(snippet: string): { startLine: number; endLine: number } {
-    const headerLines = this.parseSnippetHeaderLines(snippet);
-    if (headerLines) {
-      return headerLines;
-    }
-    const lines = snippet.split("\n").length;
-    return { startLine: 1, endLine: lines };
   }
 
   private resolveSnippetLines(

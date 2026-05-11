@@ -19,6 +19,7 @@ const hoisted = vi.hoisted(() => ({
   fetchMock: vi.fn(),
   registerProviderStreamForModelMock: vi.fn(),
   prepareProviderDynamicModelMock: vi.fn(async () => {}),
+  resolveModelAsyncMock: vi.fn(),
   resolveModelWithRegistryMock: vi.fn(),
 }));
 const {
@@ -32,6 +33,7 @@ const {
   fetchMock,
   registerProviderStreamForModelMock,
   prepareProviderDynamicModelMock,
+  resolveModelAsyncMock,
   resolveModelWithRegistryMock,
 } = hoisted;
 
@@ -46,8 +48,9 @@ type AuthRequestCall = {
   store?: unknown;
 };
 
-vi.mock("@mariozechner/pi-ai", async () => {
-  const actual = await vi.importActual<typeof import("@mariozechner/pi-ai")>("@mariozechner/pi-ai");
+vi.mock("@earendil-works/pi-ai", async () => {
+  const actual =
+    await vi.importActual<typeof import("@earendil-works/pi-ai")>("@earendil-works/pi-ai");
   return {
     ...actual,
     complete: completeMock,
@@ -86,7 +89,7 @@ vi.mock("../plugins/provider-runtime.js", async () => ({
 }));
 
 vi.mock("../agents/pi-embedded-runner/model.js", () => ({
-  resolveModelWithRegistry: resolveModelWithRegistryMock,
+  resolveModelAsync: resolveModelAsyncMock,
 }));
 
 const { describeImageWithModel } = await import("./image.js");
@@ -125,6 +128,22 @@ describe("describeImageWithModel", () => {
       // automatically get the right model through resolveModelWithRegistry.
       ({ modelRegistry, provider, modelId }: ResolveModelWithRegistryTestParams) =>
         modelRegistry.find(provider, modelId),
+    );
+    resolveModelAsyncMock.mockImplementation(
+      async (provider: string, modelId: string, agentDir?: string, cfg?: unknown) => {
+        const authStorage = {
+          setRuntimeApiKey: setRuntimeApiKeyMock,
+        };
+        const modelRegistry = discoverModelsMock(authStorage, agentDir);
+        const model = resolveModelWithRegistryMock({
+          provider,
+          modelId,
+          modelRegistry,
+          cfg,
+          agentDir,
+        });
+        return { authStorage, model, modelRegistry };
+      },
     );
   });
 

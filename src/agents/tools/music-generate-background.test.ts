@@ -25,7 +25,6 @@ function getDeliveredInternalEvents(): Array<Record<string, unknown>> {
   const params = announceDeliveryMocks.deliverSubagentAnnouncement.mock.calls[0]?.[0] as
     | { internalEvents?: unknown }
     | undefined;
-  expect(params?.internalEvents).toBeTruthy();
   if (!Array.isArray(params?.internalEvents)) {
     throw new Error("Expected delivered internal events");
   }
@@ -36,7 +35,9 @@ function expectReplyInstructionContains(text: string) {
   const event = getDeliveredInternalEvents().find(
     (item) => typeof item.replyInstruction === "string" && item.replyInstruction.includes(text),
   );
-  expect(event).toBeDefined();
+  if (!event) {
+    throw new Error(`Expected reply instruction containing ${text}`);
+  }
 }
 
 describe("music generate background helpers", () => {
@@ -138,6 +139,33 @@ describe("music generate background helpers", () => {
     expectReplyInstructionContains("the user will NOT see your normal assistant final reply");
     expectReplyInstructionContains("Do not put MEDIA: lines only in your final answer");
   });
+
+  it.each(["agent:main:discord:guild-123:channel-456", "agent:main:whatsapp:123@g.us"])(
+    "warns legacy group/channel completion agents for %s",
+    async (requesterSessionKey) => {
+      announceDeliveryMocks.deliverSubagentAnnouncement.mockResolvedValue({
+        delivered: true,
+        path: "direct",
+      });
+      const completion = createMediaCompletionFixture({
+        runId: "tool:music_generate:abc",
+        taskLabel: "night-drive synthwave",
+        result: "Generated 1 track.\nMEDIA:/tmp/generated-night-drive.mp3",
+        mediaUrls: ["/tmp/generated-night-drive.mp3"],
+      });
+
+      await wakeMusicGenerationTaskCompletion({
+        ...completion,
+        handle: {
+          ...completion.handle,
+          requesterSessionKey,
+        },
+      });
+
+      expectReplyInstructionContains("the user will NOT see your normal assistant final reply");
+      expectReplyInstructionContains("Do not put MEDIA: lines only in your final answer");
+    },
+  );
 
   it("queues a completion event when direct send is enabled globally", async () => {
     taskDeliveryRuntimeMocks.sendMessage.mockResolvedValue({
