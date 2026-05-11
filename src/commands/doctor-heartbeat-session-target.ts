@@ -56,7 +56,7 @@ export function describeHeartbeatSessionTargetIssues(cfg: OpenClawConfig): strin
       continue;
     }
     const target = normalizeOptionalString(heartbeatConfig.target);
-    if (target === "none") {
+    if (!target || target === "none") {
       continue;
     }
     const candidateSession = toAgentStoreSessionKey({
