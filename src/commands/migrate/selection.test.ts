@@ -75,7 +75,7 @@ function codexPluginConfigItem(pluginNames: string[]): MigrationItem {
         config: {
           codexPlugins: {
             enabled: true,
-            allow_destructive_actions: false,
+            allow_destructive_actions: true,
             plugins: Object.fromEntries(
               pluginNames.map((name) => [
                 name,
@@ -151,8 +151,6 @@ function expectItemStatus(
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  expect(typeof value).toBe("object");
-  expect(value).not.toBeNull();
   if (typeof value !== "object" || value === null) {
     throw new Error(`${label} was not an object`);
   }

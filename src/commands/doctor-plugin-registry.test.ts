@@ -31,7 +31,6 @@ async function readRequiredPersistedInstalledPluginIndex(
   stateDir: string,
 ): Promise<InstalledPluginIndex> {
   const persisted = await readPersistedInstalledPluginIndex({ stateDir });
-  expect(persisted).not.toBeNull();
   if (!persisted) {
     throw new Error("Expected persisted installed plugin index");
   }
@@ -115,6 +114,7 @@ function createManagedNpmPlugin(params: {
   id: string;
   packageName: string;
   version: string;
+  peerDependencies?: Record<string, string>;
   packageLock?: boolean;
 }) {
   const npmRoot = path.join(params.stateDir, "npm");
@@ -165,6 +165,7 @@ function createManagedNpmPlugin(params: {
     JSON.stringify({
       name: params.packageName,
       version: params.version,
+      ...(params.peerDependencies ? { peerDependencies: params.peerDependencies } : {}),
       openclaw: {
         extensions: ["."],
       },
@@ -221,6 +222,38 @@ function createCurrentIndexWithNpmRecord(params: {
   };
 }
 
+function expectedPluginIndexRecord(params: {
+  rootDir: string;
+  pluginId: string;
+  origin: "bundled" | "global";
+  packageName?: string;
+  packageVersion?: string;
+}) {
+  return {
+    pluginId: params.pluginId,
+    ...(params.packageName ? { packageName: params.packageName } : {}),
+    ...(params.packageVersion ? { packageVersion: params.packageVersion } : {}),
+    manifestPath: path.join(params.rootDir, "openclaw.plugin.json"),
+    manifestHash: expect.any(String),
+    manifestFile: {
+      size: expect.any(Number),
+      mtimeMs: expect.any(Number),
+      ctimeMs: expect.any(Number),
+    },
+    source: path.join(params.rootDir, "index.ts"),
+    rootDir: params.rootDir,
+    origin: params.origin,
+    enabled: true,
+    startup: {
+      sidecar: false,
+      memory: false,
+      deferConfiguredChannelFullLoadUntilAfterListen: false,
+      agentHarnesses: [],
+    },
+    compat: [],
+  };
+}
+
 describe("maybeRepairPluginRegistryState", () => {
   it("refreshes an existing registry during repair", async () => {
     const stateDir = makeTempDir();
@@ -240,20 +273,10 @@ describe("maybeRepairPluginRegistryState", () => {
     const persisted = await readRequiredPersistedInstalledPluginIndex(stateDir);
     expect(persisted.refreshReason).toBe("migration");
     expect(persisted.plugins).toStrictEqual([
-      expect.objectContaining({
-        compat: [],
-        enabled: true,
-        manifestPath: path.join(pluginDir, "openclaw.plugin.json"),
-        origin: "global",
+      expectedPluginIndexRecord({
         pluginId: "demo",
         rootDir: pluginDir,
-        source: path.join(pluginDir, "index.ts"),
-        startup: {
-          agentHarnesses: [],
-          deferConfiguredChannelFullLoadUntilAfterListen: false,
-          memory: false,
-          sidecar: false,
-        },
+        origin: "global",
       }),
     ]);
   });
@@ -366,22 +389,12 @@ describe("maybeRepairPluginRegistryState", () => {
     const persisted = await readRequiredPersistedInstalledPluginIndex(stateDir);
     expect(persisted.refreshReason).toBe("migration");
     expect(persisted.plugins).toStrictEqual([
-      expect.objectContaining({
-        compat: [],
-        enabled: true,
-        manifestPath: path.join(bundledDir, "openclaw.plugin.json"),
+      expectedPluginIndexRecord({
+        pluginId: "google-meet",
+        rootDir: bundledDir,
         origin: "bundled",
         packageName: "@openclaw/google-meet",
         packageVersion: "2026.5.3",
-        pluginId: "google-meet",
-        rootDir: bundledDir,
-        source: path.join(bundledDir, "index.ts"),
-        startup: {
-          agentHarnesses: [],
-          deferConfiguredChannelFullLoadUntilAfterListen: false,
-          memory: false,
-          sidecar: false,
-        },
       }),
     ]);
     expect(vi.mocked(note).mock.calls.join("\n")).toContain(
@@ -439,22 +452,12 @@ describe("maybeRepairPluginRegistryState", () => {
     expect(persisted.installRecords).toStrictEqual({});
     expect(persisted.refreshReason).toBe("migration");
     expect(persisted.plugins).toStrictEqual([
-      expect.objectContaining({
-        compat: [],
-        enabled: true,
-        manifestPath: path.join(bundledDir, "openclaw.plugin.json"),
+      expectedPluginIndexRecord({
+        pluginId: "google-meet",
+        rootDir: bundledDir,
         origin: "bundled",
         packageName: "@openclaw/google-meet",
         packageVersion: "2026.5.3",
-        pluginId: "google-meet",
-        rootDir: bundledDir,
-        source: path.join(bundledDir, "index.ts"),
-        startup: {
-          agentHarnesses: [],
-          deferConfiguredChannelFullLoadUntilAfterListen: false,
-          memory: false,
-          sidecar: false,
-        },
       }),
     ]);
   });
@@ -504,5 +507,75 @@ describe("maybeRepairPluginRegistryState", () => {
     expect(packageLock.packages).not.toHaveProperty("node_modules/@openclaw/google-meet");
     expect(packageLock.dependencies).not.toHaveProperty("@openclaw/google-meet");
     expect(packageLock.dependencies).toHaveProperty("other-plugin");
+  });
+
+  it("repairs managed npm openclaw peer links during registry repair", async () => {
+    const stateDir = makeTempDir();
+    const managed = createManagedNpmPlugin({
+      stateDir,
+      id: "codex",
+      packageName: "codex-plugin",
+      version: "2026.5.3",
+      peerDependencies: {
+        openclaw: ">=2026.5.3",
+      },
+    });
+    await writePersistedInstalledPluginIndex(
+      createCurrentIndexWithNpmRecord({
+        pluginId: "codex",
+        packageName: "codex-plugin",
+        packageDir: managed.packageDir,
+        version: "2026.5.3",
+      }),
+      { stateDir },
+    );
+
+    await maybeRepairPluginRegistryState({
+      stateDir,
+      env: hermeticEnv(),
+      config: {},
+      prompter: { shouldRepair: true },
+    });
+
+    const linkPath = path.join(managed.packageDir, "node_modules", "openclaw");
+    expect(fs.lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(linkPath)).toBe(fs.realpathSync(process.cwd()));
+    expect(vi.mocked(note).mock.calls.join("\n")).toContain("Repaired OpenClaw host peer link");
+  });
+
+  it("warns about broken managed npm openclaw peer links without repairing them", async () => {
+    const stateDir = makeTempDir();
+    const managed = createManagedNpmPlugin({
+      stateDir,
+      id: "codex",
+      packageName: "codex-plugin",
+      version: "2026.5.3",
+      peerDependencies: {
+        openclaw: ">=2026.5.3",
+      },
+    });
+    await writePersistedInstalledPluginIndex(
+      createCurrentIndexWithNpmRecord({
+        pluginId: "codex",
+        packageName: "codex-plugin",
+        packageDir: managed.packageDir,
+        version: "2026.5.3",
+      }),
+      { stateDir },
+    );
+
+    await maybeRepairPluginRegistryState({
+      stateDir,
+      env: hermeticEnv(),
+      config: {},
+      prompter: { shouldRepair: false },
+    });
+
+    const linkPath = path.join(managed.packageDir, "node_modules", "openclaw");
+    const notes = vi.mocked(note).mock.calls.join("\n");
+    expect(notes).toContain("Managed npm OpenClaw host peer links need repair");
+    expect(notes).toContain("codex-plugin");
+    expect(notes).toContain("openclaw doctor --fix");
+    expect(fs.existsSync(linkPath)).toBe(false);
   });
 });

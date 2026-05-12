@@ -90,7 +90,7 @@ describe("tasks commands", () => {
       const runtime = createRuntime();
       await tasksAuditCommand({ json: true }, runtime);
 
-      const payload = JSON.parse(String(vi.mocked(runtime.log).mock.calls[0]?.[0])) as {
+      const payload = JSON.parse(String(vi.mocked(runtime.log).mock.calls.at(0)?.[0])) as {
         summary: {
           total: number;
           errors: number;
@@ -119,17 +119,20 @@ describe("tasks commands", () => {
       await tasksAuditCommand({ json: true, limit: 1 }, limitedRuntime);
 
       const limitedPayload = JSON.parse(
-        String(vi.mocked(limitedRuntime.log).mock.calls[0]?.[0]),
-      ) as {
-        findings: Array<{ kind: string; code: string; token?: string }>;
-      };
+        String(vi.mocked(limitedRuntime.log).mock.calls.at(0)?.[0]),
+      );
 
       expect(limitedPayload.findings).toStrictEqual([
-        expect.objectContaining({
-          code: "stale_running",
+        {
           kind: "task_flow",
+          severity: "error",
+          code: "stale_running",
+          detail: "running TaskFlow has not advanced recently",
+          ageMs: 45 * 60_000,
+          status: "running",
           token: runningFlow.flowId,
-        }),
+          flow: JSON.parse(JSON.stringify(runningFlow)),
+        },
       ]);
     });
   });
@@ -150,7 +153,7 @@ describe("tasks commands", () => {
       const runtime = createRuntime();
       await tasksMaintenanceCommand({ json: true, apply: false }, runtime);
 
-      const payload = JSON.parse(String(vi.mocked(runtime.log).mock.calls[0]?.[0])) as {
+      const payload = JSON.parse(String(vi.mocked(runtime.log).mock.calls.at(0)?.[0])) as {
         mode: string;
         maintenance: { taskFlows: { pruned: number } };
         auditBefore: {
@@ -257,7 +260,7 @@ describe("tasks commands", () => {
       const runtime = createRuntime();
       await tasksMaintenanceCommand({ json: true, apply: true }, runtime);
 
-      const payload = JSON.parse(String(vi.mocked(runtime.log).mock.calls[0]?.[0])) as {
+      const payload = JSON.parse(String(vi.mocked(runtime.log).mock.calls.at(0)?.[0])) as {
         maintenance: {
           sessions: {
             pruned: number;

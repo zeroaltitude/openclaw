@@ -283,8 +283,6 @@ function createMockReplyOperation(): {
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  expect(typeof value).toBe("object");
-  expect(value).not.toBeNull();
   if (typeof value !== "object" || value === null) {
     throw new Error(`${label} was not an object`);
   }
@@ -832,7 +830,7 @@ describe("runAgentTurnWithFallback", () => {
     expect(result.kind).toBe("success");
     expect(state.runCliAgentMock).not.toHaveBeenCalled();
     expect(state.runEmbeddedPiAgentMock).toHaveBeenCalledOnce();
-    expect(state.runEmbeddedPiAgentMock.mock.calls[0]?.[0]).not.toHaveProperty(
+    expect(state.runEmbeddedPiAgentMock.mock.calls.at(0)?.[0]).not.toHaveProperty(
       "agentHarnessId",
       "claude-cli",
     );
@@ -882,7 +880,7 @@ describe("runAgentTurnWithFallback", () => {
     expectMockCallArgFields(onToolResult, 0, "tool result payload", {
       mediaUrls: ["/tmp/generated.png"],
     });
-    expect(onToolResult.mock.calls[0]?.[0]?.text).toBeUndefined();
+    expect(onToolResult.mock.calls.at(0)?.[0]?.text).toBeUndefined();
   });
 
   it("surfaces model capacity errors from no-text mid-turn failures", async () => {

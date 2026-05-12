@@ -130,14 +130,16 @@ function mockCall(mock: unknown, index = 0): Array<unknown> {
 
 function mockFirstObjectArg(mock: unknown): Record<string, unknown> {
   const [arg] = mockCall(mock);
-  expect(arg).toBeTypeOf("object");
-  expect(arg).not.toBeNull();
+  if (!arg || typeof arg !== "object") {
+    throw new Error("expected first mock argument object");
+  }
   return arg as Record<string, unknown>;
 }
 
 function expectObjectFields(value: unknown, expected: Record<string, unknown>): void {
-  expect(value).toBeTypeOf("object");
-  expect(value).not.toBeNull();
+  if (!value || typeof value !== "object") {
+    throw new Error("expected object fields");
+  }
   const record = value as Record<string, unknown>;
   for (const [key, expectedValue] of Object.entries(expected)) {
     expect(record[key], key).toEqual(expectedValue);
@@ -297,11 +299,12 @@ describe("secrets CLI", () => {
     runSecretsApply.mockResolvedValue(createSecretsApplyResult({ mode: "write", changed: true }));
 
     await createProgram().parseAsync(["secrets", "configure"], { from: "user" });
-    expect(runSecretsConfigureInteractive).toHaveBeenCalled();
+    expect(runSecretsConfigureInteractive).toHaveBeenCalledTimes(1);
     const applyArgs = mockFirstObjectArg(runSecretsApply);
     expect(applyArgs.write).toBe(true);
-    expect(applyArgs.plan).toBeTypeOf("object");
-    expect(applyArgs.plan).not.toBeNull();
+    if (!applyArgs.plan || typeof applyArgs.plan !== "object") {
+      throw new Error("expected apply plan object");
+    }
     const applyPlan = applyArgs.plan as { targets?: unknown[] };
     expect(Array.isArray(applyPlan.targets)).toBe(true);
     const [target] = applyPlan.targets ?? [];
