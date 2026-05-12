@@ -128,8 +128,9 @@ function createReactionHarness(params?: {
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  expect(value, label).toBeTypeOf("object");
-  expect(value, label).not.toBeNull();
+  if (!value || typeof value !== "object") {
+    throw new Error(`expected ${label}`);
+  }
   return value as Record<string, unknown>;
 }
 
@@ -161,6 +162,10 @@ function callArg(mock: unknown, callIndex: number, argIndex: number, label: stri
 function lastCallArg(mock: unknown, argIndex: number, label: string) {
   const calls = mockCalls(mock, label);
   return callArg(mock, calls.length - 1, argIndex, label);
+}
+
+function singleTextMessageBody(callIndex = 0) {
+  return callArg(sendSingleTextMessageMatrixMock, callIndex, 1, "single text message body");
 }
 
 function expectMockCallWithFields(mock: unknown, fields: Record<string, unknown>) {
@@ -412,7 +417,7 @@ describe("matrix monitor handler pairing account scope", () => {
       await handler("!room:example.org", makeEvent("$event1"));
       await handler("!room:example.org", makeEvent("$event2"));
       expect(sendMessageMatrixMock).toHaveBeenCalledTimes(1);
-      const pairingReminder = sendMessageMatrixMock.mock.calls[0]?.[1];
+      const pairingReminder = callArg(sendMessageMatrixMock, 0, 1, "pairing reminder");
       expect(typeof pairingReminder).toBe("string");
       expect(pairingReminder).toContain("Pairing request is still pending approval.");
 
@@ -2915,7 +2920,7 @@ describe("matrix monitor handler draft streaming", () => {
     await vi.waitFor(() => {
       expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledTimes(1);
     });
-    expect(sendSingleTextMessageMatrixMock.mock.calls[0]?.[1]).toMatch(/\n`🧩 Read File`$/);
+    expect(singleTextMessageBody()).toMatch(/\n`🧩 Read File`$/);
 
     await deliver({ text: "Done" }, { kind: "final" });
 
@@ -2948,7 +2953,7 @@ describe("matrix monitor handler draft streaming", () => {
     await vi.waitFor(() => {
       expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledTimes(1);
     });
-    expect(sendSingleTextMessageMatrixMock.mock.calls[0]?.[1]).toBe("- `second`");
+    expect(singleTextMessageBody()).toBe("- `second`");
     await finish();
   });
 
@@ -2966,7 +2971,7 @@ describe("matrix monitor handler draft streaming", () => {
     await vi.waitFor(() => {
       expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledTimes(1);
     });
-    expect(sendSingleTextMessageMatrixMock.mock.calls[0]?.[1]).toMatch(
+    expect(singleTextMessageBody()).toMatch(
       /\n- `@room ping @alice:example\.org \[label\]\(https:\/\/example\.org\)`$/,
     );
     await finish();
@@ -3127,7 +3132,7 @@ describe("matrix monitor handler draft streaming", () => {
     await vi.waitFor(() => {
       expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledTimes(2);
     });
-    expect(sendSingleTextMessageMatrixMock.mock.calls[1]?.[1]).toBe("Beta");
+    expect(singleTextMessageBody(1)).toBe("Beta");
     expect(deliverMatrixRepliesMock).not.toHaveBeenCalled();
     expect(redactEventMock).not.toHaveBeenCalled();
     await finish();
@@ -3169,7 +3174,7 @@ describe("matrix monitor handler draft streaming", () => {
       },
       { interval: 1 },
     );
-    expect(sendSingleTextMessageMatrixMock.mock.calls[0]?.[1]).toBe("Beta");
+    expect(singleTextMessageBody()).toBe("Beta");
     expectMatrixEdit("!room:example.org", "$draft1", "Alpha");
     expect(deliverMatrixRepliesMock).not.toHaveBeenCalled();
     expect(redactEventMock).not.toHaveBeenCalled();
@@ -3246,7 +3251,7 @@ describe("matrix monitor handler draft streaming", () => {
     });
 
     // The draft stream should have received "Block two", not empty string.
-    const sentBody = sendSingleTextMessageMatrixMock.mock.calls[0]?.[1];
+    const sentBody = singleTextMessageBody();
     expect(sentBody).toBe("Block two");
     await finish();
   });
@@ -3282,7 +3287,7 @@ describe("matrix monitor handler draft streaming", () => {
     await vi.waitFor(() => {
       expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledTimes(1);
     });
-    expect(sendSingleTextMessageMatrixMock.mock.calls[0]?.[1]).toBe("Beta");
+    expect(singleTextMessageBody()).toBe("Beta");
 
     await deliver({ text: "Beta" }, { kind: "final" });
 
@@ -3323,7 +3328,7 @@ describe("matrix monitor handler draft streaming", () => {
     await vi.waitFor(() => {
       expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledTimes(1);
     });
-    expect(sendSingleTextMessageMatrixMock.mock.calls[0]?.[1]).toBe("Beta");
+    expect(singleTextMessageBody()).toBe("Beta");
 
     await deliver({ text: "Beta" }, { kind: "final" });
 
@@ -3340,7 +3345,7 @@ describe("matrix monitor handler draft streaming", () => {
     await vi.waitFor(() => {
       expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledTimes(1);
     });
-    expect(sendSingleTextMessageMatrixMock.mock.calls[0]?.[1]).toBe("Alpha");
+    expect(singleTextMessageBody()).toBe("Alpha");
 
     await opts.onBlockReplyQueued?.({ text: "Alpha" });
     opts.onPartialReply?.({ text: "AlphaBeta" });
@@ -3361,7 +3366,7 @@ describe("matrix monitor handler draft streaming", () => {
     await vi.waitFor(() => {
       expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledTimes(1);
     });
-    expect(sendSingleTextMessageMatrixMock.mock.calls[0]?.[1]).toBe("Beta");
+    expect(singleTextMessageBody()).toBe("Beta");
     expectFinalizedPreviewEdit("$draft1", "Alpha");
 
     sendSingleTextMessageMatrixMock.mockClear();
@@ -3375,7 +3380,7 @@ describe("matrix monitor handler draft streaming", () => {
     await vi.waitFor(() => {
       expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledTimes(1);
     });
-    expect(sendSingleTextMessageMatrixMock.mock.calls[0]?.[1]).toBe("Gamma");
+    expect(singleTextMessageBody()).toBe("Gamma");
     expectFinalizedPreviewEdit("$draft2", "Beta");
 
     await finish();
