@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 /**
  * Real-runtime behavior proof for #73261 round-10
  * (perf/models-config-target-provider-short-circuit, Codex P2:
