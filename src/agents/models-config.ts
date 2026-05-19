@@ -9,10 +9,12 @@ import {
   type OpenClawConfig,
 } from "../config/config.js";
 import { createConfigRuntimeEnv } from "../config/env-vars.js";
+import { resolveSecretInputRef } from "../config/types.secrets.js";
 import { privateFileStore } from "../infra/private-file-store.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { isRecord } from "../utils.js";
 import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentDir,
@@ -20,6 +22,14 @@ import {
 } from "./agent-scope.js";
 import { MODELS_JSON_STATE, type ContentHashOutcome } from "./models-config-state.js";
 import { planOpenClawModelsJson } from "./models-config.plan.js";
+import { normalizeProviderSpecificConfig } from "./models-config.providers.policy.js";
+import {
+  normalizeHeaderValues,
+  resolveAwsSdkApiKeyVarName,
+  resolveEnvApiKeyVarName,
+  type SecretDefaults,
+} from "./models-config.providers.secret-helpers.js";
+import type { ProviderConfig } from "./models-config.providers.secrets.js";
 import { stableStringify } from "./stable-stringify.js";
 
 export { resetModelsJsonReadyCacheForTest } from "./models-config-state.js";
@@ -554,16 +564,652 @@ async function withModelsJsonWriteLock<T>(targetPath: string, run: () => Promise
   }
 }
 
+/**
+ * Options for ensureOpenClawModelsJson.
+ *
+ * `targetProvider`/`targetModel` are caller hints for the
+ * "short-circuit fast path": when set, the implicit-provider-discovery
+ * pipeline can be skipped IF the on-disk models.json provider entry
+ * structurally matches what the current configuration would produce
+ * (apiKey resolved through env-refs + baseUrl/headers/auth via stable
+ * equality).  Any drift falls through to the full plan.
+ */
+export type EnsureOpenClawModelsJsonOptions = {
+  /** Provider id the caller intends to use (e.g. "anthropic", "openai"). */
+  targetProvider?: string;
+  /**
+   * Model id the caller intends to use.  When provided alongside
+   * `targetProvider`, the implicit-only short-circuit branch (where
+   * `models.providers[targetProvider].models` is empty/omitted)
+   * additionally requires this model id to appear on disk before
+   * blessing the fast path (Codex P2 round-9 on PR #73261).  Without
+   * this hint, implicit-discovery setups with stale `models.json`
+   * could short-circuit and then fail in `resolveModelAsync` with
+   * `Unknown model`.  Omit when the caller doesn't yet know which
+   * model it will resolve; the prior provider-shape-only contract
+   * still applies in that case.
+   */
+  targetModel?: string;
+  pluginMetadataSnapshot?: Pick<PluginMetadataSnapshot, "index" | "manifestRegistry" | "owners">;
+  workspaceDir?: string;
+  providerDiscoveryProviderIds?: readonly string[];
+  providerDiscoveryTimeoutMs?: number;
+  providerDiscoveryEntriesOnly?: boolean;
+};
+
+/**
+ * Resolve a configured provider's `apiKey` reference into the form that
+ * planOpenClawModelsJson actually writes to disk, so we can compare
+ * config-vs-disk during the short-circuit check.
+ *
+ * IMPORTANT: env-ref API keys are persisted to models.json as the
+ * env-var **NAME** (e.g. `"OPENAI_API_KEY"`), not the env-var value.
+ * That's the form `resolveApiKeyFromCredential` produces for env-source
+ * credentials and the form the rest of the runtime expects.  Comparing
+ * against the resolved value would always mismatch and silently skip
+ * the short-circuit on every call (Codex P2 on PR #73261).
+ *
+ * The env var is only consulted to verify it's currently set — if the
+ * variable is missing or empty, no usable credential exists and the
+ * caller should fall through to full planning rather than short-circuit.
+ *
+ * Returns:
+ *  - the env-var name for env-source secret refs
+ *  - the literal string for plaintext values
+ *  - undefined if no apiKey was configured
+ *  - null if a secret ref could not be resolved (env var unset OR
+ *    non-env source like keyring; in either case we can't safely match
+ *    against disk so the caller should NOT short-circuit)
+ */
+function resolveConfiguredApiKeyForCompare(
+  apiKey: unknown,
+  env: NodeJS.ProcessEnv,
+): string | null | undefined {
+  if (apiKey === undefined) {
+    return undefined;
+  }
+  if (typeof apiKey === "string" && apiKey.length > 0) {
+    const ref = resolveSecretInputRef({ value: apiKey }).ref;
+    if (!ref || !ref.id.trim()) {
+      // Plaintext literal value — disk holds the same literal.
+      return apiKey;
+    }
+    if (ref.source !== "env") {
+      return null;
+    }
+    // Env source: disk holds the env var NAME, not the value.  Verify
+    // the env is currently populated so we don't short-circuit on a
+    // misconfigured environment, but compare against the var name.
+    const id = ref.id.trim();
+    const value = env[id];
+    return typeof value === "string" && value.length > 0 ? id : null;
+  }
+  if (isRecord(apiKey)) {
+    const ref = resolveSecretInputRef({ value: apiKey, refValue: apiKey }).ref;
+    if (!ref || !ref.id.trim()) {
+      return null;
+    }
+    if (ref.source !== "env") {
+      return null;
+    }
+    const id = ref.id.trim();
+    const value = env[id];
+    return typeof value === "string" && value.length > 0 ? id : null;
+  }
+  return null;
+}
+
+/**
+ * When `configuredProvider.apiKey` is unset, decide whether a non-empty
+ * disk apiKey value matches what `planOpenClawModelsJson` would persist
+ * via `resolveMissingProviderApiKey` (Codex P2 round-6 on PR #73261).
+ *
+ * The planner's "missing apiKey" path writes one of:
+ *  1. The env-var name itself (e.g. `"OPENAI_API_KEY"`) when an env-
+ *     derived marker is appropriate — the dominant case.  Disk holds
+ *     the env var name, and we accept it iff the env var is currently
+ *     populated (matches the same liveness check
+ *     `resolveConfiguredApiKeyForCompare` applies for env-source
+ *     refs).
+ *  2. The AWS SDK env-var name (auth: "aws-sdk" branch) for AWS
+ *     credential chains.  Same liveness check.
+ *  3. The literal resolved value from a plaintext profile or a
+ *     non-default `providerApiKeyResolver`.  We can't verify those
+ *     here without re-running the planner, so this helper conservatively
+ *     returns false for them — the perf cost is bounded (one full
+ *     plan per restart that produces an unchanged disk shape).  When
+ *     we add profile/state into the short-circuit context we should
+ *     extend this helper symmetrically.
+ *
+ * Returns true iff the disk value matches case (1) or (2).  Returns
+ * false otherwise (caller falls through to full planning).
+ */
+function diskApiKeyMatchesUnsetConfigPlannerOutput(params: {
+  diskApiKey: unknown;
+  providerKey: string;
+  providerAuth: unknown;
+  env: NodeJS.ProcessEnv;
+}): boolean {
+  const { diskApiKey, providerKey, providerAuth, env } = params;
+  if (typeof diskApiKey !== "string" || diskApiKey.length === 0) {
+    return false;
+  }
+  // Match `resolveMissingProviderApiKey`'s decision tree.  The aws-sdk
+  // branch fires when `auth === "aws-sdk"`, otherwise the env-name
+  // branch is consulted.  We do not invoke any provider-specific
+  // `providerApiKeyResolver` here because the resolver may have
+  // arbitrary side-effects in tests, and its env-name marker is
+  // already covered by the env path below for any resolver that
+  // returns an env var name.
+  if (providerAuth === "aws-sdk") {
+    const awsEnvVar = resolveAwsSdkApiKeyVarName(env);
+    if (awsEnvVar && awsEnvVar === diskApiKey) {
+      const value = env[awsEnvVar];
+      return typeof value === "string" && value.length > 0;
+    }
+    return false;
+  }
+  const envVarName = resolveEnvApiKeyVarName(providerKey, env);
+  if (envVarName && envVarName === diskApiKey) {
+    const value = env[envVarName];
+    return typeof value === "string" && value.length > 0;
+  }
+  return false;
+}
+
+/**
+ * Maximum recursion depth when comparing disk-controlled values during
+ * the short-circuit check (Codex P2 / Aisle medium #3 on PR #73261).
+ * Bounds the recursive walk so a deeply-nested adversarial models.json
+ * cannot stack-overflow or monopolize CPU during fingerprint compare.
+ * 64 is well above any realistic models.json structure (~3 levels deep)
+ * but small enough to bound the worst-case allocation.
+ */
+const SHORT_CIRCUIT_COMPARE_MAX_DEPTH = 64;
+
+/**
+ * Depth-bounded variant of stableStringify used for short-circuit
+ * comparisons against disk-controlled state.  Throws when the depth
+ * limit is exceeded — `stableEqualBounded` catches and treats that as
+ * a non-match (fail closed → full plan).
+ */
+function stableStringifyBounded(value: unknown, maxDepth: number, depth = 0): string {
+  if (depth > maxDepth) {
+    throw new Error("stableStringifyBounded: max depth exceeded");
+  }
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value
+      .map((entry) => stableStringifyBounded(entry, maxDepth, depth + 1))
+      .join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).toSorted(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  return `{${entries
+    .map(
+      ([key, entry]) =>
+        `${JSON.stringify(key)}:${stableStringifyBounded(entry, maxDepth, depth + 1)}`,
+    )
+    .join(",")}}`;
+}
+
+/**
+ * Bounded structural equality.  Returns false on any depth-cap overrun
+ * so adversarial nested input cannot DoS the gateway via stack/CPU
+ * exhaustion during the short-circuit check.
+ */
+function stableEqualBounded(a: unknown, b: unknown, maxDepth: number): boolean {
+  try {
+    return stableStringifyBounded(a, maxDepth) === stableStringifyBounded(b, maxDepth);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Per-model fields that can steer runtime transport (SSRF, header /
+ * credential injection) when consumed from models.json — see the
+ * runtime sinks at `src/agents/pi-embedded-runner/model.ts` which
+ * fall back to `discoveredModel.baseUrl` / `discoveredModel.api` /
+ * `discoveredModel.headers` when no provider-level override is set.
+ *
+ * The provider-scoped short-circuit cannot validate these without re-
+ * running the planner, so it refuses to short-circuit when the on-disk
+ * provider row carries any of them (Codex P1 / Aisle High #2 on PR
+ * #73261).  The full plan re-applies provider/plugin defaults and
+ * rewrites the file.
+ */
+const PER_MODEL_TRANSPORT_FIELDS: ReadonlySet<string> = new Set(["baseUrl", "api", "headers"]);
+
+/**
+ * Verify that the on-disk models.json provider entry STRUCTURALLY
+ * matches what the current configuration would produce.  Used by the
+ * short-circuit fast path to skip the implicit-provider-discovery
+ * pipeline only when the disk state is provably consistent with config.
+ *
+ * Compares (all symmetric — either side undefined != string is a
+ * mismatch, all bounded — adversarial depth fails closed):
+ *   apiKey  — resolved through env-ref expansion before comparing
+ *             (env-source values compare by env-var NAME, not value,
+ *             since that's what plan writes to disk).  Fails closed on
+ *             any non-string disk value when config has no apiKey
+ *             (Codex P2 on PR #73261).
+ *   baseUrl — bounded structural equality (closes asymmetric-undef bug)
+ *   headers — bounded structural equality
+ *   auth    — bounded structural equality
+ *   models[] per-entry transport fields (`baseUrl`/`api`/`headers`) —
+ *             refuses short-circuit if any disk-side model carries any
+ *             of them (Codex P1 / Aisle High #2 on PR #73261).  The
+ *             runtime consumes per-model transport when no provider-
+ *             level override is set, so an attacker who can write
+ *             models.json could otherwise inject per-model SSRF /
+ *             credential-exfil routes that survive the provider-scoped
+ *             check.  Refusing forces the planner to re-apply provider
+ *             defaults and rewrite the file.
+ *
+ * Other model-level fields (id/name/cost/contextWindow/compat/...) are
+ * not compared.  Tampering with those changes inference behaviour but
+ * is not a transport-level exfil vector; the trade-off keeps the
+ * short-circuit reachable for the common case where the planner persists
+ * configured + discovered metadata without per-model transport overrides.
+ *
+ * Any mismatch (or any state we cannot conclusively verify, like a
+ * non-env secret ref or a disk-side per-model transport override)
+ * returns false so the caller falls through to the full plan + write
+ * path.
+ */
+async function readExistingProviderMatchesConfig(
+  targetPath: string,
+  targetProvider: string,
+  configuredProviderRaw: unknown,
+  env: NodeJS.ProcessEnv,
+  secretDefaults: SecretDefaults | undefined,
+  targetModelId: string | undefined,
+): Promise<{ matches: true; validatedModelsJsonOutcome: ContentHashOutcome } | { matches: false }> {
+  if (!isRecord(configuredProviderRaw)) {
+    return { matches: false };
+  }
+  // Reject prototype-chain key collisions for targetProvider (Aisle
+  // medium #3 on PR #73261).  String keys like "__proto__" /
+  // "constructor" / "prototype" should not steer the short-circuit.
+  if (
+    targetProvider === "__proto__" ||
+    targetProvider === "constructor" ||
+    targetProvider === "prototype"
+  ) {
+    return { matches: false };
+  }
+  // Apply the same provider-policy normalization that
+  // `normalizeProviders` runs before `planOpenClawModelsJson` writes
+  // the file (Codex P2 round-9 on PR #73261, models-config.ts:1282).
+  // Some providers inject defaults at normalization time (e.g.
+  // `extensions/ollama/provider-policy-api.ts` defaults `baseUrl` to
+  // the local Ollama host when config omits it).  Without this
+  // pre-pass, the structural compare runs config-as-authored vs
+  // disk-as-normalized, so any provider with policy-injected defaults
+  // would always miss the short-circuit even when disk is already
+  // correct.  Falling back through to full planning in that case
+  // disables the perf path on every targeted call.  The policy hook
+  // returns the input unchanged when it has no opinion, so this is a
+  // no-op for providers without a normalize-config policy.
+  //
+  // Cast: `configuredProviderRaw` is the user's `models.providers[X]`
+  // entry, typed `unknown` for defensive parsing of disk content via
+  // the same surface; the in-memory `cfg` value matches
+  // `ProviderConfig`'s shape and is what `normalizeProviders` itself
+  // accepts.
+  const configuredProvider = normalizeProviderSpecificConfig(
+    targetProvider,
+    configuredProviderRaw as ProviderConfig,
+  ) as Record<string, unknown>;
+  if (!isRecord(configuredProvider)) {
+    return { matches: false };
+  }
+  // Reuse the fingerprint-cache safe-read primitive (#73260):
+  // O_NOFOLLOW open, lstat/fstat regular-file check, MAX_MODELS_JSON_BYTES
+  // size cap, fail-closed on grow-past-cap.  After the round-4
+  // fail-closed refactor (#73260), the primitive returns a
+  // discriminated outcome.  Anything other than `hashed` (i.e.
+  // `absent` or `uncacheable`) maps to "refuse short-circuit" — a
+  // missing models.json must be regenerated by the planner, and an
+  // unhashable models.json (oversize, symlink, I/O error) must NEVER
+  // bypass full planning (CWE-345).
+  const safe = await safeReadFileOutcome(targetPath, MAX_MODELS_JSON_BYTES);
+  if (safe.kind !== "hashed") {
+    return { matches: false };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(safe.raw.toString("utf8"));
+  } catch {
+    return { matches: false };
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.providers)) {
+    return { matches: false };
+  }
+  // Use Object.hasOwn to refuse inherited keys — belt-and-suspenders
+  // against prototype-chain access (Aisle medium #3).
+  if (!Object.hasOwn(parsed.providers, targetProvider)) {
+    return { matches: false };
+  }
+  const diskProvider = parsed.providers[targetProvider];
+  if (!isRecord(diskProvider)) {
+    return { matches: false };
+  }
+
+  // Symmetric baseUrl comparison.  The previous asymmetric check
+  // (`typeof configuredProvider.baseUrl === "string" && ... !== ...`)
+  // skipped validation entirely when config omitted baseUrl, letting
+  // an attacker-injected disk baseUrl slip through (Greptile P1
+  // security + Aisle High #1 on PR #73261).  Now: any difference
+  // between configured and disk baseUrl — including config-undefined
+  // vs disk-string — falls through to full planning, which will
+  // re-apply provider/plugin defaults and rewrite the file.  Bounded
+  // depth: a hostile disk baseUrl that's an exotically-nested object
+  // fails closed instead of stack-overflowing the gateway.
+  if (
+    !stableEqualBounded(
+      configuredProvider.baseUrl,
+      diskProvider.baseUrl,
+      SHORT_CIRCUIT_COMPARE_MAX_DEPTH,
+    )
+  ) {
+    return { matches: false };
+  }
+
+  const resolvedConfiguredApiKey = resolveConfiguredApiKeyForCompare(
+    configuredProvider.apiKey,
+    env,
+  );
+  if (resolvedConfiguredApiKey === null) {
+    return { matches: false };
+  }
+  if (resolvedConfiguredApiKey !== undefined) {
+    if (
+      typeof diskProvider.apiKey !== "string" ||
+      diskProvider.apiKey !== resolvedConfiguredApiKey
+    ) {
+      return { matches: false };
+    }
+  } else if (
+    diskProvider.apiKey !== undefined &&
+    !(typeof diskProvider.apiKey === "string" && diskProvider.apiKey.length === 0) &&
+    !diskApiKeyMatchesUnsetConfigPlannerOutput({
+      diskApiKey: diskProvider.apiKey,
+      providerKey: targetProvider,
+      providerAuth: configuredProvider.auth,
+      env,
+    })
+  ) {
+    // Codex P2 on PR #73261: when config has no apiKey, accept either
+    // "absent" (undefined) / empty-string on disk OR a value that
+    // matches what `planOpenClawModelsJson` would have persisted via
+    // `resolveMissingProviderApiKey`.  Without the second case, every
+    // common implicit-discovery setup (provider has models, auth comes
+    // from env-var-derived markers like `OPENAI_API_KEY` or AWS SDK
+    // env names) would always miss the short-circuit on every restart
+    // and re-run full implicit discovery, negating the perf path even
+    // though disk and config are semantically aligned.  Anything else
+    // (number, null, object, array, or a string not derivable from
+    // the planner's env/aws-sdk paths) still falls through to full
+    // planning, which will rewrite the file.
+    return { matches: false };
+  }
+
+  // Provider-level `api` drift check (Codex P1 round-5 on PR #73261).
+  // The runtime consumes a provider-level `api` field at the same
+  // priority as `baseUrl`/`headers`/`auth` (see
+  // pi-embedded-runner/model.ts and src/agents/models-json/plan.ts):
+  // it is part of the transport surface that determines which
+  // upstream the gateway will hit.  Without this comparison, an
+  // attacker who can write models.json could swap a provider's `api`
+  // (e.g. `"openai" -> "anthropic"`) and the short-circuit would
+  // re-bless it because the per-model loop only flags `api` set on
+  // disk-side MODEL rows, not on the provider itself.  Symmetric
+  // depth-bounded compare — any difference between configured and
+  // disk `api` (including config-undefined vs disk-string) falls
+  // through to full planning, which re-applies provider/plugin
+  // defaults and rewrites the file.  Bounded depth keeps an exotic
+  // disk shape from stack-overflowing the gateway.
+  if (
+    !stableEqualBounded(configuredProvider.api, diskProvider.api, SHORT_CIRCUIT_COMPARE_MAX_DEPTH)
+  ) {
+    return { matches: false };
+  }
+  // Pre-normalize configuredProvider.headers the same way the planner
+  // does before persisting (Codex P2 round-7 on PR #73261:
+  // "Normalize secret-ref headers before short-circuit compare").
+  // Without this, any provider configured with header SecretRefs
+  // (`${ENV_VAR}` strings or SecretRef objects) compares as not-equal
+  // because configuredProvider holds the raw secret reference while
+  // diskProvider holds the planner's marker string
+  // (`<env-marker:NAME>` for env refs, the non-env marker for
+  // keyring/file/etc), defeating the short-circuit on every restart
+  // for the entire class of header-auth providers.
+  // `normalizeHeaderValues` is idempotent for plain literal values
+  // (returns headers unchanged when nothing is a secret ref), so this
+  // is a safe no-op for the common no-header / literal-header case.
+  // `normalizeHeaderValues` accepts the `ProviderConfig["headers"]`
+  // shape; cast through `unknown` to satisfy the parameter type without
+  // pulling the entire ProviderConfig type into this module.  When the
+  // disk-controlled value is not an object, skip normalization and let
+  // the deep compare reject it (string / number / array / null all fall
+  // through to the existing strict equality check).
+  const normalizedConfiguredHeaders =
+    isRecord(configuredProvider.headers) || configuredProvider.headers === undefined
+      ? normalizeHeaderValues({
+          headers: configuredProvider.headers as Parameters<
+            typeof normalizeHeaderValues
+          >[0]["headers"],
+          secretDefaults,
+        }).headers
+      : configuredProvider.headers;
+  if (
+    !stableEqualBounded(
+      normalizedConfiguredHeaders,
+      diskProvider.headers,
+      SHORT_CIRCUIT_COMPARE_MAX_DEPTH,
+    )
+  ) {
+    return { matches: false };
+  }
+  if (
+    !stableEqualBounded(configuredProvider.auth, diskProvider.auth, SHORT_CIRCUIT_COMPARE_MAX_DEPTH)
+  ) {
+    return { matches: false };
+  }
+
+  // Per-model transport drift check (Codex P1 / Aisle High #2 on PR
+  // #73261).  The runtime consumes per-model `baseUrl` / `api` /
+  // `headers` from models.json (see `pi-embedded-runner/model.ts`); an
+  // attacker who can write models.json could otherwise inject per-model
+  // overrides that survive the provider-scoped short-circuit while
+  // keeping provider-level fields intact.  Refuse short-circuit when
+  // any disk-side model carries any transport field.  The full plan
+  // path will re-apply provider/plugin defaults and rewrite the file.
+  if (Array.isArray(diskProvider.models)) {
+    for (const m of diskProvider.models) {
+      if (!isRecord(m)) {
+        return { matches: false };
+      }
+      for (const f of PER_MODEL_TRANSPORT_FIELDS) {
+        if (Object.hasOwn(m, f)) {
+          return { matches: false };
+        }
+      }
+    }
+  } else if (diskProvider.models !== undefined) {
+    // models is present but not an array — malformed disk row.  Refuse
+    // short-circuit so the planner rewrites a well-formed structure.
+    return { matches: false };
+  }
+
+  // Model-list subset check (Codex P1 round-8 on PR #73261:
+  // "Compare configured models before short-circuiting provider hit").
+  // The prior per-model loop only validated TRANSPORT shape; it never
+  // checked that the set of configured model ids was reflected on
+  // disk.  Result: a config edit that adds a new model (without
+  // touching apiKey / baseUrl / api / headers / auth) hits the
+  // short-circuit, leaves models.json stale, and `resolveModelAsync`
+  // misses the newly configured model until some later full reconcile.
+  // With this commit wiring `targetProvider` into the embedded
+  // runner paths, that staleness window is now reachable from
+  // gateway hot paths and must be closed.
+  //
+  // Contract: when `configuredProvider.models` is a non-empty array
+  // (explicit mode — user enumerated which models they want), every
+  // configured model id MUST appear on disk.  Disk may legitimately
+  // contain MORE models than config (implicit discovery /
+  // plugin-contributed entries), so we use a subset check, not
+  // strict equality.  Implicit-only mode (`models: []` or omitted)
+  // skips the comparison — the disk content reflects discovery, not
+  // config, and the transport check above is sufficient.
+  //
+  // Adversarial / malformed configured.models entries (non-record
+  // non-string, missing id, prototype-key collision) fail closed:
+  // we cannot reason about them, so we refuse the short-circuit.
+  const configuredIds = collectShortCircuitModelIds(configuredProvider.models);
+  if (configuredIds === null) {
+    return { matches: false };
+  }
+  // We only need diskIds when either explicit-mode subset check fires
+  // or implicit-mode `targetModelId` is provided (Codex P2 round-9 on
+  // PR #73261, models-config.ts:997).  Compute lazily so adversarial
+  // disk model rows still fail closed in both branches without
+  // duplicating the parse.
+  let diskIds: Set<string> | null | undefined;
+  const ensureDiskIds = (): Set<string> | null => {
+    if (diskIds === undefined) {
+      diskIds = collectShortCircuitModelIds(diskProvider.models);
+    }
+    return diskIds;
+  };
+  if (configuredIds.size > 0) {
+    const ids = ensureDiskIds();
+    if (ids === null) {
+      return { matches: false };
+    }
+    for (const id of configuredIds) {
+      if (!ids.has(id)) {
+        return { matches: false };
+      }
+    }
+  } else if (typeof targetModelId === "string" && targetModelId.length > 0) {
+    // Implicit-only mode (`configuredProvider.models` empty/omitted)
+    // means `models.json` reflects discovery, not config.  The prior
+    // contract skipped *all* model-id validation in this branch and
+    // returned a structural "match" even when the caller's requested
+    // model wasn't on disk yet (Codex P2 round-9: "Check requested
+    // model on implicit-only short-circuit hits", models-config.ts:997).
+    // Cold-start / stale-disk implicit-discovery setups can then
+    // bypass `resolveImplicitProviders`, leaving `resolveModelAsync`
+    // to fail with `Unknown model` until another path forces a full
+    // reconcile.
+    //
+    // Closing that hole: when the embedded caller passes
+    // `targetModelId`, require the requested id to be present on
+    // disk before short-circuiting.  Anything else (malformed disk
+    // models, missing id) falls through to full planning, which will
+    // run discovery and rewrite the file.  Implicit callers that
+    // don't know which model they're about to use (`targetModelId`
+    // omitted) keep the prior provider-shape-only contract — they
+    // never had per-model assertions to begin with.
+    const ids = ensureDiskIds();
+    if (ids === null) {
+      return { matches: false };
+    }
+    if (!ids.has(targetModelId)) {
+      return { matches: false };
+    }
+  }
+
+  return { matches: true, validatedModelsJsonOutcome: { kind: "hashed", hash: safe.hash } };
+}
+
+/**
+ * Extract a Set of model ids from a provider's `models` field for the
+ * targetProvider short-circuit subset check (Codex P1 round-8 on PR
+ * #73261).  Accepts the two shapes the runtime produces:
+ *  - bare string entries (e.g. `"gpt-5"`)
+ *  - record entries with a string `id` field (e.g. `{ id: "gpt-5", ... }`)
+ *
+ * Returns:
+ *  - `null` when the input is malformed in a way that should fail closed
+ *    (non-array with non-undefined value, non-record/non-string entries,
+ *    record entries missing a string `id`, prototype-chain id collisions).
+ *  - an empty Set when `models` is undefined OR an empty array (legitimate
+ *    "implicit-only" mode — caller skips the subset check in that case).
+ *  - a populated Set otherwise.
+ */
+function collectShortCircuitModelIds(models: unknown): Set<string> | null {
+  if (models === undefined) {
+    return new Set();
+  }
+  if (!Array.isArray(models)) {
+    return null;
+  }
+  const ids = new Set<string>();
+  for (const entry of models) {
+    if (typeof entry === "string") {
+      const trimmed = entry.trim();
+      if (!trimmed) {
+        return null;
+      }
+      ids.add(trimmed);
+      continue;
+    }
+    if (!isRecord(entry)) {
+      return null;
+    }
+    // Use Object.hasOwn to refuse prototype-chain id collisions
+    // (consistent with the same guard around `parsed.providers`
+    // earlier in this function).
+    if (!Object.hasOwn(entry, "id")) {
+      return null;
+    }
+    const id = (entry as { id: unknown }).id;
+    if (typeof id !== "string" || !id.trim()) {
+      return null;
+    }
+    ids.add(id.trim());
+  }
+  return ids;
+}
+
+/**
+ * Provider-scoped readyCache key for successful short-circuit results.
+ * Uses a `\0sc:<provider>` suffix so non-targeted callers (whose cache
+ * key is the unsuffixed `${targetPath}\0${fingerprint}`) cannot collide
+ * with these entries — the short-circuit only validated ONE provider,
+ * and a non-targeted call must run a full plan to validate all of them
+ * (Codex P1 on PR #73261).  The null-byte separators cannot appear in
+ * provider ids or in the fingerprint hex digest.
+ */
+function modelsJsonScopedShortCircuitCacheKey(
+  targetPath: string,
+  fingerprint: string,
+  targetProvider: string,
+  targetModelId: string | undefined,
+): string {
+  // Fold `targetModelId` into the scoped key (Codex P2 round-9 on PR
+  // #73261, models-config.ts:997 follow-on).  In implicit-only mode
+  // we now require the requested model to be on disk before blessing
+  // the short-circuit; the cache must reflect that scope so a hit
+  // cached for model X can't be reused for model Y under the same
+  // (provider, fingerprint, models.json content) tuple when Y isn't
+  // on disk.  The empty-suffix arm preserves the prior key shape for
+  // callers that don't pass `targetModel`.
+  const modelSuffix = targetModelId ? `\0m:${targetModelId}` : "";
+  return `${targetPath}\0${fingerprint}\0sc:${targetProvider}${modelSuffix}`;
+}
+
 export async function ensureOpenClawModelsJson(
   config?: OpenClawConfig,
   agentDirOverride?: string,
-  options: {
-    pluginMetadataSnapshot?: Pick<PluginMetadataSnapshot, "index" | "manifestRegistry" | "owners">;
-    workspaceDir?: string;
-    providerDiscoveryProviderIds?: readonly string[];
-    providerDiscoveryTimeoutMs?: number;
-    providerDiscoveryEntriesOnly?: boolean;
-  } = {},
+  options: EnsureOpenClawModelsJsonOptions = {},
 ): Promise<{ agentDir: string; wrote: boolean }> {
   const resolved = resolveModelsConfigInput(config);
   const cfg = resolved.config;
@@ -665,7 +1311,11 @@ export async function ensureOpenClawModelsJson(
     // fingerprint passed below is informational only — we deliberately
     // do not READ from or WRITE to the readyCache in this mode, so the
     // entry never lands in the global map and cannot collide with a
-    // legitimate cached entry.
+    // legitimate cached entry.  This also covers the targetProvider
+    // short-circuit: it is gated on `cacheable`, so an `uncacheable`
+    // auth-profiles state forces a full re-plan even when the caller
+    // hinted a provider, instead of letting the short-circuit ride on a
+    // stale or oversized credential file.
     const sentinelFingerprint = `uncacheable:${createHash("sha256")
       .update(`${process.pid}\0${Date.now()}\0${Math.random()}\0${targetPath}`)
       .digest("hex")}`;
@@ -692,6 +1342,8 @@ export async function ensureOpenClawModelsJson(
   const cacheKey = modelsJsonReadyCacheKey(targetPath, fingerprint);
   const cached = MODELS_JSON_STATE.readyCache.get(cacheKey);
   if (cached) {
+    // Warm in-memory cache hit: same inputs, already-planned result.
+    // This is the fastest path — no disk I/O at all.
     const settled = await cached;
     // Two-factor cache hit: the cache key already includes the
     // fingerprint (so different fingerprints get different entries),
@@ -706,6 +1358,115 @@ export async function ensureOpenClawModelsJson(
     if (modelsContentOutcomesMatch(currentModelsJsonOutcome, settled.modelsJsonOutcome)) {
       await ensureModelsFileModeForModelsJson(targetPath);
       return settled.result;
+    }
+  }
+
+  // --- TARGETPROVIDER SHORT-CIRCUIT FAST PATH ---
+  // The fingerprint cache missed (cold start, gateway restart, or
+  // input drift), but the caller hinted which provider it intends to
+  // use.  If the on-disk provider entry STRUCTURALLY matches the
+  // current config (apiKey env-var name, baseUrl, api, headers, auth,
+  // and per-model transport surface all clean), skip the heavy
+  // implicit-discovery pipeline.  Any drift (rotated key,
+  // attacker-tampered baseUrl/api/headers/auth, per-model transport
+  // overrides, missing fields) falls through to full plan + write.
+  //
+  // Order matters: we run AFTER the readyCache check so warm callers
+  // skip the disk read entirely.  Successful short-circuits are cached
+  // under a PROVIDER-SCOPED key (`...\0sc:<provider>`) so they never
+  // poison the global readyCache — only the validated provider can
+  // reuse the entry, and a later non-targeted call still runs a full
+  // plan to validate every other provider (Codex P1 on PR #73261).
+  //
+  // The scoped cache hit uses the same fail-closed `ContentHashOutcome`
+  // contract as the global cache hit above (Codex P2 round-4 follow-up
+  // on PR #73261): an `uncacheable` models.json outcome — typically a
+  // >1 MiB or symlinked file — never compares equal so the scoped
+  // entry cannot ride a `null === null` compare to a stale hit.  When
+  // the on-disk file is unhashable we drop the scoped entry and fall
+  // through to a fresh structural check (which itself uses the
+  // bounded-memory `safeReadFileOutcome` and refuses to short-circuit
+  // on `uncacheable`).
+  const targetProvider = options?.targetProvider?.trim();
+  if (targetProvider) {
+    const scopedTargetModelId = options?.targetModel?.trim() || undefined;
+    const scopedKey = modelsJsonScopedShortCircuitCacheKey(
+      targetPath,
+      fingerprint,
+      targetProvider,
+      scopedTargetModelId,
+    );
+    const scopedCached = MODELS_JSON_STATE.readyCache.get(scopedKey);
+    if (scopedCached) {
+      const settled = await scopedCached;
+      // Same two-factor verification as the global cache hit above:
+      // fingerprint identity is necessary but not sufficient — also
+      // verify the on-disk models.json outcome hasn't drifted since
+      // the short-circuit blessed it.  Uncacheable outcomes never
+      // match (fail-closed contract), so any drift invalidates the
+      // scoped entry and falls through to a fresh check.
+      const currentModelsJsonOutcome = await readModelsJsonContentOutcome(targetPath);
+      if (modelsContentOutcomesMatch(currentModelsJsonOutcome, settled.modelsJsonOutcome)) {
+        await ensureModelsFileModeForModelsJson(targetPath);
+        return settled.result;
+      }
+      MODELS_JSON_STATE.readyCache.delete(scopedKey);
+    }
+
+    const explicitProviders = cfg.models?.providers ?? {};
+    const configuredProvider = Object.hasOwn(explicitProviders, targetProvider)
+      ? explicitProviders[targetProvider]
+      : undefined;
+    if (configuredProvider) {
+      const env = createConfigRuntimeEnv(cfg);
+      const matchOutcome = await readExistingProviderMatchesConfig(
+        targetPath,
+        targetProvider,
+        configuredProvider,
+        env,
+        cfg.secrets?.defaults,
+        scopedTargetModelId,
+      );
+      if (matchOutcome.matches) {
+        await ensureModelsFileModeForModelsJson(targetPath);
+        const result = { agentDir, wrote: false };
+        // Cache the SAME models.json outcome that the structural
+        // check just validated, instead of issuing a second
+        // `readModelsJsonContentOutcome(targetPath)` here (Codex P2
+        // round-10 follow-up on PR #73261, models-config.ts:1397).
+        // The previous code did a second disk read AFTER
+        // validation, then stored THAT outcome in the scoped cache.
+        // If `models.json` was replaced on disk between the two
+        // reads (TOCTOU), the scoped cache would store the hash of
+        // UNVALIDATED bytes — and a later targeted call hitting that
+        // entry would compare current disk against the swapped-in
+        // hash and accept it as "the validated snapshot," blessing
+        // attacker-controlled provider transport (api / baseUrl /
+        // headers consumed by `pi-embedded-runner/model.ts`).
+        //
+        // By threading the validated outcome straight back from
+        // `readExistingProviderMatchesConfig` we close the window:
+        // the cached hash is provably the hash of the bytes the
+        // structural check actually inspected.  A subsequent
+        // disk-side swap is detected on the next call's
+        // drift-check (`modelsContentOutcomesMatch` against current
+        // disk), which falls through to a full plan.
+        //
+        // The validated outcome from the success path is always
+        // `hashed` (failure paths return `{ matches: false }` before
+        // we get here), so populating the cache is unconditional in
+        // practice; we keep the `kind !== "uncacheable"` guard as
+        // belt-and-suspenders against future shape drift in
+        // `ContentHashOutcome`.
+        const modelsJsonOutcome = matchOutcome.validatedModelsJsonOutcome;
+        if (modelsJsonOutcome.kind !== "uncacheable") {
+          MODELS_JSON_STATE.readyCache.set(
+            scopedKey,
+            Promise.resolve({ fingerprint, modelsJsonOutcome, result }),
+          );
+        }
+        return result;
+      }
     }
   }
 

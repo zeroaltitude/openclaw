@@ -639,6 +639,17 @@ export async function runEmbeddedPiAgent(
           : await (async () => {
               await ensureOpenClawModelsJson(params.config, agentDir, {
                 workspaceDir: resolvedWorkspace,
+                // Thread the resolved provider so the targetProvider short-circuit can skip
+                // a full plan when this provider's disk config already matches.
+                targetProvider: provider,
+                // Also thread the resolved model id so the implicit-only
+                // short-circuit branch can require this model to be on
+                // disk before blessing the fast path (Codex P2 round-9
+                // on PR #73261).  Without this hint, an implicit-
+                // discovery setup with a stale models.json could
+                // short-circuit, then fail in `resolveModelAsync` below
+                // with `Unknown model`.
+                targetModel: modelId,
               });
               return await resolveModelAsync(provider, modelId, agentDir, params.config, {
                 workspaceDir: resolvedWorkspace,
