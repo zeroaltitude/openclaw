@@ -6,6 +6,7 @@ Docs: https://docs.openclaw.ai
 
 ### Changes
 
+- Agents/models-config: switch the models.json ready cache from mtime-based fingerprints to content-hashed auth-profile fingerprints with separate models.json drift detection, so OAuth token rotations no longer invalidate implicit-provider discovery while external model config edits still force replanning. (#73260)
 - Agents/config: allow `agents.list[].experimental.localModelLean` so lean local-model mode can be enabled for one configured agent instead of globally.
 - Providers/xAI: add device-code OAuth login so remote and headless setups can authorize xAI without a localhost browser callback. (#84005) Thanks @fuller-stack-dev.
 
