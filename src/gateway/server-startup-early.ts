@@ -121,7 +121,7 @@ export async function startGatewayEarlyRuntime(params: {
       cronStorePath: resolveCronStorePath(params.cfgAtStart.cron?.store),
       cronRuntimeAuthoritative: true,
     });
-    taskRegistryMaintenance.startTaskRegistryMaintenance();
+    taskRegistryMaintenance.startTaskRegistryMaintenance(params.cfgAtStart);
     getActiveTaskCount = () =>
       taskRegistryMaintenance.getInspectableActiveTaskRestartBlockers().length;
   }
