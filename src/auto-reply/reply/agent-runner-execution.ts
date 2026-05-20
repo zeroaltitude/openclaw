@@ -55,6 +55,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { emitAgentEvent, registerAgentRunContext } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -113,6 +114,8 @@ import type { TypingSignaler } from "./typing-mode.js";
 // selection keeps conflicting with fallback model choices.
 // See: https://github.com/openclaw/openclaw/issues/58348
 export const MAX_LIVE_SWITCH_RETRIES = 2;
+
+const routeLog = createSubsystemLogger("agent/route");
 
 function readApprovalScopeValue(value: unknown): "turn" | "session" | undefined {
   return value === "turn" || value === "session" ? value : undefined;
@@ -979,6 +982,62 @@ function emitModelFallbackStepLifecycle(params: {
   });
 }
 
+function logAgentTurnRoute(params: {
+  runId: string;
+  sessionKey?: string;
+  agentId?: string;
+  trigger: "heartbeat" | "user";
+  messageProvider?: string;
+  inboundEventKind?: string;
+  provider: string;
+  model: string;
+  executionRuntime: string;
+  executionRuntimeSource?: string;
+  transport: "cli" | "harness";
+  harnessRuntime?: string;
+  harnessOverride?: string;
+  embeddedProvider?: string;
+  authProfileId?: string;
+}) {
+  const meta = {
+    runId: params.runId,
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+    trigger: params.trigger,
+    messageProvider: params.messageProvider,
+    inboundEventKind: params.inboundEventKind,
+    provider: params.provider,
+    model: params.model,
+    executionRuntime: params.executionRuntime,
+    executionRuntimeSource: params.executionRuntimeSource,
+    transport: params.transport,
+    harnessRuntime: params.harnessRuntime,
+    harnessOverride: params.harnessOverride,
+    embeddedProvider: params.embeddedProvider,
+    authProfileId: params.authProfileId,
+  };
+  routeLog.info("agent turn route selected", {
+    ...meta,
+    consoleMessage: [
+      `runId=${params.runId}`,
+      params.sessionKey ? `sessionKey=${params.sessionKey}` : undefined,
+      params.agentId ? `agent=${params.agentId}` : undefined,
+      `trigger=${params.trigger}`,
+      params.messageProvider ? `provider=${params.messageProvider}` : undefined,
+      `model=${params.provider}/${params.model}`,
+      `runtime=${params.executionRuntime}`,
+      params.executionRuntimeSource ? `source=${params.executionRuntimeSource}` : undefined,
+      `transport=${params.transport}`,
+      params.harnessRuntime ? `harness=${params.harnessRuntime}` : undefined,
+      params.embeddedProvider && params.embeddedProvider !== params.provider
+        ? `embeddedProvider=${params.embeddedProvider}`
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  });
+}
+
 export function resolveSessionRuntimeOverrideForProvider(params: {
   provider: string;
   entry?: Pick<SessionEntry, "agentRuntimeOverride">;
@@ -1642,6 +1701,20 @@ export async function runAgentTurnWithFallback(params: {
               originatingChannel: params.followupRun.originatingChannel,
               provider: params.sessionCtx.Provider,
             });
+            logAgentTurnRoute({
+              runId,
+              sessionKey: params.sessionKey,
+              agentId: params.followupRun.run.agentId,
+              trigger: params.isHeartbeat ? "heartbeat" : "user",
+              messageProvider: hookMessageProvider,
+              inboundEventKind: params.followupRun.currentInboundEventKind,
+              provider,
+              model,
+              executionRuntime: cliExecutionProvider,
+              executionRuntimeSource: sessionRuntimeOverride ? "session" : "model",
+              transport: "cli",
+              authProfileId: authProfile.authProfileId,
+            });
             const result = await runCliAgentWithLifecycle({
               runId,
               provider: cliExecutionProvider,
@@ -1769,6 +1842,25 @@ export async function runAgentTurnWithFallback(params: {
             (agentHarnessPolicy.runtime === "pi" && embeddedRunProvider !== provider
               ? "pi"
               : undefined);
+          logAgentTurnRoute({
+            runId,
+            sessionKey: params.sessionKey,
+            agentId: params.followupRun.run.agentId,
+            trigger: params.isHeartbeat ? "heartbeat" : "user",
+            messageProvider: params.followupRun.originatingChannel ?? params.sessionCtx.Provider,
+            inboundEventKind: params.followupRun.currentInboundEventKind,
+            provider,
+            model,
+            executionRuntime: embeddedRunHarnessOverride ?? agentHarnessPolicy.runtime,
+            executionRuntimeSource: sessionRuntimeOverride
+              ? "session"
+              : agentHarnessPolicy.runtimeSource,
+            transport: "harness",
+            harnessRuntime: agentHarnessPolicy.runtime,
+            harnessOverride: embeddedRunHarnessOverride,
+            embeddedProvider: embeddedRunProvider,
+            authProfileId: runBaseParams.authProfileId,
+          });
           return (async () => {
             let attemptCompactionCount = 0;
             const lifecycleBackstop = createEmbeddedLifecycleTerminalBackstop({
