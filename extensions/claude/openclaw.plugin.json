@@ -51,7 +51,7 @@
             "minimum": 1,
             "default": 90000,
             "description": "Idle watchdog: fail the turn if no notification arrives for this many ms."
-          },
+          }
         }
       },
       "dynamicTools": {
