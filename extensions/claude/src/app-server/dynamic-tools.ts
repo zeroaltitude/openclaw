@@ -3,18 +3,36 @@
  * codex-shaped server consumes, and dispatches `item/tool/call` requests
  * back to the underlying `AnyAgentTool` instances.
  *
- * This is the seam that makes "OpenClaw tools callable from inside a Claude
- * turn" actually work — the protocol pieces are all in the server; this
- * module is the bridge between OpenClaw's tool registry and the server's
- * dynamic-tool surface.
- *
- * Minimum-viable v1: we read each tool's name/description/schema, ship them
- * as-is, and execute on call. Codex's `dynamic-tools.ts` does considerably
- * more (middleware, telemetry, messaging-tool tracking, heartbeat handling);
- * future revisions can layer those on.
+ * Native hook relay + telemetry are wired through the same plugin-SDK
+ * helpers codex uses:
+ *   - `wrapToolWithBeforeToolCallHook` fires OpenClaw `BeforeToolCall` hooks
+ *     around each tool execution so plugin observers see Claude's calls.
+ *   - `runAgentHarnessAfterToolCallHook` fires the `AfterToolCall` hook with
+ *     timing + result.
+ *   - `extractToolResultMediaArtifact` + `filterToolResultMediaUrls` lift
+ *     media URLs and audio-as-voice flags out of tool results into the
+ *     telemetry channel the run-attempt copies into AttemptResult.
+ *   - `isMessagingTool` + `isMessagingToolSendAction` detect when Claude
+ *     called OpenClaw's `message` tool so we can populate
+ *     `didSendViaMessagingTool` and the messagingToolSent* fields.
  */
 
-import type { AnyAgentTool } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  extractToolResultMediaArtifact,
+  filterToolResultMediaUrls,
+  HEARTBEAT_RESPONSE_TOOL_NAME,
+  isMessagingTool,
+  isMessagingToolSendAction,
+  isToolWrappedWithBeforeToolCallHook,
+  normalizeHeartbeatToolResponse,
+  runAgentHarnessAfterToolCallHook,
+  setBeforeToolCallDiagnosticsEnabled,
+  wrapToolWithBeforeToolCallHook,
+  type AnyAgentTool,
+  type EmbeddedRunAttemptParams,
+  type HeartbeatToolResponse,
+  type MessagingToolSend,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import type {
   DynamicToolCallOutputContentItem,
   DynamicToolCallParams,
@@ -23,8 +41,28 @@ import type {
   JsonValue,
 } from "./types.js";
 
+export type ClaudeDynamicToolHookContext = {
+  agentId?: string;
+  config?: EmbeddedRunAttemptParams["config"];
+  sessionId?: string;
+  sessionKey?: string;
+  runId?: string;
+  channelId?: string;
+};
+
+export type ClaudeDynamicToolTelemetry = {
+  didSendViaMessagingTool: boolean;
+  messagingToolSentTexts: string[];
+  messagingToolSentMediaUrls: string[];
+  messagingToolSentTargets: MessagingToolSend[];
+  heartbeatToolResponse?: HeartbeatToolResponse;
+  toolMediaUrls: string[];
+  toolAudioAsVoice: boolean;
+};
+
 export type ClaudeDynamicToolBridge = {
   specs: DynamicToolSpec[];
+  telemetry: ClaudeDynamicToolTelemetry;
   handleToolCall: (
     params: DynamicToolCallParams,
     options?: { signal?: AbortSignal },
@@ -35,75 +73,146 @@ export function createClaudeDynamicToolBridge(params: {
   tools: AnyAgentTool[];
   signal?: AbortSignal;
   excludeNames?: Iterable<string>;
+  hookContext?: ClaudeDynamicToolHookContext;
 }): ClaudeDynamicToolBridge {
   const excluded = new Set([...(params.excludeNames ?? [])].map((n) => n.trim()).filter(Boolean));
-  const toolsByName = new Map<string, AnyAgentTool>();
-  const specs: DynamicToolSpec[] = [];
-  for (const tool of params.tools) {
-    if (!tool?.name || excluded.has(tool.name)) continue;
-    toolsByName.set(tool.name, tool);
-    specs.push({
-      name: tool.name,
-      description: tool.description ?? "",
-      // TypeBox schemas are JSON-Schema-shaped; ship verbatim.
-      inputSchema: (tool.parameters ?? { type: "object", additionalProperties: true }) as JsonValue,
+  const hookContext = params.hookContext ?? {};
+  // Wrap each tool so OpenClaw `BeforeToolCall` hooks fire around it. The
+  // runtime's existing wrapping (if any) is preserved; we only attach when
+  // missing.
+  const wrappedTools = params.tools
+    .filter((tool) => tool?.name && !excluded.has(tool.name))
+    .map((tool) => {
+      if (isToolWrappedWithBeforeToolCallHook(tool)) {
+        setBeforeToolCallDiagnosticsEnabled(tool, false);
+        return tool;
+      }
+      return wrapToolWithBeforeToolCallHook(tool, hookContext, { emitDiagnostics: false });
     });
-  }
+  const toolsByName = new Map(wrappedTools.map((t) => [t.name, t]));
+  const specs: DynamicToolSpec[] = wrappedTools.map((tool) => ({
+    name: tool.name,
+    description: tool.description ?? "",
+    // TypeBox schemas are JSON-Schema-shaped; ship verbatim.
+    inputSchema: (tool.parameters ?? { type: "object", additionalProperties: true }) as JsonValue,
+  }));
+  const telemetry: ClaudeDynamicToolTelemetry = {
+    didSendViaMessagingTool: false,
+    messagingToolSentTexts: [],
+    messagingToolSentMediaUrls: [],
+    messagingToolSentTargets: [],
+    toolMediaUrls: [],
+    toolAudioAsVoice: false,
+  };
 
   async function handleToolCall(
     call: DynamicToolCallParams,
     options?: { signal?: AbortSignal },
   ): Promise<DynamicToolCallResponse> {
     const tool = toolsByName.get(call.tool);
-    if (!tool) {
-      return errorResponse(`Unknown openclaw tool: ${call.tool}`);
-    }
+    if (!tool) return errorResponse(`Unknown openclaw tool: ${call.tool}`);
+    const callerSignal = options?.signal ?? params.signal;
+    const args = (call.arguments ?? {}) as Record<string, unknown>;
+    const startedAt = Date.now();
     try {
-      const callerSignal = options?.signal ?? params.signal;
-      const args = (call.arguments ?? {}) as unknown;
-      const result = await tool.execute(call.callId, args, callerSignal);
-      return projectAgentToolResult(result);
+      const preparedArgs = tool.prepareArguments ? tool.prepareArguments(args) : args;
+      const result = await tool.execute(call.callId, preparedArgs, callerSignal);
+      const isError = isResultError(result);
+      collectTelemetry({ telemetry, toolName: tool.name, args, result, isError });
+      void runAgentHarnessAfterToolCallHook({
+        toolName: tool.name,
+        toolCallId: call.callId,
+        runId: hookContext.runId,
+        agentId: hookContext.agentId,
+        sessionId: hookContext.sessionId,
+        sessionKey: hookContext.sessionKey,
+        channelId: hookContext.channelId,
+        startArgs: args,
+        result,
+        startedAt,
+      });
+      return {
+        contentItems: projectContentItems(result),
+        success: !isError,
+      };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return errorResponse(`Tool execution failed: ${msg}`);
+      collectTelemetry({ telemetry, toolName: tool.name, args, result: undefined, isError: true });
+      const message = err instanceof Error ? err.message : String(err);
+      void runAgentHarnessAfterToolCallHook({
+        toolName: tool.name,
+        toolCallId: call.callId,
+        runId: hookContext.runId,
+        agentId: hookContext.agentId,
+        sessionId: hookContext.sessionId,
+        sessionKey: hookContext.sessionKey,
+        channelId: hookContext.channelId,
+        startArgs: args,
+        error: message,
+        startedAt,
+      });
+      return errorResponse(`Tool execution failed: ${message}`);
     }
   }
 
-  return { specs, handleToolCall };
+  return { specs, telemetry, handleToolCall };
 }
 
-function projectAgentToolResult(result: unknown): DynamicToolCallResponse {
-  // AgentToolResult is opaque from the SDK seam we use — shape varies per
-  // tool. Codex's full bridge sniffs media/content blocks; for v1 we project
-  // text + the boolean isError flag, falling back to JSON.stringify for
-  // structured results.
-  if (result && typeof result === "object" && !Array.isArray(result)) {
-    const obj = result as Record<string, unknown>;
-    const isError = obj.isError === true || obj.is_error === true;
-    const contentItems = extractContentItems(obj);
-    return {
-      contentItems:
-        contentItems.length > 0
-          ? contentItems
-          : [{ type: "inputText", text: stringifyResult(obj) }],
-      success: !isError,
-    };
+// ─── Telemetry ──────────────────────────────────────────────────────────────
+
+function collectTelemetry(params: {
+  telemetry: ClaudeDynamicToolTelemetry;
+  toolName: string;
+  args: Record<string, unknown>;
+  result: unknown;
+  isError: boolean;
+}): void {
+  if (!params.isError && params.toolName === HEARTBEAT_RESPONSE_TOOL_NAME) {
+    const response = normalizeHeartbeatToolResponse(
+      (params.result as { details?: unknown } | undefined)?.details,
+    );
+    if (response) params.telemetry.heartbeatToolResponse = response;
   }
-  return {
-    contentItems: [{ type: "inputText", text: String(result) }],
-    success: true,
-  };
+  if (!params.isError && params.result) {
+    const media = extractToolResultMediaArtifact(params.result);
+    if (media) {
+      const mediaUrls = filterToolResultMediaUrls(params.toolName, media.mediaUrls, params.result);
+      const seen = new Set(params.telemetry.toolMediaUrls);
+      for (const url of mediaUrls) {
+        if (!seen.has(url)) {
+          seen.add(url);
+          params.telemetry.toolMediaUrls.push(url);
+        }
+      }
+      if (media.audioAsVoice) params.telemetry.toolAudioAsVoice = true;
+    }
+  }
+  if (!isMessagingTool(params.toolName)) return;
+  if (!isMessagingToolSendAction(params.toolName, params.args)) return;
+  params.telemetry.didSendViaMessagingTool = true;
+  const text = readFirstString(params.args, ["text", "message", "body", "content"]);
+  if (text) params.telemetry.messagingToolSentTexts.push(text);
+  const mediaUrls = collectArgMediaUrls(params.args);
+  params.telemetry.messagingToolSentMediaUrls.push(...mediaUrls);
+  params.telemetry.messagingToolSentTargets.push({
+    tool: params.toolName,
+    provider: readFirstString(params.args, ["provider", "channel"]) ?? params.toolName,
+    accountId: readFirstString(params.args, ["accountId", "account_id"]),
+    to: readFirstString(params.args, ["to", "target", "recipient"]),
+    threadId: readFirstString(params.args, ["threadId", "thread_id", "messageThreadId"]),
+    ...(text ? { text } : {}),
+    ...(mediaUrls.length > 0 ? { mediaUrls } : {}),
+  } as MessagingToolSend);
 }
 
-function extractContentItems(result: Record<string, unknown>): DynamicToolCallOutputContentItem[] {
-  const items: DynamicToolCallOutputContentItem[] = [];
+// ─── Result projection ──────────────────────────────────────────────────────
 
-  // Common AgentToolResult shapes:
-  //  - { content: string }
-  //  - { content: Array<{type, text|imageUrl|...}> }
-  //  - { text: string }
-  //  - { result: any, ... }
-  const content = result.content;
+function projectContentItems(result: unknown): DynamicToolCallOutputContentItem[] {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return [{ type: "inputText", text: String(result) }];
+  }
+  const obj = result as Record<string, unknown>;
+  const items: DynamicToolCallOutputContentItem[] = [];
+  const content = obj.content;
   if (typeof content === "string") {
     items.push({ type: "inputText", text: content });
   } else if (Array.isArray(content)) {
@@ -119,23 +228,57 @@ function extractContentItems(result: Record<string, unknown>): DynamicToolCallOu
       }
     }
   }
-  if (items.length === 0 && typeof result.text === "string") {
-    items.push({ type: "inputText", text: result.text });
+  if (items.length === 0) {
+    if (typeof obj.text === "string") {
+      items.push({ type: "inputText", text: obj.text });
+    } else {
+      items.push({ type: "inputText", text: stringify(obj) });
+    }
   }
   return items;
 }
 
-function stringifyResult(obj: Record<string, unknown>): string {
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function isResultError(result: unknown): boolean {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const obj = result as Record<string, unknown>;
+  return obj.isError === true || obj.is_error === true;
+}
+
+function readFirstString(
+  args: Record<string, unknown>,
+  keys: readonly string[],
+): string | undefined {
+  for (const key of keys) {
+    const v = args[key];
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return undefined;
+}
+
+function collectArgMediaUrls(args: Record<string, unknown>): string[] {
+  const urls: string[] = [];
+  for (const key of ["mediaUrls", "mediaUrl", "imageUrls", "imageUrl", "url", "urls"]) {
+    const v = args[key];
+    if (typeof v === "string") urls.push(v);
+    else if (Array.isArray(v)) {
+      for (const item of v) {
+        if (typeof item === "string") urls.push(item);
+      }
+    }
+  }
+  return urls;
+}
+
+function stringify(value: unknown): string {
   try {
-    return JSON.stringify(obj);
+    return JSON.stringify(value);
   } catch {
-    return String(obj);
+    return String(value);
   }
 }
 
 function errorResponse(message: string): DynamicToolCallResponse {
-  return {
-    contentItems: [{ type: "inputText", text: message }],
-    success: false,
-  };
+  return { contentItems: [{ type: "inputText", text: message }], success: false };
 }

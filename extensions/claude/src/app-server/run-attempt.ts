@@ -102,6 +102,14 @@ export async function runClaudeAppServerAttempt(
       tools,
       signal: ac.signal,
       excludeNames: cfg.dynamicTools.excludeNames,
+      hookContext: {
+        agentId: params.agentId,
+        config: params.config,
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        runId: params.runId,
+        channelId: params.currentChannelId,
+      },
     });
     unregisterServerRequest = registerToolCallHandler(client, bridge);
 
@@ -122,6 +130,22 @@ export async function runClaudeAppServerAttempt(
       completedCount: accumulated.itemCount,
       activeCount: 0,
     };
+    // Copy telemetry from the bridge — messaging-tool sends, media artifacts,
+    // audio-as-voice flag, heartbeat response. The bridge mutates these as
+    // each tool call lands.
+    result.didSendViaMessagingTool = bridge.telemetry.didSendViaMessagingTool;
+    result.messagingToolSentTexts = bridge.telemetry.messagingToolSentTexts;
+    result.messagingToolSentMediaUrls = bridge.telemetry.messagingToolSentMediaUrls;
+    result.messagingToolSentTargets = bridge.telemetry.messagingToolSentTargets;
+    if (bridge.telemetry.toolMediaUrls.length > 0) {
+      result.toolMediaUrls = bridge.telemetry.toolMediaUrls;
+    }
+    if (bridge.telemetry.toolAudioAsVoice) {
+      result.toolAudioAsVoice = true;
+    }
+    if (bridge.telemetry.heartbeatToolResponse) {
+      result.heartbeatToolResponse = bridge.telemetry.heartbeatToolResponse;
+    }
     const hasText = result.assistantTexts.length > 0;
     const hasTools = result.toolMetas.length > 0;
     const hasReasoning = Boolean(accumulated.reasoning);
