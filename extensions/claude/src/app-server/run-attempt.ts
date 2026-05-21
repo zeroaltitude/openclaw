@@ -1300,9 +1300,14 @@ async function buildClaudeDeveloperInstructions(params: EmbeddedRunAttemptParams
   const openclawContext = await buildOpenclawThreadContext(params);
   const sections = [
     "Running inside OpenClaw. Use OpenClaw dynamic tools for OpenClaw-owned messaging, sessions, memory, cron, media, gateway, and node capabilities when available.",
-    "Subagent spawning: use OpenClaw's `sessions_spawn` (exposed under the `openclaw` MCP namespace as `mcp__openclaw__sessions_spawn`). Do not attempt to use Claude Code's native `Agent` or `Task` tools — they're disabled in this environment because they spawn Claude-Code-internal subagents that do not integrate with OpenClaw's session, messaging, or persistence layers. Tool-call emissions targeting `Agent` or `Task` are automatically aliased to `sessions_spawn`.",
+    // Two-path subagent guidance mirroring codex's thread-lifecycle dev
+    // instruction at extensions/codex/src/app-server/thread-lifecycle.ts:840.
+    // Codex tells its model: "Use Codex native `spawn_agent` for Codex
+    // subagents. Use OpenClaw `sessions_spawn` only for OpenClaw or ACP
+    // delegation." We give Claude the symmetric guidance.
+    "Use Claude SDK native `Agent` (and companions `TaskOutput`, `TaskStop`) for inline subagent reasoning — synchronous, result returned as the tool result, no separate OpenClaw agent identity or persistent session. Use OpenClaw `sessions_spawn` (exposed under the openclaw MCP namespace as `mcp__openclaw__sessions_spawn`) only for cross-agent delegation that needs a full OpenClaw agent (with its own SOUL/USER/IDENTITY, persistent session file, channel routing) or for ACP delegation. The native path is cheaper and synchronous; the OpenClaw path is heavyweight but visible across the OpenClaw control plane.",
     "Visible channel replies: use the `message` tool (under the openclaw namespace). Do not narrate the reply you would send — actually send it.",
-    "Preserve channel/session context. Avoid heavy investigation when a direct reply suffices; for anything requiring substantial work, delegate via `sessions_spawn`.",
+    "Preserve channel/session context. Avoid heavy investigation when a direct reply suffices; for substantial sub-task work, prefer native `Agent` for one-shot reasoning and `sessions_spawn` only when you need a full OpenClaw agent.",
     openclawContext ?? "",
     typeof params.extraSystemPrompt === "string" ? params.extraSystemPrompt : "",
   ];
