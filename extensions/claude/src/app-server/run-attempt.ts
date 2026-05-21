@@ -115,18 +115,17 @@ export async function runClaudeAppServerAttempt(
     });
     unregisterServerRequest = registerToolCallHandler(client, bridge);
 
-    // 3. Ensure thread binding for this session.
+    // 3. Ensure thread binding for this session. The thread/start carries the
+    //    OpenClaw bootstrap context (SOUL.md + workspace files + skills) in
+    //    developerInstructions so the SDK pins it as systemPrompt for the
+    //    thread's lifetime — we do not re-inject per turn. Edits to SOUL.md
+    //    propagate on the next thread reset (/reset, agent restart, or any
+    //    change that invalidates the binding).
     const threadId = await ensureThread(client, params, cfg, bridge);
 
-    // 4. Materialize OpenClaw bootstrap context (SOUL.md, USER.md, IDENTITY.md,
-    //    HEARTBEAT.md, etc.) for THIS turn. App-server harnesses can't update
-    //    the SDK systemPrompt mid-thread, so codex's pattern (which we mirror)
-    //    is to prepend the workspace context into the user prompt every turn.
-    const openclawContext = await buildOpenclawTurnContext(params);
-
-    // 5. Run the turn. This is where the actual SDK invocation happens
-    //    server-side and we collect the streaming notifications.
-    const accumulated = await runTurn(client, params, threadId, cfg, ac, openclawContext);
+    // 4. Run the turn. Per-turn user prompt is just the user's actual message;
+    //    we don't duplicate workspace context into the transcript.
+    const accumulated = await runTurn(client, params, threadId, cfg, ac);
 
     // 5. Populate result.
     result.assistantTexts = accumulated.assistantTexts;
@@ -275,7 +274,7 @@ async function ensureThread(
     approvalsReviewer: "user",
     sandbox: cfg.appServer.sandbox,
     dynamicTools: bridge.specs,
-    developerInstructions: buildClaudeDeveloperInstructions(params),
+    developerInstructions: await buildClaudeDeveloperInstructions(params),
   };
   const response = await client.request<ThreadStartResponse>("thread/start", startParams);
   const threadId = response.thread?.id;
@@ -330,11 +329,10 @@ async function runTurn(
   threadId: string,
   cfg: ResolvedConfig,
   ac: AbortController,
-  openclawContext: string | undefined,
 ): Promise<Accumulator> {
   const turnParams: TurnStartParams = {
     threadId,
-    input: buildInput(params, openclawContext),
+    input: buildInput(params),
     cwd: params.workspaceDir,
     model: params.modelId,
   };
@@ -482,31 +480,29 @@ async function runTurn(
  * lifecycle — the server also disables/aliases those at the SDK layer as
  * defense-in-depth).
  */
-function buildClaudeDeveloperInstructions(params: EmbeddedRunAttemptParams): string {
+async function buildClaudeDeveloperInstructions(params: EmbeddedRunAttemptParams): Promise<string> {
+  // OpenClaw bootstrap context (SOUL.md + workspace files + skills) is bundled
+  // into developerInstructions so the SDK pins it as systemPrompt for the
+  // thread's lifetime. Avoids per-turn duplication into the transcript at the
+  // cost of needing a thread rotation for SOUL.md edits to propagate.
+  const openclawContext = await buildOpenclawThreadContext(params);
   const sections = [
     "Running inside OpenClaw. Use OpenClaw dynamic tools for OpenClaw-owned messaging, sessions, memory, cron, media, gateway, and node capabilities when available.",
     "Subagent spawning: use OpenClaw's `sessions_spawn` (exposed under the `openclaw` MCP namespace as `mcp__openclaw__sessions_spawn`). Do not attempt to use Claude Code's native `Agent` or `Task` tools — they're disabled in this environment because they spawn Claude-Code-internal subagents that do not integrate with OpenClaw's session, messaging, or persistence layers. Tool-call emissions targeting `Agent` or `Task` are automatically aliased to `sessions_spawn`.",
     "Visible channel replies: use the `message` tool (under the openclaw namespace). Do not narrate the reply you would send — actually send it.",
     "Preserve channel/session context. Avoid heavy investigation when a direct reply suffices; for anything requiring substantial work, delegate via `sessions_spawn`.",
+    openclawContext ?? "",
     typeof params.extraSystemPrompt === "string" ? params.extraSystemPrompt : "",
   ];
   return sections.filter((s) => s.trim().length > 0).join("\n\n");
 }
 
-function buildInput(
-  params: EmbeddedRunAttemptParams,
-  openclawContext: string | undefined,
-): UserInput[] {
-  // Prepend the OpenClaw turn context (SOUL.md, workspace files, skills) into
-  // the user prompt. Mirrors codex's prependCodexOpenClawPromptContext: the
-  // model sees workspace context as user/project reference data, then the
-  // actual ask. The "Current user request:" framing matches codex so the
-  // model's training-time signals about "what comes after this header is the
-  // active question" carry over.
-  const text = openclawContext
-    ? `${openclawContext}\n\nCurrent user request:\n${params.prompt}`
-    : params.prompt;
-  const blocks: UserInput[] = [{ type: "text", text }];
+function buildInput(params: EmbeddedRunAttemptParams): UserInput[] {
+  // Per-turn message is just the user's text + any attached images.
+  // OpenClaw bootstrap context (SOUL.md, workspace files, skills) is delivered
+  // ONCE at thread/start via developerInstructions; we do not prepend it here
+  // or it would duplicate into the transcript on every turn.
+  const blocks: UserInput[] = [{ type: "text", text: params.prompt }];
   if (params.images && params.images.length > 0) {
     for (const img of params.images) {
       const url = `data:${img.mimeType};base64,${img.data}`;
@@ -516,9 +512,11 @@ function buildInput(
   return blocks;
 }
 
-// ─── OpenClaw turn context (SOUL.md + workspace files + skills) ─────────────
+// ─── OpenClaw thread context (SOUL.md + workspace files + skills) ──────────
+// Built ONCE at thread/start time and shipped via developerInstructions so the
+// SDK keeps it in the conversation's system prompt for the thread's lifetime.
 
-async function buildOpenclawTurnContext(
+async function buildOpenclawThreadContext(
   params: EmbeddedRunAttemptParams,
 ): Promise<string | undefined> {
   try {
