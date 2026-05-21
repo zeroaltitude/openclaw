@@ -19,6 +19,7 @@
 import { createHash } from "node:crypto";
 import { createOpenClawCodingTools } from "openclaw/plugin-sdk/agent-harness";
 import {
+  buildAgentHookContextChannelFields,
   buildEmbeddedAttemptToolRunContext,
   embeddedAgentLog,
   emitAgentEvent,
@@ -135,19 +136,32 @@ export async function runClaudeAppServerAttempt(
     // 2. Materialize OpenClaw's tool registry for this turn.
     const tools = await buildTools(params, { sandbox, resolvedWorkspace, effectiveWorkspace });
 
-    // 3. Project to DynamicToolSpec[] + register the server→client tool-call bridge.
+    // 3. Resolve hook channel/messageProvider off the sandbox session key so
+    //    before/after tool hooks, loop detection, provenance, and group/
+    //    channel policy resolution all see the right context — codex pattern
+    //    from extensions/codex/src/app-server/run-attempt.ts:resolveCodexAppServerHookChannelId.
+    const hookChannelFields = buildAgentHookContextChannelFields({
+      sessionKey: sandboxSessionKey,
+      messageChannel: params.messageChannel,
+      messageProvider: params.messageProvider,
+      currentChannelId: params.currentChannelId,
+      messageTo: params.messageTo,
+    });
+    const sharedHookContext = {
+      agentId: params.agentId,
+      config: params.config,
+      sessionId: params.sessionId,
+      sessionKey: sandboxSessionKey,
+      runId: params.runId,
+      channelId: hookChannelFields.channelId,
+    };
+
+    // 4. Project to DynamicToolSpec[] + register the server→client tool-call bridge.
     const bridge = createClaudeDynamicToolBridge({
       tools,
       signal: ac.signal,
       excludeNames: cfg.dynamicTools.excludeNames,
-      hookContext: {
-        agentId: params.agentId,
-        config: params.config,
-        sessionId: params.sessionId,
-        sessionKey: params.sessionKey,
-        runId: params.runId,
-        channelId: params.currentChannelId,
-      },
+      hookContext: sharedHookContext,
     });
     unregisterServerRequest = registerToolCallHandler(client, bridge);
     // Register a parallel handler for native-tool approval requests
@@ -156,14 +170,12 @@ export async function runClaudeAppServerAttempt(
     // OpenClaw's BeforeToolCall policy chain instead of falling through to
     // the default-decline path. Without this, promoting approvalPolicy to
     // "untrusted" would blanket-block every native tool call. Bypass-mode
-    // turns (allowAll=true on the server) never invoke this path.
+    // turns (allowAll=true on the server) never invoke this path. Note:
+    // approve/decline only — the SDK approval response doesn't carry
+    // adjusted params, so a hook's params-rewrite is effectively ignored for
+    // native tools (filed as openclaw-ggv).
     const unregisterApproval = registerApprovalHandler(client, {
-      agentId: params.agentId,
-      config: params.config,
-      sessionId: params.sessionId,
-      sessionKey: params.sessionKey,
-      runId: params.runId,
-      channelId: params.currentChannelId,
+      ...sharedHookContext,
       signal: ac.signal,
     });
     const composedUnregister = unregisterServerRequest;
@@ -194,11 +206,12 @@ export async function runClaudeAppServerAttempt(
       developerInstructions,
       developerInstructionsFingerprint,
       dynamicToolsFingerprint,
+      effectiveWorkspace,
     );
 
     // 6. Run the turn. Per-turn user prompt is just the user's actual message;
     //    we don't duplicate workspace context into the transcript.
-    const accumulated = await runTurn(client, params, threadId, cfg, ac);
+    const accumulated = await runTurn(client, params, threadId, cfg, ac, effectiveWorkspace);
 
     // 5b. Emit the canonical end-of-turn assistant event so downstream
     //     delivery (auto-reply dispatcher + message_sending hooks like the
@@ -421,23 +434,36 @@ function filterToolsForVisionInputs<T extends { name?: string }>(
   return tools.filter((tool) => tool.name !== "image");
 }
 
+// Mirrors codex's normalizeCodexDynamicToolName (dynamic-tool-profile.ts:27).
+// Codex normalizes case + applies a small alias table; we replicate so
+// `toolsAllow: ["bash"]` matches a tool named `exec`, etc. Cross-importing
+// from another extension would violate the plugin boundary so the alias
+// table is duplicated here intentionally.
+const DYNAMIC_TOOL_NAME_ALIASES: Record<string, string> = {
+  bash: "exec",
+  "apply-patch": "apply_patch",
+};
+
+function normalizeToolName(name: string): string {
+  const normalized = name.trim().toLowerCase();
+  return DYNAMIC_TOOL_NAME_ALIASES[normalized] ?? normalized;
+}
+
 function filterToolsForAllowlist<T extends { name: string }>(
   tools: T[],
   toolsAllow?: string[],
 ): T[] {
   if (!toolsAllow) return tools;
   if (toolsAllow.length === 0) return [];
-  if (toolsAllow.some((n) => n.trim() === "*")) return tools;
-  const allow = new Set(toolsAllow.map((n) => n.trim()).filter(Boolean));
-  // Mirror codex's alias handling at filterCodexDynamicToolsForAllowlist —
-  // ["exec"] should include both sandbox_exec and sandbox_process variants
-  // when openclaw's runtime-plan substitutes those names. Without this a
-  // literal "bash" / "exec" allowlist drops normalized variants.
+  if (toolsAllow.some((n) => normalizeToolName(n) === "*")) return tools;
+  const allow = new Set(toolsAllow.map(normalizeToolName).filter((n) => n.length > 0));
   return tools.filter((tool) => {
-    if (allow.has(tool.name)) return true;
-    if (tool.name === "sandbox_exec" && allow.has("exec")) return true;
-    if (tool.name === "sandbox_process" && (allow.has("exec") || allow.has("process"))) return true;
-    return false;
+    const normalized = normalizeToolName(tool.name);
+    return (
+      allow.has(normalized) ||
+      (normalized === "sandbox_exec" && allow.has("exec")) ||
+      (normalized === "sandbox_process" && (allow.has("exec") || allow.has("process")))
+    );
   });
 }
 
@@ -448,12 +474,13 @@ function includeForcedMessageToolAllow(
   if (
     !shouldForceMessageTool(params) ||
     toolsAllow === undefined ||
-    toolsAllow.some((n) => n.trim() === "*")
+    toolsAllow.some((n) => normalizeToolName(n) === "*")
   ) {
     return toolsAllow;
   }
   if (toolsAllow.length === 0) return ["message"];
-  return toolsAllow.includes("message") ? toolsAllow : [...toolsAllow, "message"];
+  const hasMessage = toolsAllow.some((n) => normalizeToolName(n) === "message");
+  return hasMessage ? toolsAllow : [...toolsAllow, "message"];
 }
 
 function shouldForceMessageTool(params: EmbeddedRunAttemptParams): boolean {
@@ -485,6 +512,7 @@ async function ensureThread(
   developerInstructions: string,
   developerInstructionsFingerprint: string,
   dynamicToolsFingerprint: string,
+  effectiveWorkspace: string,
 ): Promise<string> {
   const sessionFile = params.sessionFile;
   const existing = sessionFile ? await readClaudeAppServerBinding(sessionFile) : null;
@@ -541,7 +569,11 @@ async function ensureThread(
   // (OPENCLAW_CLAUDE_APP_SERVER_DISALLOWED_TOOLS, typically "Agent,Task").
   const nativeDisallowed = computeNativeDisallowedTools(params);
   const startParams: ThreadStartParams = {
-    cwd: params.workspaceDir ?? process.cwd(),
+    // effectiveWorkspace, not raw workspaceDir, so when sandbox
+    // workspaceAccess is read-only or copy-on-write the SDK's native
+    // Read/Edit/Bash see the sandbox-isolated path (server forwards this
+    // to sdkOptions.cwd). Mirrors codex's effectiveWorkspace passthrough.
+    cwd: effectiveWorkspace,
     model: params.modelId,
     modelProvider: "anthropic",
     approvalPolicy: cfg.appServer.approvalPolicy,
@@ -613,12 +645,16 @@ async function runTurn(
   threadId: string,
   cfg: ResolvedConfig,
   ac: AbortController,
+  effectiveWorkspace: string,
 ): Promise<Accumulator> {
   const effort = resolveReasoningEffort(params.thinkLevel, params.modelId);
   const turnParams: TurnStartParams = {
     threadId,
     input: buildInput(params),
-    cwd: params.workspaceDir,
+    // effectiveWorkspace — see ensureThread cwd comment. Per-turn cwd lets
+    // the server pin SDK cwd on the resume path too, in case the SDK reads
+    // it from turn rather than thread-create.
+    cwd: effectiveWorkspace,
     model: params.modelId,
     ...(effort ? { effort } : {}),
   };
@@ -1045,41 +1081,47 @@ function safeStringify(value: unknown): string {
 // here rather than fetched dynamically because the SDK doesn't expose a
 // stable enumeration and getting it wrong fails safe (over-block, not
 // under-block).
+// Derived from @anthropic-ai/claude-agent-sdk's exported *Input types in
+// sdk-tools.d.ts (the SDK enumerates each native tool via its input type).
+// Listed destructive-first so partial coverage from a future SDK update
+// still hits the highest-risk surface. Includes a few extended SDK tools
+// (BashOutput / KillBash / KillShell / MultiEdit) that are part of the
+// claude_code preset but don't have dedicated *Input types in the d.ts
+// today. The sdk-native-tool-list contract test (TODO) should fail if the
+// SDK adds a new *Input type that's not present here.
 const NATIVE_TOOLS_FULL_SET = [
+  // Shell
   "Bash",
   "BashOutput",
   "KillBash",
   "KillShell",
+  // File mutation
   "Write",
   "Edit",
   "MultiEdit",
   "NotebookEdit",
+  // File read / search
   "Read",
   "Glob",
   "Grep",
+  // Web
   "WebFetch",
   "WebSearch",
+  // Subagent / task
   "Task",
+  "TaskOutput",
+  "TaskStop",
   "Agent",
-  "ToolSearch",
+  // Planning / UX
   "EnterPlanMode",
   "ExitPlanMode",
   "EnterWorktree",
   "ExitWorktree",
-  "CronCreate",
-  "CronDelete",
-  "CronList",
-  "TaskCreate",
-  "TaskGet",
-  "TaskList",
-  "TaskOutput",
-  "TaskStop",
-  "TaskUpdate",
-  "Monitor",
-  "PushNotification",
-  "RemoteTrigger",
-  "ListMcpResourcesTool",
-  "ReadMcpResourceTool",
+  "TodoWrite",
+  "AskUserQuestion",
+  // MCP introspection
+  "ListMcpResources",
+  "ReadMcpResource",
 ];
 
 function computeNativeDisallowedTools(params: EmbeddedRunAttemptParams): string[] {
