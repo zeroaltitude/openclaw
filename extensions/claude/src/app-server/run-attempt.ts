@@ -679,53 +679,63 @@ async function ensureThread(
   //    enabled/disabled/upgraded, allowlist edited, sandbox toggled).
   //    Pre-rebuild bindings without the field are grandfathered (no
   //    rotation) to avoid disrupting existing threads.
+  // Rotation reasons that the server CAN'T patch via applyResumeOverrides.
+  // Today the only such reason is a dynamicTools-catalog shift — the SDK's
+  // MCP server registration happens at thread/start and isn't refreshable
+  // on resume. Rotating for that case still drops the SDK transcript;
+  // tracked as a follow-up (need a server-side "thread/fork" or in-place
+  // mcpServers refresh path).
+  //
+  // Reasons we used to rotate for but now patch in-place via resume:
+  //  - cwd (Tank-#6 fix; server applyResumeOverrides patches meta.cwd)
+  //  - approvalPolicy (server applyResumeOverrides supports it; Tank-#7 P2)
+  //  - developerInstructions (ditto; Tank-#7 P2)
+  //
+  // Rationale: rotation calls thread/start which creates a new thread_id +
+  // sessionId, and the SDK's session store keys messages.jsonl by that id —
+  // so rotation eats the conversation transcript. In-place resume keeps
+  // the same thread (and SDK session) alive and patches meta so subsequent
+  // turns see the new values.
   let rotationReason: string | undefined;
   if (existing) {
-    if (existing.approvalPolicy !== cfg.appServer.approvalPolicy) {
-      rotationReason = `approvalPolicy ${existing.approvalPolicy ?? "unset"} → ${cfg.appServer.approvalPolicy}`;
-    } else if (
-      existing.developerInstructionsFingerprint &&
-      existing.developerInstructionsFingerprint !== developerInstructionsFingerprint
-    ) {
-      rotationReason = "developerInstructions changed (SOUL.md or workspace files edited)";
-    } else if (
+    if (
       existing.dynamicToolsFingerprint &&
       existing.dynamicToolsFingerprint !== dynamicToolsFingerprint
     ) {
       rotationReason = "dynamic tool catalog changed (plugin set, allowlist, or sandbox shifted)";
     }
   }
-  // NOTE: we do NOT rotate on cwd mismatch. Tank P2 caught a regression
-  // where rotation called thread/start which creates a fresh thread_id +
-  // sessionId, and the SDK's session store keys messages.jsonl by that id —
-  // so rotation eats the conversation transcript. Instead we send `cwd` on
-  // thread/resume and the server patches meta.cwd via applyResumeOverrides;
-  // subsequent turns pin sdkOptions.cwd from the updated meta. No transcript
-  // loss.
 
   if (existing && !rotationReason) {
     try {
-      // Send cwd so the server can patch meta.cwd if the effectiveWorkspace
-      // diverged from what the existing binding recorded (e.g. sandbox
-      // toggled, or this is a pre-effectiveWorkspace binding). Server
-      // updates meta in-place; no thread rotation, no transcript loss.
+      // Send any divergent fields the server can patch in-place
+      // (applyResumeOverrides at openclaw-claude/server/src/handlers/
+      // thread-resume.ts). Each one would have triggered a rotation +
+      // transcript loss in the old code — Tank-#6 (cwd) + Tank-#7 (the
+      // rest).
       const cwdDiverged = existing.cwd !== effectiveWorkspace;
+      const approvalPolicyDiverged = existing.approvalPolicy !== cfg.appServer.approvalPolicy;
+      const developerInstructionsDiverged =
+        existing.developerInstructionsFingerprint != null &&
+        existing.developerInstructionsFingerprint !== developerInstructionsFingerprint;
       await client.request("thread/resume", {
         threadId: existing.threadId,
         ...(cwdDiverged ? { cwd: effectiveWorkspace } : {}),
+        ...(approvalPolicyDiverged ? { approvalPolicy: cfg.appServer.approvalPolicy } : {}),
+        ...(developerInstructionsDiverged ? { developerInstructions } : {}),
       });
-      // Persist the new cwd in our binding sidecar so future resumes don't
-      // re-send the same cwd update on every turn.
-      if (cwdDiverged && sessionFile) {
+      // Persist the new values in our binding sidecar so future resumes
+      // don't re-send the same patches on every turn.
+      if (sessionFile && (cwdDiverged || approvalPolicyDiverged || developerInstructionsDiverged)) {
         await writeClaudeAppServerBinding(sessionFile, {
           threadId: existing.threadId,
           cwd: effectiveWorkspace,
           model: existing.model,
           modelProvider: existing.modelProvider,
-          approvalPolicy: existing.approvalPolicy,
+          approvalPolicy: cfg.appServer.approvalPolicy,
           approvalsReviewer: existing.approvalsReviewer,
           sandbox: existing.sandbox,
-          developerInstructionsFingerprint: existing.developerInstructionsFingerprint,
+          developerInstructionsFingerprint,
           dynamicToolsFingerprint: existing.dynamicToolsFingerprint,
           createdAt: existing.createdAt,
         });
@@ -739,7 +749,7 @@ async function ensureThread(
       });
     }
   } else if (existing && rotationReason) {
-    embeddedAgentLog.info("claude-app-server: rotating thread", {
+    embeddedAgentLog.info("claude-app-server: rotating thread (transcript will reset)", {
       sessionFile,
       previousThreadId: existing.threadId,
       reason: rotationReason,
