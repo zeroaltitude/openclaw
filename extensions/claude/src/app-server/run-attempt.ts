@@ -1,29 +1,40 @@
 /**
  * Drives a single Claude turn through @openclaw/claude-app-server.
  *
- * Lifecycle (inside runClaudeAppServerAttempt):
- *   1. Resolve sandbox + effectiveWorkspace via resolveSandboxContext.
- *   2. Materialize OpenClaw's tool registry (buildTools with gating +
- *      vision/allowlist filters + runtime-plan normalization).
- *   3. Build sharedHookContext from sandboxSessionKey +
- *      buildAgentHookContextChannelFields.
- *   4. Project tools into DynamicToolSpec[]; register tool-call + approval
- *      server-request handlers.
- *   5. Build developerInstructions; compute developer/dynamic-tools
- *      fingerprints.
- *   6. ensureThread — resume or fresh thread/start with cwd=effectiveWorkspace
- *      + projected disallowedTools.
+ * Lifecycle (inside runClaudeAppServerAttempt, matching inline step
+ * comments below):
+ *   1. Resolve sandbox + effectiveWorkspace via resolveSandboxContext; apply
+ *      codex-equivalent approval-policy promotion.
+ *   2. Build sharedHookContext from sandboxSessionKey +
+ *      buildAgentHookContextChannelFields (sandbox-resolved channelId).
+ *   3. Materialize OpenClaw's tool registry (buildTools with disableTools/
+ *      toolsAllow gating, vision filter, allowlist filter w/ codex-style
+ *      name normalization, runtime-plan normalization).
+ *   4. Project tools into DynamicToolSpec[]; register the server→client
+ *      handlers for item/tool/call (dynamic tools) and approval requests
+ *      (native tools through OpenClaw's BeforeToolCall policy chain).
+ *   5. Build developerInstructions; compute developerInstructions +
+ *      dynamicTools fingerprints for rotation detection.
+ *   6. ensureThread — resume (and patch cwd in meta when divergent) or
+ *      fresh thread/start with cwd=effectiveWorkspace + projected
+ *      disallowedTools.
  *   7. runTurn — turn/start; stream item/started + item/completed + delta
  *      notifications, emit stream:"tool"/"reasoning"/"item"/"assistant"
  *      events for live downstream rendering; capture per-tool args+results
- *      for messagesSnapshot + AfterToolCall hook firing.
- *   8. Emit terminal stream:"assistant" marker; populate
- *      EmbeddedRunAttemptResult fields (assistantTexts, messagesSnapshot,
+ *      for messagesSnapshot; fire AfterToolCall for native tools at
+ *      item/completed. Emit the terminal stream:"assistant" {text} marker
+ *      so the auto-reply dispatcher's message_sending chain keys on it.
+ *   8. Populate EmbeddedRunAttemptResult (assistantTexts, messagesSnapshot,
  *      lastAssistant, toolMetas, telemetry).
+ *   9. Fire runAgentHarnessLlmOutputHook + runAgentHarnessAgentEndHook so
+ *      the provenance plugin's agent_end → finalTaintBySession bookkeeping
+ *      populates, which message_sending then reads to attach the trust
+ *      footer (codex/run-attempt.ts:2686 + :2704 mirror).
  *
  * Codex parity scope: tool policy / sandboxed cwd / hook context / native
- * approvals / message_sending hook chain. NOT yet: compact, side-question,
- * native-hook-relay, computer-use, plugin-thread-config.
+ * approvals / messagesSnapshot + agent_end firing for the message_sending
+ * hook chain. NOT yet: compact, side-question, native-hook-relay,
+ * computer-use, plugin-thread-config.
  */
 
 import { createHash } from "node:crypto";
