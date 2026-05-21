@@ -52,10 +52,6 @@
             "default": 90000,
             "description": "Idle watchdog: fail the turn if no notification arrives for this many ms."
           },
-          "statePath": {
-            "type": "string",
-            "description": "Path for the on-disk sessionId↔threadId mapping. Defaults to ~/.openclaw/state/claude-threads.json"
-          }
         }
       },
       "dynamicTools": {
@@ -80,10 +76,6 @@
     "appServer.sandbox": {
       "label": "Sandbox",
       "help": "Sandbox mode echoed to the server (the server doesn't enforce this; it's informational at this layer)."
-    },
-    "appServer.statePath": {
-      "label": "Thread State Path",
-      "advanced": true
     },
     "dynamicTools.exclude": {
       "label": "Dynamic Tool Excludes",
