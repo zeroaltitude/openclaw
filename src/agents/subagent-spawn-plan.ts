@@ -45,11 +45,18 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   targetAgentConfig?: unknown;
   modelOverride?: string;
   thinkingOverrideRaw?: string;
+  /**
+   * Parent's resolved model ref. Forwarded to
+   * resolveSubagentSpawnModelSelection so the child inherits the parent's
+   * runtime by default when no explicit override is given.
+   */
+  parentResolvedModel?: string;
 }) {
   const resolvedModel = resolveSubagentSpawnModelSelection({
     cfg: params.cfg,
     agentId: params.targetAgentId,
     modelOverride: params.modelOverride,
+    parentResolvedModel: params.parentResolvedModel,
   });
 
   const thinkingPlan = resolveSubagentThinkingOverride({

@@ -356,13 +356,30 @@ export function resolveSubagentSpawnModelSelection(params: {
   cfg: OpenClawConfig;
   agentId: string;
   modelOverride?: unknown;
+  /**
+   * Parent's resolved model ref (e.g. "anthropic/claude-sonnet-4-6"). When
+   * present and no explicit spawn-time `modelOverride` was given, the child
+   * inherits the parent's runtime by default. Falls back to the subagent's
+   * agent-configured model if the parent context isn't available (e.g. a
+   * cron-triggered standalone spawn).
+   */
+  parentResolvedModel?: unknown;
 }): string {
   const runtimeDefault = resolveDefaultModelForAgent({
     cfg: params.cfg,
     agentId: params.agentId,
   });
+  // Resolution precedence (highest first):
+  //  1. Explicit `model` arg passed to sessions_spawn (user override).
+  //  2. Parent's resolved model — inherits "spawned from Claude → child runs
+  //     on Claude" by default. This is the codex/claude-app-server policy
+  //     parity ask from Tank's review (openclaw-2y9).
+  //  3. Subagent's agent-configured model (e.g. narcissus's models.json).
+  //  4. Global agents.defaults.model.
+  //  5. Runtime default for the provider.
   const raw =
     normalizeModelSelection(params.modelOverride) ??
+    normalizeModelSelection(params.parentResolvedModel) ??
     resolveSubagentConfiguredModelSelection({
       cfg: params.cfg,
       agentId: params.agentId,

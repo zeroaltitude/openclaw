@@ -160,6 +160,14 @@ export type SpawnSubagentContext = {
   requesterAgentIdOverride?: string;
   /** Explicit workspace directory for subagent to inherit (optional). */
   workspaceDir?: string;
+  /**
+   * Parent's resolved model ref (e.g. "anthropic/claude-sonnet-4-6"). When
+   * present, the child inherits the parent's runtime by default
+   * (openclaw-2y9). Set by tools that build SpawnSubagentContext from a
+   * known parent run-attempt (e.g. createSessionsSpawnTool when invoked from
+   * the agent harness).
+   */
+  parentResolvedModel?: string;
   inheritedToolAllowlist?: string[];
   inheritedToolDenylist?: string[];
 };
@@ -883,6 +891,10 @@ export async function spawnSubagentDirect(
     targetAgentConfig,
     modelOverride,
     thinkingOverrideRaw,
+    // Inherit parent's runtime by default (openclaw-2y9) — only if the parent
+    // didn't set an explicit `model` spawn arg and the parent context carries
+    // a resolved model.
+    parentResolvedModel: ctx.parentResolvedModel,
   });
   if (plan.status === "error") {
     return {

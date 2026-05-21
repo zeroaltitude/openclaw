@@ -444,6 +444,14 @@ export function createOpenClawTools(
             config: resolvedConfig,
             requesterAgentIdOverride: options?.requesterAgentIdOverride,
             workspaceDir: spawnWorkspaceDir,
+            // Parent's resolved model ref so spawned subagents inherit the
+            // parent's runtime by default (openclaw-2y9). Tabitha-on-Claude
+            // spawning narcissus now spawns narcissus on Claude unless the
+            // user explicitly overrides via the spawn `model` arg.
+            parentResolvedModel:
+              options?.modelProvider && options?.modelId
+                ? `${options.modelProvider}/${options.modelId}`
+                : undefined,
             inheritedToolAllowlist: options?.inheritedToolAllowlist,
             inheritedToolDenylist: options?.inheritedToolDenylist,
           }),

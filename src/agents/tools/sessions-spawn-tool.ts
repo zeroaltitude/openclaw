@@ -256,6 +256,14 @@ export function createSessionsSpawnTool(
     config?: OpenClawConfig;
     /** Explicit agent ID override for cron/hook sessions where session key parsing may not work. */
     requesterAgentIdOverride?: string;
+    /**
+     * Parent's resolved model ref (e.g. "anthropic/claude-sonnet-4-6"). When
+     * present, forwarded into spawnSubagentDirect's context so the child
+     * inherits the parent's runtime by default (openclaw-2y9). Set by
+     * createOpenClawCodingTools when the tool is materialized in a context
+     * that knows the active model.
+     */
+    parentResolvedModel?: string;
   } & SpawnedToolContext,
 ): AnyAgentTool {
   const acpAvailable = isAcpRuntimeSpawnAvailable({
@@ -499,6 +507,7 @@ export function createSessionsSpawnTool(
           agentMemberRoleIds: opts?.agentMemberRoleIds,
           requesterAgentIdOverride: opts?.requesterAgentIdOverride,
           workspaceDir: opts?.workspaceDir,
+          parentResolvedModel: opts?.parentResolvedModel,
           inheritedToolAllowlist: opts?.inheritedToolAllowlist,
           inheritedToolDenylist: opts?.inheritedToolDenylist,
         },
