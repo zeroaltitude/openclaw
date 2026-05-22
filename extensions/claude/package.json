@@ -7,9 +7,6 @@
     "url": "https://github.com/openclaw/openclaw"
   },
   "type": "module",
-  "dependencies": {
-    "@openclaw/claude-app-server": "0.1.0"
-  },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*"
   },
