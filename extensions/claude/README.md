@@ -66,3 +66,34 @@ This extension registers `/claude` with subcommands:
   filtered out (`src/app-server/vision-tools.ts`).
 - **Doctor contract** (bridge-side): legacy-config rules and session-route
   ownership consumed by `openclaw doctor` (`doctor-contract-api.ts`).
+
+## Known limitations
+
+- **Tool-catalog change resets conversation transcript.** When the
+  active dynamic-tool catalog changes mid-session (plugin
+  enabled/disabled/upgraded, allowlist edited, sandbox toggled), the
+  bridge calls `thread/start` rather than `thread/resume` and the
+  underlying Claude Agent SDK's session transcript resets. The SDK's
+  MCP server registration happens at `thread/start` and isn't
+  refreshable on resume, so an in-place patch isn't possible today.
+  Tracked at `src/app-server/thread-lifecycle.ts` (KNOWN LIMITATION
+  docblock). Mitigations under consideration: (a) extend the server
+  to support `thread/fork` semantics that carry the SDK transcript
+  forward across catalog changes, or (b) get SDK support for
+  refreshable MCP registration. In practice catalog churn is rare for
+  stable plugin sets, so this is most visible after plugin upgrades.
+
+- **`@openclaw/claude-app-server` not yet on npm**: see the dependency
+  section above. Until 0.1.0 publishes, install the server package
+  manually from `openclaw-plugins`. The bridge surfaces a clear
+  `spawn openclaw-claude-app-server ENOENT` error if the binary
+  isn't on PATH.
+
+- **Codex parity scope not yet covered**: event projection,
+  transcript mirroring, dynamic-tool middleware (toolResultMaxChars,
+  source-reply telemetry, namespace/deferLoading) are not yet
+  implemented at codex's level of depth. Architecturally the
+  scaffolding (`config.ts`, `protocol-validators.ts`,
+  `thread-lifecycle.ts`) is in place to absorb these in follow-up
+  passes without inflating `run-attempt.ts`. Tracked in beads
+  `openclaw-7w9`.
