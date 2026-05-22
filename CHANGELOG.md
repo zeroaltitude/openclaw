@@ -21,6 +21,7 @@ Docs: https://docs.openclaw.ai
 - QA-Lab: add Codex plugin lifecycle and auth-profile fixture coverage for missing installs, pinned-version drift, first-turn install ordering, and doctor migration safety. (#80323, refs #80174) Thanks @100yenadmin.
 - Models/perf: pre-warm the provider auth-state map at gateway startup so `/models` and every model-listing call short-circuits the per-provider plugin / external-CLI discovery on the hot path. Per-call cost drops from ~20 s to ~5 ms (~4,100×); the one-time startup warm resets and re-warms after hot reloads. (#84816) Thanks @sjf.
 - Tests/perf: isolate doctor core health check unit coverage from real skills/workspace discovery so `doctor-core-checks` no longer dominates unit perf while keeping one real skills-readiness smoke. (#84493) Thanks @frankekn.
+- Plugins/perf: extend the prepared-manifest-metadata threading from #82814 into the runtime plugin-normalize branch (`normalizeProviderModelIdWithRuntime` → `normalizeProviderModelIdWithPlugin` → `normalizeProviderModelIdWithManifest`) so callers that already carry prepared `manifestPlugins` skip the residual `installs.json` slot-or-load disk walk in `resolveMetadataSnapshotForPolicies`.
 
 ### Fixes
 
