@@ -1,7 +1,7 @@
 /**
  * Per-session-file binding for Claude threads. Mirrors codex's
  * session-binding pattern: each OpenClaw session has a sidecar JSON file
- * recording the corresponding claude-app-server thread_id so the next turn
+ * recording the corresponding claude-bridge thread_id so the next turn
  * resumes via thread/resume instead of starting a fresh thread.
  *
  * Sidecar path: <sessionFile>.claude-binding.json
@@ -46,7 +46,7 @@ export async function readClaudeAppServerBinding(
     const raw = await fs.readFile(bindingPath(sessionFile), "utf8");
     const parsed = JSON.parse(raw) as ClaudeAppServerBinding;
     if (parsed.schemaVersion !== SCHEMA_VERSION || typeof parsed.threadId !== "string") {
-      embeddedAgentLog.warn("claude-app-server: binding schema mismatch, ignoring", {
+      embeddedAgentLog.warn("claude-bridge: binding schema mismatch, ignoring", {
         sessionFile,
         got: parsed.schemaVersion,
       });
@@ -57,7 +57,7 @@ export async function readClaudeAppServerBinding(
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
     }
-    embeddedAgentLog.warn("claude-app-server: failed to read binding", {
+    embeddedAgentLog.warn("claude-bridge: failed to read binding", {
       sessionFile,
       error: err instanceof Error ? err.message : String(err),
     });
@@ -84,7 +84,7 @@ export async function writeClaudeAppServerBinding(
     await fs.writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
     await fs.rename(tmp, target);
   } catch (err) {
-    embeddedAgentLog.warn("claude-app-server: failed to persist binding", {
+    embeddedAgentLog.warn("claude-bridge: failed to persist binding", {
       sessionFile,
       error: err instanceof Error ? err.message : String(err),
     });
@@ -96,7 +96,7 @@ export async function clearClaudeAppServerBinding(sessionFile: string): Promise<
     await fs.unlink(bindingPath(sessionFile));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      embeddedAgentLog.warn("claude-app-server: failed to clear binding", {
+      embeddedAgentLog.warn("claude-bridge: failed to clear binding", {
         sessionFile,
         error: err instanceof Error ? err.message : String(err),
       });

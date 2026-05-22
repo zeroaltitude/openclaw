@@ -1,5 +1,5 @@
 /**
- * Drives a single Claude turn through @openclaw/claude-app-server.
+ * Drives a single Claude turn through @zeroaltitude/openclaw-claude-bridge.
  *
  * Lifecycle (inside runClaudeAppServerAttempt, matching inline step
  * comments below):
@@ -282,7 +282,7 @@ export async function runClaudeAppServerAttempt(
         );
       }
     } catch (err) {
-      embeddedAgentLog.warn("claude-app-server: before_prompt_build threw", {
+      embeddedAgentLog.warn("claude-bridge: before_prompt_build threw", {
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -361,7 +361,7 @@ export async function runClaudeAppServerAttempt(
             data: { text: terminal },
           });
         } catch (err) {
-          embeddedAgentLog.debug("claude-app-server: emit terminal assistant threw", {
+          embeddedAgentLog.debug("claude-bridge: emit terminal assistant threw", {
             error: err,
           });
         }
@@ -446,7 +446,7 @@ export async function runClaudeAppServerAttempt(
         resolvedRef,
         ...(params.runtimePlan?.observability?.harnessId
           ? { harnessId: params.runtimePlan.observability.harnessId }
-          : { harnessId: "claude-app-server" }),
+          : { harnessId: "claude-bridge" }),
         assistantTexts: result.assistantTexts,
         ...(result.lastAssistant ? { lastAssistant: result.lastAssistant } : {}),
       },
@@ -473,7 +473,7 @@ export async function runClaudeAppServerAttempt(
     result.idleTimedOut = idle;
     result.promptError = err instanceof Error ? err : new Error(String(err));
     result.promptErrorSource = "prompt";
-    embeddedAgentLog.warn("claude-app-server: runAttempt failed", {
+    embeddedAgentLog.warn("claude-bridge: runAttempt failed", {
       sessionId: params.sessionId,
       error: err instanceof Error ? err.message : String(err),
     });
@@ -813,13 +813,13 @@ async function ensureThread(
       if (!isThreadNotFound(err)) {
         throw err;
       }
-      embeddedAgentLog.warn("claude-app-server: thread not found on resume; starting fresh", {
+      embeddedAgentLog.warn("claude-bridge: thread not found on resume; starting fresh", {
         sessionFile,
         threadId: existing.threadId,
       });
     }
   } else if (existing && rotationReason) {
-    embeddedAgentLog.info("claude-app-server: rotating thread (transcript will reset)", {
+    embeddedAgentLog.info("claude-bridge: rotating thread (transcript will reset)", {
       sessionFile,
       previousThreadId: existing.threadId,
       reason: rotationReason,
@@ -1128,7 +1128,7 @@ async function runTurn(
                 data: { text: textParts.join(""), delta: p.delta },
               });
             } catch (err) {
-              embeddedAgentLog.debug("claude-app-server: emitAgentEvent threw", { error: err });
+              embeddedAgentLog.debug("claude-bridge: emitAgentEvent threw", { error: err });
             }
           }
           break;
@@ -1243,7 +1243,7 @@ function emitToolEvent(
   try {
     emitAgentEvent({ runId: params.runId, stream: "tool", data });
   } catch (err) {
-    embeddedAgentLog.debug("claude-app-server: emit tool event threw", { error: err });
+    embeddedAgentLog.debug("claude-bridge: emit tool event threw", { error: err });
   }
 }
 
@@ -1272,7 +1272,7 @@ function emitItemEvent(
   try {
     emitAgentEvent({ runId: params.runId, stream: "item", data });
   } catch (err) {
-    embeddedAgentLog.debug("claude-app-server: emit item event threw", { error: err });
+    embeddedAgentLog.debug("claude-bridge: emit item event threw", { error: err });
   }
 }
 
@@ -1288,7 +1288,7 @@ function emitReasoningDeltaEvent(
       data: { delta, text: accumulated },
     });
   } catch (err) {
-    embeddedAgentLog.debug("claude-app-server: emit reasoning event threw", { error: err });
+    embeddedAgentLog.debug("claude-bridge: emit reasoning event threw", { error: err });
   }
 }
 
@@ -1670,7 +1670,7 @@ function registerApprovalHandler(
       // Fail closed — a hook error blocks the call rather than silently
       // allowing through. Same posture as codex's BeforeToolCall wrapper.
       const message = err instanceof Error ? err.message : String(err);
-      embeddedAgentLog.warn("claude-app-server: approval hook threw; declining", {
+      embeddedAgentLog.warn("claude-bridge: approval hook threw; declining", {
         toolName,
         error: message,
       });
@@ -1773,7 +1773,7 @@ async function buildOpenclawThreadContext(
       ...sections,
     ].join("\n");
   } catch (err) {
-    embeddedAgentLog.warn("claude-app-server: failed to assemble openclaw turn context", {
+    embeddedAgentLog.warn("claude-bridge: failed to assemble openclaw turn context", {
       error: err instanceof Error ? err.message : String(err),
     });
     return undefined;
@@ -1905,6 +1905,6 @@ function emptyResult(params: EmbeddedRunAttemptParams): EmbeddedRunAttemptResult
     cloudCodeAssistFormatError: false,
     replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
     itemLifecycle: { startedCount: 0, completedCount: 0, activeCount: 0 },
-    agentHarnessId: "claude-app-server",
+    agentHarnessId: "claude-bridge",
   };
 }

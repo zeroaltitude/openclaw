@@ -32,7 +32,7 @@ export const sessionRouteStateOwners: DoctorSessionRouteStateOwner[] = [
     id: "claude",
     label: "Claude",
     providerIds: ["anthropic", "claude"],
-    runtimeIds: ["claude", "claude-app-server"],
+    runtimeIds: ["claude", "claude-bridge"],
     cliSessionKeys: [],
     authProfilePrefixes: ["anthropic:", "claude:"],
   },

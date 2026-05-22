@@ -1,6 +1,6 @@
 /**
  * JSON-RPC 2.0 client over a stdio child process — talks to the
- * @openclaw/claude-app-server binary. Bidirectional: the server can send
+ * @zeroaltitude/openclaw-claude-bridge binary. Bidirectional: the server can send
  * REQUESTS to us (`item/tool/call`, approval requests) which we route to
  * registered handlers.
  *
@@ -34,7 +34,7 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
-const DEFAULT_COMMAND = "openclaw-claude-app-server";
+const DEFAULT_COMMAND = "openclaw-claude-bridge";
 const FORCE_KILL_DELAY_MS = 2_000;
 const REQUEST_TIMEOUT_MS = 600_000;
 const STDERR_TAIL_MAX = 2_000;
@@ -87,7 +87,7 @@ export class ClaudeAppServerClient {
       detached: process.platform !== "win32",
     });
 
-    embeddedAgentLog.info("claude-app-server: spawned", { pid: this.child.pid, command });
+    embeddedAgentLog.info("claude-bridge: spawned", { pid: this.child.pid, command });
 
     this.stderrRl = createInterface({ input: this.child.stderr! });
     this.stderrRl.on("line", (line) => {
@@ -95,26 +95,26 @@ export class ClaudeAppServerClient {
         return;
       }
       this.stderrTail = appendBoundedTail(this.stderrTail, `${line}\n`, STDERR_TAIL_MAX);
-      embeddedAgentLog.debug(`claude-app-server stderr: ${line}`);
+      embeddedAgentLog.debug(`claude-bridge stderr: ${line}`);
     });
 
     this.stdoutRl = createInterface({ input: this.child.stdout! });
     this.stdoutRl.on("line", (line) => this.onLine(line));
 
     this.child.once("exit", (code, signal) => {
-      embeddedAgentLog.warn("claude-app-server: process exited", { code, signal });
+      embeddedAgentLog.warn("claude-bridge: process exited", { code, signal });
       const suffix = this.stderrTail
         ? ` stderr=${JSON.stringify(this.stderrTail.slice(-STDERR_TAIL_MAX))}`
         : "";
       this.handleChildExit(
         new Error(
-          `openclaw-claude-app-server exited (code=${formatExitValue(code)} signal=${formatExitValue(signal)})${suffix}`,
+          `openclaw-claude-bridge exited (code=${formatExitValue(code)} signal=${formatExitValue(signal)})${suffix}`,
         ),
       );
     });
     this.child.stdin?.on("error", (err) => {
-      embeddedAgentLog.warn("claude-app-server: stdin error", { error: err.message });
-      this.handleChildExit(new Error(`openclaw-claude-app-server stdin error: ${err.message}`));
+      embeddedAgentLog.warn("claude-bridge: stdin error", { error: err.message });
+      this.handleChildExit(new Error(`openclaw-claude-bridge stdin error: ${err.message}`));
     });
 
     this.initializePromise = this.sendRequest<JsonValue>(
@@ -132,7 +132,7 @@ export class ClaudeAppServerClient {
           this.serverInfo = info as { name?: string; version?: string };
         }
       }
-      embeddedAgentLog.info("claude-app-server: initialized", { server: this.serverInfo });
+      embeddedAgentLog.info("claude-bridge: initialized", { server: this.serverInfo });
       return result;
     });
 
@@ -178,7 +178,7 @@ export class ClaudeAppServerClient {
     forceKill.unref?.();
     child.once("exit", () => clearTimeout(forceKill));
     child.unref?.();
-    this.rejectAll(new Error("claude-app-server stopped"));
+    this.rejectAll(new Error("claude-bridge stopped"));
   }
 
   isRunning(): boolean {
@@ -208,7 +208,7 @@ export class ClaudeAppServerClient {
         await this.initializePromise.catch(() => {});
       }
       if (!this.initialized) {
-        throw new Error("claude-app-server is not initialized");
+        throw new Error("claude-bridge is not initialized");
       }
     }
     return this.sendRequest<T>(method, params, signal);
@@ -234,7 +234,7 @@ export class ClaudeAppServerClient {
 
   private async sendRequest<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
     if (!this.child) {
-      throw new Error("claude-app-server is not running");
+      throw new Error("claude-bridge is not running");
     }
     const id = this.nextId++;
     const msg: RpcRequest = { jsonrpc: "2.0", id, method, params };
@@ -293,7 +293,7 @@ export class ClaudeAppServerClient {
     try {
       msg = JSON.parse(trimmed) as RpcMessage;
     } catch {
-      embeddedAgentLog.warn("claude-app-server: unparseable line", {
+      embeddedAgentLog.warn("claude-bridge: unparseable line", {
         preview: trimmed.slice(0, 200),
       });
       return;
@@ -307,7 +307,7 @@ export class ClaudeAppServerClient {
       const resp = msg as RpcResponse;
       const pending = this.pending.get(resp.id as number);
       if (!pending) {
-        embeddedAgentLog.warn("claude-app-server: unexpected response id", { id: resp.id });
+        embeddedAgentLog.warn("claude-bridge: unexpected response id", { id: resp.id });
         return;
       }
       this.pending.delete(resp.id as number);
@@ -331,7 +331,7 @@ export class ClaudeAppServerClient {
         try {
           handler(notif);
         } catch (err) {
-          embeddedAgentLog.warn("claude-app-server: notification handler threw", { error: err });
+          embeddedAgentLog.warn("claude-bridge: notification handler threw", { error: err });
         }
       }
     }
