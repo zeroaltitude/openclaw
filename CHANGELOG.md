@@ -11,6 +11,7 @@ Docs: https://docs.openclaw.ai
 - Tasks/maintenance: add configurable task retention and sweep intervals plus index-driven registry sweeps that fast-skip non-due records and reuse a top-of-sweep snapshot. (#77395) Thanks @zeroaltitude.
 - Agents/config: allow `agents.list[].experimental.localModelLean` so lean local-model mode can be enabled for one configured agent instead of globally.
 - Memory/QMD: persist a per-file export-state cache to `<qmdDir>/sessions/.export-state.json` and add a size/mtime stat fast path before `buildSessionEntry()` in `qmd-manager.exportSessions()`, so agents with thousands of session transcripts skip the full JSONL read, parse, redact, hash, and render pipeline when the source file is unchanged across boot and 5-minute interval syncs. The cache is gated by `SESSION_EXPORT_RENDER_VERSION` and the resolved export directory and is invalidated cleanly on schema, render-version, or `exportDir` mismatch. Thanks @zeroaltitude.
+- Plugins/perf: extend the prepared-manifest-metadata threading from #82814 into the runtime plugin-normalize branch (`normalizeProviderModelIdWithRuntime` → `normalizeProviderModelIdWithPlugin` → `normalizeProviderModelIdWithManifest`) so callers that already carry prepared `manifestPlugins` skip the residual `installs.json` slot-or-load disk walk in `resolveMetadataSnapshotForPolicies`.
 - Providers/xAI: add device-code OAuth login so remote and headless setups can authorize xAI without a localhost browser callback. (#84005) Thanks @fuller-stack-dev.
 
 ### Fixes
