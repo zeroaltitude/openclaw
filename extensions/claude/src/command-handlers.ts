@@ -61,8 +61,8 @@ export async function handleVersion(_ctx: PluginCommandContext): Promise<PluginC
   const server = await locateServerPackageVersion();
   lines.push(
     server
-      ? `- Server (@openclaw/claude-app-server): ${server}`
-      : "- Server (@openclaw/claude-app-server): not installed",
+      ? `- Server (@zeroaltitude/openclaw-claude-bridge): ${server}`
+      : "- Server (@zeroaltitude/openclaw-claude-bridge): not installed",
   );
   return { text: lines.join("\n") };
 }
@@ -166,11 +166,18 @@ async function locateServerPackageVersion(): Promise<string | null> {
       "..",
       "..",
       "node_modules",
-      "@openclaw",
-      "claude-app-server",
+      "@zeroaltitude",
+      "openclaw-claude-bridge",
       "package.json",
     ),
-    path.resolve(HERE, "..", "node_modules", "@openclaw", "claude-app-server", "package.json"),
+    path.resolve(
+      HERE,
+      "..",
+      "node_modules",
+      "@zeroaltitude",
+      "openclaw-claude-bridge",
+      "package.json",
+    ),
   ];
   for (const candidate of candidates) {
     const version = await readPackageVersion(candidate);

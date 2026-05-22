@@ -1,10 +1,10 @@
 {
   "id": "claude",
   "name": "Claude",
-  "description": "Claude app-server harness. Delegates Anthropic-provider turns to a local @openclaw/claude-app-server process, mirroring the codex-app-server pattern. Exposes OpenClaw dynamic tools to Claude inside the turn.",
+  "description": "Claude app-server harness. Delegates Anthropic-provider turns to a local @zeroaltitude/openclaw-claude-bridge process, mirroring the codex-app-server pattern. Exposes OpenClaw dynamic tools to Claude inside the turn.",
   "activation": {
     "onStartup": false,
-    "onAgentHarnesses": ["claude-app-server"]
+    "onAgentHarnesses": ["claude-bridge"]
   },
   "configSchema": {
     "type": "object",
@@ -16,7 +16,7 @@
         "properties": {
           "command": {
             "type": "string",
-            "description": "Executable for the openclaw-claude-app-server binary. Defaults to 'openclaw-claude-app-server' on PATH."
+            "description": "Executable for the openclaw-claude-bridge binary. Defaults to 'openclaw-claude-bridge' on PATH."
           },
           "args": {
             "type": "array",

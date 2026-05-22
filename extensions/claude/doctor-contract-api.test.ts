@@ -36,7 +36,7 @@ describe("claude doctor contract", () => {
     }
     expect(owner.id).toBe("claude");
     expect(owner.providerIds).toEqual(expect.arrayContaining(["anthropic", "claude"]));
-    expect(owner.runtimeIds).toEqual(expect.arrayContaining(["claude", "claude-app-server"]));
+    expect(owner.runtimeIds).toEqual(expect.arrayContaining(["claude", "claude-bridge"]));
     expect(owner.authProfilePrefixes).toEqual(expect.arrayContaining(["anthropic:", "claude:"]));
   });
 });

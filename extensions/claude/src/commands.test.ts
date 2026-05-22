@@ -47,7 +47,7 @@ describe("/claude subcommand routing", () => {
     const result = await handleClaudeCommand(makeCtx({ args: "version" }));
     expect(result.text).toContain("Claude harness versions");
     expect(result.text).toMatch(
-      /Bridge \(extensions\/claude\)|Server \(@openclaw\/claude-app-server\)/,
+      /Bridge \(extensions\/claude\)|Server \(@zeroaltitude\/openclaw-claude-bridge\)/,
     );
   });
 

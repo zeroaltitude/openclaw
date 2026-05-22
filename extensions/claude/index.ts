@@ -1,7 +1,7 @@
 /**
- * Claude extension entry point. Registers the claude-app-server AgentHarness
+ * Claude extension entry point. Registers the claude-bridge AgentHarness
  * for the `anthropic` provider so OpenClaw can delegate Claude turns to a
- * local @openclaw/claude-app-server process (the Anthropic analog of the
+ * local @zeroaltitude/openclaw-claude-bridge process (the Anthropic analog of the
  * codex-app-server pattern).
  *
  * The harness factory itself lives in harness.ts; runtime is in
@@ -19,7 +19,7 @@ export default definePluginEntry({
   id: "claude",
   name: "Claude",
   description:
-    "Claude app-server harness — delegates Anthropic turns to @openclaw/claude-app-server.",
+    "Claude app-server harness — delegates Anthropic turns to @zeroaltitude/openclaw-claude-bridge.",
   register(api) {
     const resolveCurrentPluginConfig = () =>
       resolveLivePluginConfigObject(

@@ -1,7 +1,7 @@
 # @openclaw/claude
 
 OpenClaw harness plugin that delegates Anthropic-provider turns to a local
-`@zeroaltitude/claude-app-server` process via the codex-shaped JSON-RPC
+`@zeroaltitude/openclaw-claude-bridge` process via the codex-shaped JSON-RPC
 protocol.
 
 ## Architecture
@@ -13,34 +13,34 @@ Three pieces, two repos:
 | -------------------------------------------- | --------------------------- | ---------------------------------------- |
 | Client bridge (this package)                 | `openclaw/openclaw`         | `@openclaw/claude` (bundled extension)   |
 | Plugin manifest + harness wiring             | `openclaw/openclaw-plugins` | `@openclaw/claude` (plugin distribution) |
-| **JSON-RPC server** (spawned by this bridge) | `openclaw/openclaw-plugins` | `@zeroaltitude/claude-app-server`        |
+| **JSON-RPC server** (spawned by this bridge) | `openclaw/openclaw-plugins` | `@zeroaltitude/openclaw-claude-bridge`   |
 
 The directory name `src/app-server/` mirrors `extensions/codex/src/app-server/`
 for visual symmetry with the codex extension. In both cases the directory
 holds the **client side** of the codex-app-server protocol; the actual
 server is an external binary spawned over stdio. Codex's server is
-`@openai/codex` (third-party); ours is `@zeroaltitude/claude-app-server`
-(fork-preview publish path; will migrate to `@openclaw/claude-app-server`
+`@openai/codex` (third-party); ours is `@zeroaltitude/openclaw-claude-bridge`
+(fork-preview publish path; will migrate to `@openclaw/openclaw-claude-bridge`
 once the upstream PR lands and maintainers republish).
 
 ## Runtime dependency on the server
 
-This bridge spawns `openclaw-claude-app-server` (the binary published by
-[`@zeroaltitude/claude-app-server`](https://www.npmjs.com/package/@zeroaltitude/claude-app-server))
+This bridge spawns `openclaw-claude-bridge` (the binary published by
+[`@zeroaltitude/openclaw-claude-bridge`](https://www.npmjs.com/package/@zeroaltitude/openclaw-claude-bridge))
 at turn-start. The server package is declared as a regular dependency in
 `extensions/claude/package.json`, so installing `@openclaw/claude` pulls
-the binary into `node_modules/.bin/openclaw-claude-app-server`
+the binary into `node_modules/.bin/openclaw-claude-bridge`
 automatically — no separate install step needed.
 
 The `@zeroaltitude` scope is a fork-preview publish path. Once the
 upstream OpenClaw PR lands and maintainers republish under
-`@openclaw/claude-app-server`, this dependency will switch to the
+`@openclaw/openclaw-claude-bridge`, this dependency will switch to the
 `@openclaw` scope in a future patch.
 
-If a turn fails with `claude-app-server is not initialized` or
-`spawn openclaw-claude-app-server ENOENT`, the most likely cause is a
-broken install — confirm `which openclaw-claude-app-server` (or
-`ls node_modules/.bin/openclaw-claude-app-server` from the OpenClaw
+If a turn fails with `claude-bridge is not initialized` or
+`spawn openclaw-claude-bridge ENOENT`, the most likely cause is a
+broken install — confirm `which openclaw-claude-bridge` (or
+`ls node_modules/.bin/openclaw-claude-bridge` from the OpenClaw
 checkout root) returns a path before debugging further.
 
 ## Slash commands
@@ -98,9 +98,9 @@ This extension registers `/claude` with subcommands:
   refreshable MCP registration. In practice catalog churn is rare for
   stable plugin sets, so this is most visible after plugin upgrades.
 
-- **Scope migration pending**: `@zeroaltitude/claude-app-server` is a
+- **Scope migration pending**: `@zeroaltitude/openclaw-claude-bridge` is a
   fork-preview publish path. Once the upstream OpenClaw PR lands and
-  maintainers republish under `@openclaw/claude-app-server`, this
+  maintainers republish under `@openclaw/openclaw-claude-bridge`, this
   package's dependency declaration will switch.
 
 - **Codex middleware — three deferred items**: the dynamic-tool path

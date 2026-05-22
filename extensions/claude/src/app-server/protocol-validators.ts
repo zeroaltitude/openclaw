@@ -121,7 +121,7 @@ function assertShape<T>(schema: z.ZodType<T>, value: unknown, target: string): T
       .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
       .join("; ");
     throw new ClaudeAppServerProtocolError(
-      `Invalid ${target} payload from claude-app-server: ${summary}`,
+      `Invalid ${target} payload from claude-bridge: ${summary}`,
       target,
       parsed.error.issues,
     );

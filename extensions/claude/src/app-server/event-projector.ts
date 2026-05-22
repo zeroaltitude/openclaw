@@ -252,7 +252,7 @@ export class ClaudeAppServerEventProjector {
         data: { text: this.textParts.join(""), delta: p.delta },
       });
     } catch (err) {
-      embeddedAgentLog.debug("claude-app-server: emitAgentEvent threw", { error: err });
+      embeddedAgentLog.debug("claude-bridge: emitAgentEvent threw", { error: err });
     }
   }
 
@@ -354,7 +354,7 @@ export function emitToolEvent(
   try {
     emitAgentEvent({ runId: params.runId, stream: "tool", data });
   } catch (err) {
-    embeddedAgentLog.debug("claude-app-server: emit tool event threw", { error: err });
+    embeddedAgentLog.debug("claude-bridge: emit tool event threw", { error: err });
   }
 }
 
@@ -383,7 +383,7 @@ export function emitItemEvent(
   try {
     emitAgentEvent({ runId: params.runId, stream: "item", data });
   } catch (err) {
-    embeddedAgentLog.debug("claude-app-server: emit item event threw", { error: err });
+    embeddedAgentLog.debug("claude-bridge: emit item event threw", { error: err });
   }
 }
 
@@ -399,6 +399,6 @@ export function emitReasoningDeltaEvent(
       data: { delta, text: accumulated },
     });
   } catch (err) {
-    embeddedAgentLog.debug("claude-app-server: emit reasoning event threw", { error: err });
+    embeddedAgentLog.debug("claude-bridge: emit reasoning event threw", { error: err });
   }
 }

@@ -124,13 +124,13 @@ export async function startOrResumeClaudeThread(
       if (!isThreadNotFound(err)) {
         throw err;
       }
-      embeddedAgentLog.warn("claude-app-server: thread not found on resume; starting fresh", {
+      embeddedAgentLog.warn("claude-bridge: thread not found on resume; starting fresh", {
         sessionFile,
         threadId: existing.threadId,
       });
     }
   } else if (existing && rotationReason) {
-    embeddedAgentLog.info("claude-app-server: rotating thread (transcript will reset)", {
+    embeddedAgentLog.info("claude-bridge: rotating thread (transcript will reset)", {
       sessionFile,
       previousThreadId: existing.threadId,
       reason: rotationReason,

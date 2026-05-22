@@ -25,7 +25,7 @@ export function createClaudeAppServerAgentHarness(options?: {
     [...(options?.providerIds ?? DEFAULT_CLAUDE_PROVIDER_IDS)].map((id) => id.trim().toLowerCase()),
   );
   return {
-    id: options?.id ?? "claude-app-server",
+    id: options?.id ?? "claude-bridge",
     label: options?.label ?? "Claude app-server harness",
     supports: (ctx) => {
       const provider = ctx.provider.trim().toLowerCase();

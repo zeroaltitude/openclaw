@@ -1,5 +1,5 @@
 /**
- * Codex-shaped JSON-RPC protocol types that the @openclaw/claude-app-server
+ * Codex-shaped JSON-RPC protocol types that the @zeroaltitude/openclaw-claude-bridge
  * binary speaks. Field names mirror openclaw/extensions/codex/src/app-server/
  * protocol.ts so the same OpenClaw harness pattern works for both providers.
  */
