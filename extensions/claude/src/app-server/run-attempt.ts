@@ -15,7 +15,7 @@
  *      (native tools through OpenClaw's BeforeToolCall policy chain).
  *   5. Build developerInstructions; compute developerInstructions +
  *      dynamicTools fingerprints for rotation detection.
- *   6. ensureThread — resume (and patch cwd in meta when divergent) or
+ *   6. startOrResumeClaudeThread — resume (and patch cwd in meta when divergent) or
  *      fresh thread/start with cwd=effectiveWorkspace + projected
  *      disallowedTools.
  *   7. runTurn — turn/start; stream item/started + item/completed + delta
@@ -52,7 +52,6 @@ import {
   resolveAttemptSpawnWorkspaceDir,
   resolveBootstrapContextForRun,
   resolveSandboxContext,
-  runAgentHarnessAfterToolCallHook,
   runAgentHarnessAgentEndHook,
   runAgentHarnessLlmInputHook,
   runAgentHarnessLlmOutputHook,
@@ -63,49 +62,32 @@ import {
   type EmbeddedRunAttemptResult,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { getSharedClaudeAppServerClient, type ClaudeAppServerClient } from "./client.js";
+import { resolveClaudeAppServerConfig, type ResolvedClaudeAppServerConfig } from "./config.js";
 import { createClaudeDynamicToolBridge, type ClaudeDynamicToolBridge } from "./dynamic-tools.js";
+import { ClaudeAppServerEventProjector } from "./event-projector.js";
+import {
+  assertThreadStartResponse,
+  assertTurnStartParams,
+  assertTurnStartResponse,
+  readDynamicToolCallParams,
+} from "./protocol-validators.js";
+import { startOrResumeClaudeThread } from "./thread-lifecycle.js";
 import {
   readClaudeAppServerBinding,
   writeClaudeAppServerBinding,
   type ClaudeAppServerBinding,
 } from "./thread-store.js";
+import { mirrorClaudeAppServerTranscript } from "./transcript-mirror.js";
 import type {
   ApprovalPolicy,
   DynamicToolCallParams,
   JsonValue,
-  SandboxPolicy,
   ThreadStartParams,
-  ThreadStartResponse,
   Turn,
   TurnStartParams,
   UserInput,
 } from "./types.js";
 import { filterToolsForVisionInputs, modelSupportsVision } from "./vision-tools.js";
-
-const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = "never";
-const DEFAULT_SANDBOX: SandboxPolicy = { type: "dangerFullAccess" };
-const DEFAULT_TURN_TIMEOUT_MS = 600_000;
-const DEFAULT_TURN_IDLE_TIMEOUT_MS = 90_000;
-const THREAD_NOT_FOUND_RE = /thread not found/i;
-
-type AppServerConfig = {
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  approvalPolicy: ApprovalPolicy;
-  sandbox: SandboxPolicy;
-  turnTimeoutMs: number;
-  turnIdleTimeoutMs: number;
-};
-
-type DynamicToolsConfig = {
-  excludeNames: string[];
-};
-
-type ResolvedConfig = {
-  appServer: AppServerConfig;
-  dynamicTools: DynamicToolsConfig;
-};
 
 export type RunClaudeAppServerAttemptOptions = {
   pluginConfig?: unknown;
@@ -117,7 +99,7 @@ export async function runClaudeAppServerAttempt(
 ): Promise<EmbeddedRunAttemptResult> {
   const attemptStartedAt = Date.now();
   const result = emptyResult(params);
-  const cfg = resolveConfig(options.pluginConfig);
+  const cfg = resolveClaudeAppServerConfig(options.pluginConfig);
   const client = getSharedClaudeAppServerClient({
     command: cfg.appServer.command,
     args: cfg.appServer.args,
@@ -198,7 +180,7 @@ export async function runClaudeAppServerAttempt(
     //    isCurrentThreadOptionalTurnRequestParams) so concurrent turns on
     //    the shared client don't cross-route tool calls / approvals. We
     //    use a mutable ref because handlers register here but threadId
-    //    isn't known until ensureThread runs (step 6). Tank P1 review.
+    //    isn't known until startOrResumeClaudeThread runs (step 6). Tank P1 review.
     const turnIdentity: { threadId?: string; turnId?: string } = {};
     const bridge = createClaudeDynamicToolBridge({
       tools,
@@ -234,7 +216,7 @@ export async function runClaudeAppServerAttempt(
 
     // 5. Build developerInstructions ONCE per turn (cheap; reads bootstrap
     //    files). Hash to detect SOUL.md / workspace changes; if the hash
-    //    differs from the existing binding, ensureThread rotates to a fresh
+    //    differs from the existing binding, the thread-lifecycle module rotates to a fresh
     //    thread so the new persona reaches the model. The SDK pins
     //    developerInstructions as the cached static-prefix of the
     //    Claude-Code-preset systemPrompt for the thread's lifetime.
@@ -292,8 +274,10 @@ export async function runClaudeAppServerAttempt(
     // toggled). Codex does the same at thread-lifecycle.ts:102/219.
     const dynamicToolsFingerprint = fingerprintDynamicTools(bridge.specs);
 
-    // 6. Ensure thread binding for this session.
-    const threadId = await ensureThread(
+    // 6. Resume or start the thread for this session. The lifecycle module
+    //    owns the rotation-vs-patch decision and the binding-sidecar reads
+    //    and writes. See thread-lifecycle.ts for the policy summary.
+    const lifecycle = await startOrResumeClaudeThread({
       client,
       params,
       cfg,
@@ -302,7 +286,9 @@ export async function runClaudeAppServerAttempt(
       developerInstructionsFingerprint,
       dynamicToolsFingerprint,
       effectiveWorkspace,
-    );
+      nativeDisallowedTools: computeNativeDisallowedTools(params),
+    });
+    const threadId = lifecycle.threadId;
     // Bind the threadId for this turn's handler filters now that it's
     // known. turnId comes later (set inside runTurn after turn/start
     // resolves) so concurrent turns can't grab each other's tool-call /
@@ -365,6 +351,31 @@ export async function runClaudeAppServerAttempt(
             error: err,
           });
         }
+      }
+    }
+
+    // 7c. Mirror the turn's assistant + tool-result messages into the OpenClaw
+    //     session transcript so plugins (provenance/vestige/etc.) that hook
+    //     before_message_write get fired on Claude turns the same way they
+    //     fire on codex turns. Idempotency keys are derived from
+    //     threadId/turnId/role/index so replay or recovery doesn't
+    //     duplicate entries. Fire-and-forget: a mirror failure shouldn't
+    //     abort the turn result.
+    if (params.sessionFile && turnIdentity.turnId && !ac.signal.aborted) {
+      const sessionFileForMirror = params.sessionFile;
+      const turnIdForMirror = turnIdentity.turnId;
+      try {
+        await mirrorClaudeAppServerTranscript({
+          sessionFile: sessionFileForMirror,
+          sessionKey: sharedHookContext.sessionKey,
+          agentId: sharedHookContext.agentId,
+          threadId,
+          turnId: turnIdForMirror,
+          lifecycleOutcome: lifecycle.outcome,
+          acc: accumulated,
+        });
+      } catch (err) {
+        embeddedAgentLog.warn("claude-bridge: transcript mirror failed", { error: err });
       }
     }
 
@@ -686,8 +697,12 @@ function registerToolCallHandler(
     if (req.method !== "item/tool/call") {
       return undefined;
     }
-    const call = req.params as DynamicToolCallParams | undefined;
-    if (!call || typeof call.tool !== "string") {
+    // Validate the params shape before claiming this request. Malformed
+    // params (missing callId/threadId/turnId/tool) fall through to the
+    // next handler; without this, a permissive cast would let the bridge
+    // claim a request it can't actually fulfill, dead-ending the call.
+    const call = readDynamicToolCallParams(req.params);
+    if (!call) {
       return undefined;
     }
     // Tank P1/P2: strict turn-identity filter. Require BOTH the turn
@@ -695,19 +710,14 @@ function registerToolCallHandler(
     // step 6/7) AND the incoming params to carry matching ids. Permissive
     // matching (accept-when-unbound or accept-when-missing) lets the
     // first registered handler claim a request that wasn't meant for it
-    // under concurrency. Return undefined so the next handler in the
-    // chain tries; ultimate fallback is the server's
-    // defaultServerRequestResponse which rejects with "no dynamic-tool
-    // handler registered".
+    // under concurrency.
     if (!turnIdentity.threadId || !turnIdentity.turnId) {
       return undefined;
     }
-    const callThreadId = typeof call.threadId === "string" ? call.threadId : undefined;
-    const callTurnId = typeof call.turnId === "string" ? call.turnId : undefined;
-    if (callThreadId !== turnIdentity.threadId) {
+    if (call.threadId !== turnIdentity.threadId) {
       return undefined;
     }
-    if (callTurnId !== turnIdentity.turnId) {
+    if (call.turnId !== turnIdentity.turnId) {
       return undefined;
     }
     const response = await bridge.handleToolCall(call);
@@ -715,180 +725,8 @@ function registerToolCallHandler(
   });
 }
 
-// ─── Thread continuity ──────────────────────────────────────────────────────
-
-async function ensureThread(
-  client: ClaudeAppServerClient,
-  params: EmbeddedRunAttemptParams,
-  cfg: ResolvedConfig,
-  bridge: ClaudeDynamicToolBridge,
-  developerInstructions: string,
-  developerInstructionsFingerprint: string,
-  dynamicToolsFingerprint: string,
-  effectiveWorkspace: string,
-): Promise<string> {
-  const sessionFile = params.sessionFile;
-  const existing = sessionFile ? await readClaudeAppServerBinding(sessionFile) : null;
-
-  // Invalidation reasons (any of these forces a fresh thread):
-  //  - approvalPolicy changed (server pins it at thread/start)
-  //  - developerInstructions hash changed (SOUL.md edited, workspace files
-  //    changed, plugin guidance updated, etc.)
-  //  - dynamicToolsFingerprint changed (tool catalog changed: plugin
-  //    enabled/disabled/upgraded, allowlist edited, sandbox toggled).
-  //    Pre-rebuild bindings without the field are grandfathered (no
-  //    rotation) to avoid disrupting existing threads.
-  // Rotation reasons that the server CAN'T patch via applyResumeOverrides.
-  // Today the only such reason is a dynamicTools-catalog shift — the SDK's
-  // MCP server registration happens at thread/start and isn't refreshable
-  // on resume. Rotating for that case still drops the SDK transcript.
-  //
-  // KNOWN LIMITATION (tracked as a follow-up; surface in PR notes when
-  // upstreaming): a tool-catalog change mid-session resets conversation
-  // history. Mitigations to consider:
-  //   (a) Implement thread/fork on the server side and use it here, since
-  //       fork copies the SDK transcript across the new thread id.
-  //   (b) Teach the server to refresh sdkOptions.mcpServers on resume
-  //       (probably requires SDK support — the SDK's MCP registration
-  //       isn't refreshable today AFAICT).
-  // In practice the catalog churn is rare for stable plugin sets, but it
-  // should be called out.
-  //
-  // Reasons we used to rotate for but now patch in-place via resume:
-  //  - cwd (Tank-#6 fix; server applyResumeOverrides patches meta.cwd)
-  //  - approvalPolicy (server applyResumeOverrides supports it; Tank-#7 P2)
-  //  - developerInstructions (ditto; Tank-#7 P2)
-  //
-  // Rationale: rotation calls thread/start which creates a new thread_id +
-  // sessionId, and the SDK's session store keys messages.jsonl by that id —
-  // so rotation eats the conversation transcript. In-place resume keeps
-  // the same thread (and SDK session) alive and patches meta so subsequent
-  // turns see the new values.
-  let rotationReason: string | undefined;
-  if (existing) {
-    if (
-      existing.dynamicToolsFingerprint &&
-      existing.dynamicToolsFingerprint !== dynamicToolsFingerprint
-    ) {
-      rotationReason = "dynamic tool catalog changed (plugin set, allowlist, or sandbox shifted)";
-    }
-  }
-
-  if (existing && !rotationReason) {
-    try {
-      // Send any divergent fields the server can patch in-place
-      // (applyResumeOverrides at openclaw-claude/server/src/handlers/
-      // thread-resume.ts). Each one would have triggered a rotation +
-      // transcript loss in the old code — Tank-#6 (cwd) + Tank-#7 (the
-      // rest).
-      const cwdDiverged = existing.cwd !== effectiveWorkspace;
-      const approvalPolicyDiverged = existing.approvalPolicy !== cfg.appServer.approvalPolicy;
-      const developerInstructionsDiverged =
-        existing.developerInstructionsFingerprint != null &&
-        existing.developerInstructionsFingerprint !== developerInstructionsFingerprint;
-      await client.request("thread/resume", {
-        threadId: existing.threadId,
-        ...(cwdDiverged ? { cwd: effectiveWorkspace } : {}),
-        ...(approvalPolicyDiverged ? { approvalPolicy: cfg.appServer.approvalPolicy } : {}),
-        ...(developerInstructionsDiverged ? { developerInstructions } : {}),
-      });
-      // Persist the new values in our binding sidecar so future resumes
-      // don't re-send the same patches on every turn.
-      if (sessionFile && (cwdDiverged || approvalPolicyDiverged || developerInstructionsDiverged)) {
-        await writeClaudeAppServerBinding(sessionFile, {
-          threadId: existing.threadId,
-          cwd: effectiveWorkspace,
-          model: existing.model,
-          modelProvider: existing.modelProvider,
-          approvalPolicy: cfg.appServer.approvalPolicy,
-          approvalsReviewer: existing.approvalsReviewer,
-          sandbox: existing.sandbox,
-          developerInstructionsFingerprint,
-          dynamicToolsFingerprint: existing.dynamicToolsFingerprint,
-          createdAt: existing.createdAt,
-        });
-      }
-      return existing.threadId;
-    } catch (err) {
-      if (!isThreadNotFound(err)) {
-        throw err;
-      }
-      embeddedAgentLog.warn("claude-bridge: thread not found on resume; starting fresh", {
-        sessionFile,
-        threadId: existing.threadId,
-      });
-    }
-  } else if (existing && rotationReason) {
-    embeddedAgentLog.info("claude-bridge: rotating thread (transcript will reset)", {
-      sessionFile,
-      previousThreadId: existing.threadId,
-      reason: rotationReason,
-    });
-  }
-
-  // Project OpenClaw's tool policy onto the SDK's native (claude_code
-  // preset) tools that bypass the dynamic-tools bridge. When openclaw says
-  // disableTools, or restricts toolsAllow to a specific non-wildcard set,
-  // block all native tools so the model can only use the openclaw MCP
-  // surface. The server merges this with its env default
-  // (OPENCLAW_CLAUDE_APP_SERVER_DISALLOWED_TOOLS, typically "Agent,Task").
-  const nativeDisallowed = computeNativeDisallowedTools(params);
-  const startParams: ThreadStartParams = {
-    // effectiveWorkspace, not raw workspaceDir, so when sandbox
-    // workspaceAccess is read-only or copy-on-write the SDK's native
-    // Read/Edit/Bash see the sandbox-isolated path (server forwards this
-    // to sdkOptions.cwd). Mirrors codex's effectiveWorkspace passthrough.
-    cwd: effectiveWorkspace,
-    model: params.modelId,
-    modelProvider: "anthropic",
-    approvalPolicy: cfg.appServer.approvalPolicy,
-    approvalsReviewer: "user",
-    sandbox: cfg.appServer.sandbox,
-    dynamicTools: bridge.specs,
-    developerInstructions,
-    ...(nativeDisallowed.length > 0 ? { disallowedTools: nativeDisallowed } : {}),
-  };
-  const response = await client.request<ThreadStartResponse>("thread/start", startParams);
-  const threadId = response.thread?.id;
-  if (typeof threadId !== "string" || !threadId) {
-    throw new Error(`thread/start returned invalid thread.id: ${JSON.stringify(threadId)}`);
-  }
-  if (sessionFile) {
-    const binding: Omit<ClaudeAppServerBinding, "schemaVersion" | "createdAt" | "updatedAt"> = {
-      threadId,
-      cwd: startParams.cwd!,
-      model: params.modelId,
-      modelProvider: "anthropic",
-      approvalPolicy: cfg.appServer.approvalPolicy,
-      approvalsReviewer: "user",
-      sandbox: cfg.appServer.sandbox,
-      developerInstructionsFingerprint,
-      dynamicToolsFingerprint,
-    };
-    await writeClaudeAppServerBinding(sessionFile, binding);
-  }
-  return threadId;
-}
-
 function fingerprintString(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-function isThreadNotFound(err: unknown): boolean {
-  if (!err || typeof err !== "object") {
-    return false;
-  }
-  const e = err as { message?: unknown; data?: unknown };
-  if (typeof e.message === "string" && THREAD_NOT_FOUND_RE.test(e.message)) {
-    return true;
-  }
-  if (e.data && typeof e.data === "object" && !Array.isArray(e.data)) {
-    const m = (e.data as { message?: unknown }).message;
-    if (typeof m === "string" && THREAD_NOT_FOUND_RE.test(m)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 // ─── Turn execution ─────────────────────────────────────────────────────────
@@ -929,7 +767,7 @@ async function runTurn(
   client: ClaudeAppServerClient,
   params: EmbeddedRunAttemptParams,
   threadId: string,
-  cfg: ResolvedConfig,
+  cfg: ResolvedClaudeAppServerConfig,
   ac: AbortController,
   effectiveWorkspace: string,
   hookContext: {
@@ -944,17 +782,27 @@ async function runTurn(
   promptPrefix = "",
 ): Promise<Accumulator> {
   const effort = resolveReasoningEffort(params.thinkLevel, params.modelId);
-  const turnParams: TurnStartParams = {
+  const turnParamsCandidate: TurnStartParams = {
     threadId,
     input: buildInput(params, promptPrefix),
-    // effectiveWorkspace — see ensureThread cwd comment. Per-turn cwd lets
+    // effectiveWorkspace — see thread-lifecycle.ts cwd comment. Per-turn cwd lets
     // the server pin SDK cwd on the resume path too, in case the SDK reads
     // it from turn rather than thread-create.
     cwd: effectiveWorkspace,
     model: params.modelId,
     ...(effort ? { effort } : {}),
   };
-  const startResp = await client.request<{ turn: Turn }>("turn/start", turnParams, ac.signal);
+  // Outbound validation: catch a malformed turn/start params object
+  // (empty threadId, unknown effort enum, etc.) before paying the round
+  // trip. Server would 400 anyway; failing fast on the client side gives
+  // a cleaner ClaudeAppServerProtocolError instead.
+  const turnParams = assertTurnStartParams(turnParamsCandidate);
+  const rawStartResp = await client.request<unknown>("turn/start", turnParams, ac.signal);
+  // Inbound validation: schema-check the server's reply before reading
+  // turn.id. Malformed responses now throw ClaudeAppServerProtocolError
+  // with structured zod issues instead of producing an undefined turnId
+  // that propagates as a nonsense identity filter downstream.
+  const startResp = assertTurnStartResponse(rawStartResp);
   const turnId = startResp.turn.id;
   // Bind turnId on the shared turnIdentity ref so the tool-call / approval
   // request handlers can filter incoming server requests by exact turn,
@@ -967,8 +815,10 @@ async function runTurn(
     itemCount: 0,
     toolCalls: new Map(),
   };
-  const textParts: string[] = [];
-  const reasoningParts: string[] = [];
+  // Event projection (notification dispatch, accumulator mutation, agent-
+  // event emission, native AfterToolCall fires) lives in event-projector.ts.
+  // runTurn keeps the promise + idle timer + unsubscribe lifecycle only.
+  const projector = new ClaudeAppServerEventProjector(turnId, acc, params, hookContext);
 
   await new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -988,6 +838,7 @@ async function runTurn(
         return;
       }
       settled = true;
+      projector.markSettled();
       cleanup();
       client.request("turn/interrupt", { threadId, turnId }).catch(() => {});
       reject(new Error("Turn aborted"));
@@ -1011,285 +862,32 @@ async function runTurn(
     };
 
     unsubscribe = client.onNotification((notif) => {
-      const p = notif.params as Record<string, unknown> | undefined;
-      if (!p) {
+      // Reset idle timer only for notifications matching THIS turn — stray
+      // notifications for other turns on the shared client shouldn't extend
+      // our deadline.
+      if (projector.matchesTurn(notif)) {
+        resetIdleTimer();
+      }
+      const outcome = projector.processNotification(notif);
+      if (!outcome) {
         return;
       }
-      const ntid = typeof p.turnId === "string" ? p.turnId : undefined;
-      const turnObj = p.turn as { id?: string } | undefined;
-      const matches =
-        (ntid && ntid === turnId) ||
-        (turnObj && typeof turnObj.id === "string" && turnObj.id === turnId);
-      if (!matches) {
+      if (settled) {
         return;
       }
-      resetIdleTimer();
-
-      switch (notif.method) {
-        case "item/started":
-        case "item/completed": {
-          const item = p.item as Record<string, unknown> | undefined;
-          if (!item) {
-            return;
-          }
-          if (notif.method === "item/completed") {
-            acc.itemCount += 1;
-          }
-          const isTool =
-            item.type === "dynamicToolCall" ||
-            item.type === "toolCall" ||
-            item.type === "mcpToolCall";
-          if (notif.method === "item/started") {
-            if (isTool) {
-              const toolName = extractItemName(item) ?? "unknown";
-              acc.toolMetas.push({ toolName });
-              // Stash for messagesSnapshot construction + AfterToolCall hook.
-              // item/completed will fill in result/status.
-              const itemId = typeof item.id === "string" ? item.id : undefined;
-              if (itemId) {
-                acc.toolCalls.set(itemId, {
-                  name: toolName,
-                  args: item.arguments ?? item.input,
-                  startedAt: Date.now(),
-                  isDynamic: item.type === "dynamicToolCall",
-                });
-              }
-              // Mirror codex's stream:"tool" phase:"start" emission so Discord/
-              // Slack/etc. can render "🛠️ <tool> <preview>" stubs in real time
-              // instead of waiting for the whole turn to finish.
-              emitToolEvent(params, "start", item);
-            } else {
-              // Item lifecycle for non-tool items (agentMessage, plan, file,
-              // shell, etc.) — codex emits these as stream:"item" phase:"start".
-              emitItemEvent(params, "start", item);
-            }
-          } else {
-            if (isTool) {
-              const itemId = typeof item.id === "string" ? item.id : undefined;
-              if (itemId) {
-                const prev = acc.toolCalls.get(itemId);
-                // The server's makeDynamicToolCallItem emits `contentItems`
-                // (an array of {type:"inputText"|"inputImage", ...}) — NOT
-                // `result`. Read whichever is present so dynamic-tool output
-                // makes it into messagesSnapshot for replay/provenance.
-                // Native tool items use `result`; both are accepted.
-                const payload = item.contentItems ?? item.result;
-                const merged = {
-                  ...(prev ?? { name: extractItemName(item) ?? "unknown" }),
-                  result: payload,
-                  isError: item.status === "failed" || item.error != null,
-                };
-                acc.toolCalls.set(itemId, merged);
-                // Fire AfterToolCall for NATIVE tools only. Dynamic tool calls
-                // already fire AfterToolCall inside dynamic-tools.ts when the
-                // openclaw bridge invokes the AnyAgentTool, so firing here too
-                // would double-count. Native tools (Bash/Read/Edit/etc.) have
-                // no other AfterToolCall path under the claude_code preset.
-                // Closes the observability half of openclaw-ggv.
-                if (!merged.isDynamic) {
-                  void runAgentHarnessAfterToolCallHook({
-                    toolName: merged.name,
-                    toolCallId: itemId,
-                    runId: hookContext.runId,
-                    agentId: hookContext.agentId,
-                    sessionId: hookContext.sessionId,
-                    sessionKey: hookContext.sessionKey,
-                    channelId: hookContext.channelId,
-                    startArgs:
-                      merged.args && typeof merged.args === "object" && !Array.isArray(merged.args)
-                        ? (merged.args as Record<string, unknown>)
-                        : {},
-                    result: payload,
-                    ...(merged.isError
-                      ? { error: typeof item.error === "string" ? item.error : "tool failed" }
-                      : {}),
-                    ...(merged.startedAt != null ? { startedAt: merged.startedAt } : {}),
-                  });
-                }
-              }
-              emitToolEvent(params, "result", item);
-            } else {
-              emitItemEvent(params, "end", item);
-            }
-          }
-          break;
-        }
-        case "item/agentMessage/delta": {
-          if (typeof p.delta === "string") {
-            textParts.push(p.delta);
-            // Forward token-level deltas to OpenClaw's agent-event bus so
-            // downstream consumers (Discord/Slack/etc.) can stream-update
-            // their messages instead of waiting for turn/completed. Mirrors
-            // the CLI runner's onAssistantDelta wiring.
-            try {
-              emitAgentEvent({
-                runId: params.runId,
-                stream: "assistant",
-                data: { text: textParts.join(""), delta: p.delta },
-              });
-            } catch (err) {
-              embeddedAgentLog.debug("claude-bridge: emitAgentEvent threw", { error: err });
-            }
-          }
-          break;
-        }
-        case "item/reasoning/delta": {
-          if (typeof p.delta === "string") {
-            reasoningParts.push(p.delta);
-            // Mirror codex: surface thinking deltas as their own stream so
-            // downstream UIs can render a thinking indicator.
-            emitReasoningDeltaEvent(params, p.delta, reasoningParts.join(""));
-          }
-          break;
-        }
-        case "turn/error": {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          cleanup();
-          const err = p.error as { message?: string } | undefined;
-          reject(new Error(`Claude turn error: ${err?.message ?? "turn/error"}`));
-          break;
-        }
-        case "turn/completed": {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          cleanup();
-          const turn = p.turn as Turn | undefined;
-          if (turn?.status === "failed") {
-            reject(new Error(`Claude turn failed: ${turn.error?.message ?? "unknown"}`));
-          } else {
-            // Pick up any item text we didn't see via deltas.
-            if (turn?.items) {
-              for (const item of turn.items) {
-                if (
-                  item.type === "agentMessage" &&
-                  textParts.length === 0 &&
-                  typeof item.text === "string"
-                ) {
-                  textParts.push(item.text);
-                }
-              }
-            }
-            resolve();
-          }
-          break;
-        }
+      settled = true;
+      cleanup();
+      if (outcome.kind === "failed") {
+        reject(outcome.error);
+      } else {
+        resolve();
       }
     });
     resetIdleTimer();
   });
 
-  if (textParts.length > 0) {
-    acc.assistantTexts = [textParts.join("")];
-  }
-  if (reasoningParts.length > 0) {
-    acc.reasoning = reasoningParts.join("");
-  }
+  projector.finalize();
   return acc;
-}
-
-// ─── Agent-event emission helpers ───────────────────────────────────────────
-// Mirror codex's event-projector emissions so Discord/Slack/etc. show tool-use
-// stubs and reasoning indicators live, instead of just the final reply.
-
-function extractItemName(item: Record<string, unknown>): string | undefined {
-  if (typeof item.name === "string") {
-    return item.name;
-  }
-  if (typeof item.tool === "string") {
-    return item.tool;
-  }
-  return undefined;
-}
-
-function emitToolEvent(
-  params: EmbeddedRunAttemptParams,
-  phase: "start" | "result",
-  item: Record<string, unknown>,
-): void {
-  const toolName = extractItemName(item);
-  if (!toolName) {
-    return;
-  }
-  const itemId = typeof item.id === "string" ? item.id : undefined;
-  const status = typeof item.status === "string" ? item.status : undefined;
-  const args =
-    item.arguments && typeof item.arguments === "object" && !Array.isArray(item.arguments)
-      ? (item.arguments as Record<string, unknown>)
-      : item.input && typeof item.input === "object" && !Array.isArray(item.input)
-        ? (item.input as Record<string, unknown>)
-        : undefined;
-  const data: Record<string, unknown> = { phase, name: toolName };
-  if (itemId) {
-    data.itemId = itemId;
-    data.toolCallId = itemId;
-  }
-  if (phase === "start" && args) {
-    data.args = args;
-  }
-  if (phase === "result") {
-    if (status) {
-      data.status = status;
-    }
-    data.isError = status === "failed" || item.error != null;
-    if (item.result && typeof item.result === "object" && !Array.isArray(item.result)) {
-      data.result = item.result as Record<string, unknown>;
-    }
-  }
-  try {
-    emitAgentEvent({ runId: params.runId, stream: "tool", data });
-  } catch (err) {
-    embeddedAgentLog.debug("claude-bridge: emit tool event threw", { error: err });
-  }
-}
-
-function emitItemEvent(
-  params: EmbeddedRunAttemptParams,
-  phase: "start" | "end",
-  item: Record<string, unknown>,
-): void {
-  const itemId = typeof item.id === "string" ? item.id : undefined;
-  const kind = typeof item.type === "string" ? item.type : undefined;
-  const title = extractItemName(item) ?? kind;
-  const status = typeof item.status === "string" ? item.status : undefined;
-  const data: Record<string, unknown> = { phase };
-  if (itemId) {
-    data.itemId = itemId;
-  }
-  if (kind) {
-    data.kind = kind;
-  }
-  if (title) {
-    data.title = title;
-  }
-  if (status) {
-    data.status = status;
-  }
-  try {
-    emitAgentEvent({ runId: params.runId, stream: "item", data });
-  } catch (err) {
-    embeddedAgentLog.debug("claude-bridge: emit item event threw", { error: err });
-  }
-}
-
-function emitReasoningDeltaEvent(
-  params: EmbeddedRunAttemptParams,
-  delta: string,
-  accumulated: string,
-): void {
-  try {
-    emitAgentEvent({
-      runId: params.runId,
-      stream: "reasoning",
-      data: { delta, text: accumulated },
-    });
-  } catch (err) {
-    embeddedAgentLog.debug("claude-bridge: emit reasoning event threw", { error: err });
-  }
 }
 
 // ─── Reasoning effort + dynamic-tools fingerprint + approval-promotion ─────
@@ -1815,70 +1413,6 @@ function renderClaudeWorkspaceBootstrapPromptContext(
     lines.push(`## ${file.path}`, "", file.content, "");
   }
   return lines.join("\n").trim();
-}
-
-// ─── Config resolution ──────────────────────────────────────────────────────
-
-function resolveConfig(raw: unknown): ResolvedConfig {
-  const cfg = (raw ?? {}) as Record<string, unknown>;
-  const appServer = (cfg.appServer ?? {}) as Record<string, unknown>;
-  const dynamicTools = (cfg.dynamicTools ?? {}) as Record<string, unknown>;
-  return {
-    appServer: {
-      command: typeof appServer.command === "string" ? appServer.command : undefined,
-      args: Array.isArray(appServer.args) ? (appServer.args as string[]) : undefined,
-      env:
-        appServer.env && typeof appServer.env === "object" && !Array.isArray(appServer.env)
-          ? (appServer.env as Record<string, string>)
-          : undefined,
-      approvalPolicy: normalizeApprovalPolicy(appServer.approvalPolicy),
-      sandbox: normalizeSandbox(appServer.sandbox),
-      turnTimeoutMs:
-        typeof appServer.turnTimeoutMs === "number"
-          ? appServer.turnTimeoutMs
-          : DEFAULT_TURN_TIMEOUT_MS,
-      turnIdleTimeoutMs:
-        typeof appServer.turnIdleTimeoutMs === "number"
-          ? appServer.turnIdleTimeoutMs
-          : DEFAULT_TURN_IDLE_TIMEOUT_MS,
-    },
-    dynamicTools: {
-      excludeNames: Array.isArray(dynamicTools.exclude)
-        ? (dynamicTools.exclude as unknown[]).filter((x): x is string => typeof x === "string")
-        : [],
-    },
-  };
-}
-
-function normalizeApprovalPolicy(raw: unknown): ApprovalPolicy {
-  if (raw === "never" || raw === "untrusted" || raw === "on-failure" || raw === "on-request") {
-    return raw;
-  }
-  return DEFAULT_APPROVAL_POLICY;
-}
-
-function normalizeSandbox(raw: unknown): SandboxPolicy {
-  if (typeof raw === "string") {
-    // Codex-shaped sandbox strings — map to discriminated.
-    if (raw === "read-only") {
-      return { type: "readOnly" };
-    }
-    if (raw === "workspace-write") {
-      return { type: "workspaceWrite" };
-    }
-    if (raw === "danger-full-access") {
-      return { type: "dangerFullAccess" };
-    }
-  }
-  if (
-    raw &&
-    typeof raw === "object" &&
-    !Array.isArray(raw) &&
-    typeof (raw as { type?: unknown }).type === "string"
-  ) {
-    return raw as SandboxPolicy;
-  }
-  return DEFAULT_SANDBOX;
 }
 
 // ─── Result construction ────────────────────────────────────────────────────
