@@ -52,7 +52,6 @@ import {
   resolveAttemptSpawnWorkspaceDir,
   resolveBootstrapContextForRun,
   resolveSandboxContext,
-  runAgentHarnessAfterToolCallHook,
   runAgentHarnessAgentEndHook,
   runAgentHarnessLlmInputHook,
   runAgentHarnessLlmOutputHook,
@@ -65,13 +64,12 @@ import {
 import { getSharedClaudeAppServerClient, type ClaudeAppServerClient } from "./client.js";
 import { resolveClaudeAppServerConfig, type ResolvedClaudeAppServerConfig } from "./config.js";
 import { createClaudeDynamicToolBridge, type ClaudeDynamicToolBridge } from "./dynamic-tools.js";
+import { ClaudeAppServerEventProjector } from "./event-projector.js";
 import {
   assertThreadStartResponse,
   assertTurnStartParams,
   assertTurnStartResponse,
   readDynamicToolCallParams,
-  readTurn,
-  readTurnCompletedNotification,
 } from "./protocol-validators.js";
 import { startOrResumeClaudeThread } from "./thread-lifecycle.js";
 import {
@@ -791,8 +789,10 @@ async function runTurn(
     itemCount: 0,
     toolCalls: new Map(),
   };
-  const textParts: string[] = [];
-  const reasoningParts: string[] = [];
+  // Event projection (notification dispatch, accumulator mutation, agent-
+  // event emission, native AfterToolCall fires) lives in event-projector.ts.
+  // runTurn keeps the promise + idle timer + unsubscribe lifecycle only.
+  const projector = new ClaudeAppServerEventProjector(turnId, acc, params, hookContext);
 
   await new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -812,6 +812,7 @@ async function runTurn(
         return;
       }
       settled = true;
+      projector.markSettled();
       cleanup();
       client.request("turn/interrupt", { threadId, turnId }).catch(() => {});
       reject(new Error("Turn aborted"));
@@ -835,292 +836,32 @@ async function runTurn(
     };
 
     unsubscribe = client.onNotification((notif) => {
-      const p = notif.params as Record<string, unknown> | undefined;
-      if (!p) {
+      // Reset idle timer only for notifications matching THIS turn — stray
+      // notifications for other turns on the shared client shouldn't extend
+      // our deadline.
+      if (projector.matchesTurn(notif)) {
+        resetIdleTimer();
+      }
+      const outcome = projector.processNotification(notif);
+      if (!outcome) {
         return;
       }
-      const ntid = typeof p.turnId === "string" ? p.turnId : undefined;
-      const turnObj = p.turn as { id?: string } | undefined;
-      const matches =
-        (ntid && ntid === turnId) ||
-        (turnObj && typeof turnObj.id === "string" && turnObj.id === turnId);
-      if (!matches) {
+      if (settled) {
         return;
       }
-      resetIdleTimer();
-
-      switch (notif.method) {
-        case "item/started":
-        case "item/completed": {
-          const item = p.item as Record<string, unknown> | undefined;
-          if (!item) {
-            return;
-          }
-          if (notif.method === "item/completed") {
-            acc.itemCount += 1;
-          }
-          const isTool =
-            item.type === "dynamicToolCall" ||
-            item.type === "toolCall" ||
-            item.type === "mcpToolCall";
-          if (notif.method === "item/started") {
-            if (isTool) {
-              const toolName = extractItemName(item) ?? "unknown";
-              acc.toolMetas.push({ toolName });
-              // Stash for messagesSnapshot construction + AfterToolCall hook.
-              // item/completed will fill in result/status.
-              const itemId = typeof item.id === "string" ? item.id : undefined;
-              if (itemId) {
-                acc.toolCalls.set(itemId, {
-                  name: toolName,
-                  args: item.arguments ?? item.input,
-                  startedAt: Date.now(),
-                  isDynamic: item.type === "dynamicToolCall",
-                });
-              }
-              // Mirror codex's stream:"tool" phase:"start" emission so Discord/
-              // Slack/etc. can render "🛠️ <tool> <preview>" stubs in real time
-              // instead of waiting for the whole turn to finish.
-              emitToolEvent(params, "start", item);
-            } else {
-              // Item lifecycle for non-tool items (agentMessage, plan, file,
-              // shell, etc.) — codex emits these as stream:"item" phase:"start".
-              emitItemEvent(params, "start", item);
-            }
-          } else {
-            if (isTool) {
-              const itemId = typeof item.id === "string" ? item.id : undefined;
-              if (itemId) {
-                const prev = acc.toolCalls.get(itemId);
-                // The server's makeDynamicToolCallItem emits `contentItems`
-                // (an array of {type:"inputText"|"inputImage", ...}) — NOT
-                // `result`. Read whichever is present so dynamic-tool output
-                // makes it into messagesSnapshot for replay/provenance.
-                // Native tool items use `result`; both are accepted.
-                const payload = item.contentItems ?? item.result;
-                const merged = {
-                  ...(prev ?? { name: extractItemName(item) ?? "unknown" }),
-                  result: payload,
-                  isError: item.status === "failed" || item.error != null,
-                };
-                acc.toolCalls.set(itemId, merged);
-                // Fire AfterToolCall for NATIVE tools only. Dynamic tool calls
-                // already fire AfterToolCall inside dynamic-tools.ts when the
-                // openclaw bridge invokes the AnyAgentTool, so firing here too
-                // would double-count. Native tools (Bash/Read/Edit/etc.) have
-                // no other AfterToolCall path under the claude_code preset.
-                // Closes the observability half of openclaw-ggv.
-                if (!merged.isDynamic) {
-                  void runAgentHarnessAfterToolCallHook({
-                    toolName: merged.name,
-                    toolCallId: itemId,
-                    runId: hookContext.runId,
-                    agentId: hookContext.agentId,
-                    sessionId: hookContext.sessionId,
-                    sessionKey: hookContext.sessionKey,
-                    channelId: hookContext.channelId,
-                    startArgs:
-                      merged.args && typeof merged.args === "object" && !Array.isArray(merged.args)
-                        ? (merged.args as Record<string, unknown>)
-                        : {},
-                    result: payload,
-                    ...(merged.isError
-                      ? { error: typeof item.error === "string" ? item.error : "tool failed" }
-                      : {}),
-                    ...(merged.startedAt != null ? { startedAt: merged.startedAt } : {}),
-                  });
-                }
-              }
-              emitToolEvent(params, "result", item);
-            } else {
-              emitItemEvent(params, "end", item);
-            }
-          }
-          break;
-        }
-        case "item/agentMessage/delta": {
-          if (typeof p.delta === "string") {
-            textParts.push(p.delta);
-            // Forward token-level deltas to OpenClaw's agent-event bus so
-            // downstream consumers (Discord/Slack/etc.) can stream-update
-            // their messages instead of waiting for turn/completed. Mirrors
-            // the CLI runner's onAssistantDelta wiring.
-            try {
-              emitAgentEvent({
-                runId: params.runId,
-                stream: "assistant",
-                data: { text: textParts.join(""), delta: p.delta },
-              });
-            } catch (err) {
-              embeddedAgentLog.debug("claude-app-server: emitAgentEvent threw", { error: err });
-            }
-          }
-          break;
-        }
-        case "item/reasoning/delta": {
-          if (typeof p.delta === "string") {
-            reasoningParts.push(p.delta);
-            // Mirror codex: surface thinking deltas as their own stream so
-            // downstream UIs can render a thinking indicator.
-            emitReasoningDeltaEvent(params, p.delta, reasoningParts.join(""));
-          }
-          break;
-        }
-        case "turn/error": {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          cleanup();
-          const err = p.error as { message?: string } | undefined;
-          reject(new Error(`Claude turn error: ${err?.message ?? "turn/error"}`));
-          break;
-        }
-        case "turn/completed": {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          cleanup();
-          // readTurnCompletedNotification returns undefined for a
-          // malformed payload (missing turn.id, unknown status enum).
-          // Falling through to undefined preserves the prior cast-tolerant
-          // behavior (the body checks `turn?.status` etc.) without
-          // committing to a value we can't trust.
-          const parsedNotification = readTurnCompletedNotification(p);
-          const turn: Turn | undefined =
-            parsedNotification?.turn ?? readTurn((p as { turn?: unknown }).turn);
-          if (turn?.status === "failed") {
-            reject(new Error(`Claude turn failed: ${turn.error?.message ?? "unknown"}`));
-          } else {
-            // Pick up any item text we didn't see via deltas.
-            if (turn?.items) {
-              for (const item of turn.items) {
-                if (
-                  item.type === "agentMessage" &&
-                  textParts.length === 0 &&
-                  typeof item.text === "string"
-                ) {
-                  textParts.push(item.text);
-                }
-              }
-            }
-            resolve();
-          }
-          break;
-        }
+      settled = true;
+      cleanup();
+      if (outcome.kind === "failed") {
+        reject(outcome.error);
+      } else {
+        resolve();
       }
     });
     resetIdleTimer();
   });
 
-  if (textParts.length > 0) {
-    acc.assistantTexts = [textParts.join("")];
-  }
-  if (reasoningParts.length > 0) {
-    acc.reasoning = reasoningParts.join("");
-  }
+  projector.finalize();
   return acc;
-}
-
-// ─── Agent-event emission helpers ───────────────────────────────────────────
-// Mirror codex's event-projector emissions so Discord/Slack/etc. show tool-use
-// stubs and reasoning indicators live, instead of just the final reply.
-
-function extractItemName(item: Record<string, unknown>): string | undefined {
-  if (typeof item.name === "string") {
-    return item.name;
-  }
-  if (typeof item.tool === "string") {
-    return item.tool;
-  }
-  return undefined;
-}
-
-function emitToolEvent(
-  params: EmbeddedRunAttemptParams,
-  phase: "start" | "result",
-  item: Record<string, unknown>,
-): void {
-  const toolName = extractItemName(item);
-  if (!toolName) {
-    return;
-  }
-  const itemId = typeof item.id === "string" ? item.id : undefined;
-  const status = typeof item.status === "string" ? item.status : undefined;
-  const args =
-    item.arguments && typeof item.arguments === "object" && !Array.isArray(item.arguments)
-      ? (item.arguments as Record<string, unknown>)
-      : item.input && typeof item.input === "object" && !Array.isArray(item.input)
-        ? (item.input as Record<string, unknown>)
-        : undefined;
-  const data: Record<string, unknown> = { phase, name: toolName };
-  if (itemId) {
-    data.itemId = itemId;
-    data.toolCallId = itemId;
-  }
-  if (phase === "start" && args) {
-    data.args = args;
-  }
-  if (phase === "result") {
-    if (status) {
-      data.status = status;
-    }
-    data.isError = status === "failed" || item.error != null;
-    if (item.result && typeof item.result === "object" && !Array.isArray(item.result)) {
-      data.result = item.result as Record<string, unknown>;
-    }
-  }
-  try {
-    emitAgentEvent({ runId: params.runId, stream: "tool", data });
-  } catch (err) {
-    embeddedAgentLog.debug("claude-app-server: emit tool event threw", { error: err });
-  }
-}
-
-function emitItemEvent(
-  params: EmbeddedRunAttemptParams,
-  phase: "start" | "end",
-  item: Record<string, unknown>,
-): void {
-  const itemId = typeof item.id === "string" ? item.id : undefined;
-  const kind = typeof item.type === "string" ? item.type : undefined;
-  const title = extractItemName(item) ?? kind;
-  const status = typeof item.status === "string" ? item.status : undefined;
-  const data: Record<string, unknown> = { phase };
-  if (itemId) {
-    data.itemId = itemId;
-  }
-  if (kind) {
-    data.kind = kind;
-  }
-  if (title) {
-    data.title = title;
-  }
-  if (status) {
-    data.status = status;
-  }
-  try {
-    emitAgentEvent({ runId: params.runId, stream: "item", data });
-  } catch (err) {
-    embeddedAgentLog.debug("claude-app-server: emit item event threw", { error: err });
-  }
-}
-
-function emitReasoningDeltaEvent(
-  params: EmbeddedRunAttemptParams,
-  delta: string,
-  accumulated: string,
-): void {
-  try {
-    emitAgentEvent({
-      runId: params.runId,
-      stream: "reasoning",
-      data: { delta, text: accumulated },
-    });
-  } catch (err) {
-    embeddedAgentLog.debug("claude-app-server: emit reasoning event threw", { error: err });
-  }
 }
 
 // ─── Reasoning effort + dynamic-tools fingerprint + approval-promotion ─────
