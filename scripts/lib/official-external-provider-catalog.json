@@ -77,7 +77,7 @@
     },
     {
       "name": "@openclaw/claude",
-      "description": "OpenClaw Claude harness plugin — delegates Anthropic turns to @openclaw/claude-app-server via codex-shaped JSON-RPC over stdio.",
+      "description": "OpenClaw Claude harness plugin — delegates Anthropic turns to @zeroaltitude/openclaw-claude-bridge via codex-shaped JSON-RPC over stdio.",
       "source": "official",
       "kind": "harness",
       "openclaw": {

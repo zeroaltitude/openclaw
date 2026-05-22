@@ -372,8 +372,8 @@ export function resolveSubagentSpawnModelSelection(params: {
   // Resolution precedence (highest first):
   //  1. Explicit `model` arg passed to sessions_spawn (user override).
   //  2. Parent's resolved model — inherits "spawned from Claude → child runs
-  //     on Claude" by default. This is the codex/claude-app-server policy
-  //     parity ask from Tank's review (openclaw-2y9).
+  //     on Claude" by default. This is the codex-app-server / claude-bridge
+  //     policy parity ask from Tank's review (openclaw-2y9).
   //  3. Subagent's agent-configured model (e.g. narcissus's models.json).
   //  4. Global agents.defaults.model.
   //  5. Runtime default for the provider.
