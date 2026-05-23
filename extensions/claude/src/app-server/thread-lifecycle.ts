@@ -160,6 +160,7 @@ export async function startOrResumeClaudeThread(
         developerInstructionsFingerprint,
         dynamicToolsFingerprint,
         effectiveWorkspace,
+        nativeDisallowedTools,
       });
       return {
         threadId: forkedThreadId,
@@ -280,6 +281,7 @@ async function forkThreadOnCatalogDrift(args: {
   developerInstructionsFingerprint: string;
   dynamicToolsFingerprint: string;
   effectiveWorkspace: string;
+  nativeDisallowedTools: readonly string[];
 }): Promise<string> {
   const {
     client,
@@ -291,16 +293,28 @@ async function forkThreadOnCatalogDrift(args: {
     developerInstructionsFingerprint,
     dynamicToolsFingerprint,
     effectiveWorkspace,
+    nativeDisallowedTools,
   } = args;
 
+  // Carry the CURRENT openclaw policy envelope into the fork — not just
+  // the new dynamic-tool catalog. Without this the fork inherits the
+  // parent's stale approvalPolicy/sandbox/disallowedTools and security
+  // posture diverges from what the user's openclaw config currently
+  // says. The server's thread/fork handler treats every field below
+  // as an explicit override and only falls back to parent inheritance
+  // when a field is omitted; we want zero parent inheritance for
+  // execution-policy fields.
   const forkParams = {
     threadId: existing.threadId,
     cwd: effectiveWorkspace,
     model: params.modelId,
     modelProvider: "anthropic",
+    approvalPolicy: cfg.appServer.approvalPolicy,
+    sandbox: cfg.appServer.sandbox,
     baseInstructions: developerInstructions,
     dynamicTools: bridge.specs,
     dynamicToolsFingerprint,
+    ...(nativeDisallowedTools.length > 0 ? { disallowedTools: [...nativeDisallowedTools] } : {}),
   };
   const rawResponse = await client.request<unknown>("thread/fork", forkParams);
   const response = assertThreadStartResponse(rawResponse);
