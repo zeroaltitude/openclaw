@@ -226,6 +226,88 @@ describe("startOrResumeClaudeThread", () => {
     expect(result.forkedFromThreadId).toBeUndefined();
   });
 
+  it("carries current approvalPolicy + sandbox + disallowedTools into the fork (full policy envelope)", async () => {
+    await seedBinding(sessionFile, {
+      threadId: "thr_stale_policy",
+      dynamicToolsFingerprint: "fp-OLD",
+      developerInstructionsFingerprint: STABLE_DEVINSTRUCTIONS_FP,
+      approvalPolicy: "never",
+    });
+    const cfgWithNewPolicy: ResolvedClaudeAppServerConfig = {
+      appServer: {
+        approvalPolicy: "on-request",
+        sandbox: { type: "readOnly" },
+        turnTimeoutMs: 600_000,
+        turnIdleTimeoutMs: 90_000,
+      },
+      dynamicTools: { excludeNames: [] },
+    };
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/fork") {
+        return { thread: { id: "thr_fork_with_policy" } };
+      }
+      return {};
+    });
+    const client = { request } as unknown as ClaudeAppServerClient;
+
+    const result = await startOrResumeClaudeThread({
+      client,
+      params: makeParams(sessionFile),
+      cfg: cfgWithNewPolicy,
+      bridge: makeBridge(),
+      developerInstructions: "x",
+      developerInstructionsFingerprint: STABLE_DEVINSTRUCTIONS_FP,
+      dynamicToolsFingerprint: STABLE_DYNAMIC_TOOLS_FP,
+      effectiveWorkspace: "/tmp/ws",
+      nativeDisallowedTools: ["Bash", "Edit"],
+    });
+
+    expect(result.outcome).toBe("forked");
+    expect(request).toHaveBeenCalledWith(
+      "thread/fork",
+      expect.objectContaining({
+        threadId: "thr_stale_policy",
+        approvalPolicy: "on-request",
+        sandbox: { type: "readOnly" },
+        disallowedTools: ["Bash", "Edit"],
+        dynamicToolsFingerprint: STABLE_DYNAMIC_TOOLS_FP,
+      }),
+    );
+  });
+
+  it("omits disallowedTools from fork params when the policy has none (avoid sending empty array)", async () => {
+    await seedBinding(sessionFile, {
+      threadId: "thr_no_disallowed",
+      dynamicToolsFingerprint: "fp-OLD",
+      developerInstructionsFingerprint: STABLE_DEVINSTRUCTIONS_FP,
+    });
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/fork") {
+        return { thread: { id: "thr_fork_no_disallowed" } };
+      }
+      return {};
+    });
+    const client = { request } as unknown as ClaudeAppServerClient;
+
+    await startOrResumeClaudeThread({
+      client,
+      params: makeParams(sessionFile),
+      cfg: BASE_CFG,
+      bridge: makeBridge(),
+      developerInstructions: "x",
+      developerInstructionsFingerprint: STABLE_DEVINSTRUCTIONS_FP,
+      dynamicToolsFingerprint: STABLE_DYNAMIC_TOOLS_FP,
+      effectiveWorkspace: "/tmp/ws",
+      nativeDisallowedTools: [],
+    });
+
+    const forkCallArgs = request.mock.calls.find((c) => c[0] === "thread/fork")?.[1] as
+      | Record<string, unknown>
+      | undefined;
+    expect(forkCallArgs).toBeDefined();
+    expect(forkCallArgs?.disallowedTools).toBeUndefined();
+  });
+
   it("propagates non-thread-not-found errors from thread/fork", async () => {
     await seedBinding(sessionFile, {
       threadId: "thr_a",
