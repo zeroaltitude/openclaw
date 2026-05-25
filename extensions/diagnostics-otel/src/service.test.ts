@@ -1141,10 +1141,13 @@ describe("diagnostics-otel service", () => {
   });
 
   test("redacts sensitive data from log messages before export when broad content capture is enabled", async () => {
-    const emitCall = await emitAndCaptureLog({
-      level: "INFO",
-      message: "Using API key sk-1234567890abcdef1234567890abcdef",
-    }, { captureContent: true });
+    const emitCall = await emitAndCaptureLog(
+      {
+        level: "INFO",
+        message: "Using API key sk-1234567890abcdef1234567890abcdef",
+      },
+      { captureContent: true },
+    );
 
     expect(emitCall?.body).not.toContain("sk-1234567890abcdef1234567890abcdef");
     expect(emitCall?.body).toContain("sk-123");

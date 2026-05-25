@@ -1182,9 +1182,12 @@ async function runProcessCommand(
 
 async function formatGeneratedTypeScript(filePath: string, source: string): Promise<string> {
   const result = await runProcessCommand(
-    resolveControlUiI18nPnpmCommand(
-      ["exec", "oxfmt", "--stdin-filepath", path.relative(ROOT, filePath)],
-    ),
+    resolveControlUiI18nPnpmCommand([
+      "exec",
+      "oxfmt",
+      "--stdin-filepath",
+      path.relative(ROOT, filePath),
+    ]),
     {
       input: source,
       rejectOnFailure: true,

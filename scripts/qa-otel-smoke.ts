@@ -83,9 +83,7 @@ const REQUIRED_SPAN_NAMES = [
   "openclaw.context.assembled",
   "openclaw.message.delivery",
 ] as const;
-const REQUIRED_METRIC_NAMES = [
-  "openclaw.harness.duration_ms",
-] as const;
+const REQUIRED_METRIC_NAMES = ["openclaw.harness.duration_ms"] as const;
 const DISALLOWED_ATTRIBUTE_KEYS = new Set([
   "openclaw.runId",
   "openclaw.chatId",
@@ -102,11 +100,7 @@ const DISALLOWED_ATTRIBUTE_KEYS = new Set([
   "openclaw.call_id",
   "openclaw.tool_call_id",
 ]);
-const DISALLOWED_BODY_NEEDLES = [
-  "OTEL-QA-SECRET",
-  "OTEL-QA-OK",
-  "agent:qa:otel-trace-smoke",
-];
+const DISALLOWED_BODY_NEEDLES = ["OTEL-QA-SECRET", "OTEL-QA-OK", "agent:qa:otel-trace-smoke"];
 
 function usage(): string {
   return `Usage: pnpm qa:otel:smoke [--output-dir <path>] [--provider-mode <mode>] [--scenario <id>] [--model <ref>] [--alt-model <ref>]
@@ -747,9 +741,7 @@ function assertSmoke(params: {
     .map((record) => record.body)
     .filter((body) => body !== "log");
   if (rawLogBodies.length > 0) {
-    failures.push(
-      `OTLP log records exported ${rawLogBodies.length} non-placeholder bodies`,
-    );
+    failures.push(`OTLP log records exported ${rawLogBodies.length} non-placeholder bodies`);
   }
 
   const attributeKeys = collectAttributeKeys(params.spans);
@@ -785,9 +777,7 @@ function assertSmoke(params: {
 
   for (const signal of ["traces", "metrics", "logs"] as const) {
     const signalBodies = (params.bodyText[signal] ?? []).join("\n");
-    const leakedNeedles = DISALLOWED_BODY_NEEDLES.filter((needle) =>
-      signalBodies.includes(needle),
-    );
+    const leakedNeedles = DISALLOWED_BODY_NEEDLES.filter((needle) => signalBodies.includes(needle));
     if (leakedNeedles.length > 0) {
       leakContexts[signal] = findNeedleContexts(signalBodies, leakedNeedles);
       failures.push(`OTLP ${signal} payload leaked content: ${leakedNeedles.join(", ")}`);

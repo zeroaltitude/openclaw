@@ -744,15 +744,11 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     const dir = mkdtempSync(join(tmpdir(), "openclaw-cross-os-run-command-"));
     try {
       const logPath = join(dir, "command.log");
-      const result = await runCommand(
-        process.execPath,
-        ["-e", "process.stdout.write('ok')"],
-        {
-          cwd: dir,
-          env: process.env,
-          logPath,
-        },
-      );
+      const result = await runCommand(process.execPath, ["-e", "process.stdout.write('ok')"], {
+        cwd: dir,
+        env: process.env,
+        logPath,
+      });
 
       expect(result).toMatchObject({
         exitCode: 0,

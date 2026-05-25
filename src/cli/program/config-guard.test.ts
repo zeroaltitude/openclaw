@@ -42,20 +42,16 @@ function plainErrorCalls(runtime: ReturnType<typeof makeRuntime>): string[] {
 
 async function withCapturedStdout(run: () => Promise<void>): Promise<string> {
   const writes: string[] = [];
-  const writeSpy = vi
-    .spyOn(process.stdout, "write")
-    .mockImplementation(
-      ((
-        chunk: unknown,
-        encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
-        callback?: (error?: Error | null) => void,
-      ) => {
-        writes.push(String(chunk));
-        const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
-        done?.();
-        return true;
-      }) as typeof process.stdout.write,
-    );
+  const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(((
+    chunk: unknown,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void,
+  ) => {
+    writes.push(String(chunk));
+    const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    done?.();
+    return true;
+  }) as typeof process.stdout.write);
   try {
     await run();
     return writes.join("");

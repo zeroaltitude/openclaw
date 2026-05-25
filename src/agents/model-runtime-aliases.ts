@@ -41,6 +41,19 @@ const LEGACY_RUNTIME_MODEL_PROVIDER_ALIASES = [
     requiresRuntimePolicy: true,
   },
   {
+    // The claude-bridge runtime delegates anthropic turns to the
+    // @zeroaltitude/openclaw-claude-bridge server (codex-shaped
+    // JSON-RPC). Not a legacy provider id — the list also feeds the
+    // model-picker dropdown via listLegacyRuntimeModelProviderAliases,
+    // so the runtime needs an entry here to surface as a choice for
+    // the anthropic provider.
+    legacyProvider: "claude-bridge",
+    provider: "anthropic",
+    runtime: "claude-bridge",
+    cli: false,
+    requiresRuntimePolicy: true,
+  },
+  {
     legacyProvider: "google-gemini-cli",
     provider: "google",
     runtime: "google-gemini-cli",

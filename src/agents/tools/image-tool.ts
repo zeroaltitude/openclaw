@@ -314,10 +314,7 @@ function resolveCompressionModelCandidates(params: {
 }
 
 function imageCompressionPolicyHasDimensionLimit(policy: ImageCompressionModelPolicy): boolean {
-  return (
-    typeof policy.maxSidePx === "number" ||
-    typeof policy.maxPixels === "number"
-  );
+  return typeof policy.maxSidePx === "number" || typeof policy.maxPixels === "number";
 }
 
 function mergeImageCompressionPolicies(params: {
