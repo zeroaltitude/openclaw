@@ -1314,7 +1314,13 @@ async function deliverOutboundPayloadsWithQueueCleanup(
     }
     if (queueId) {
       if (hadPartialFailure) {
-        await failDelivery(queueId, "partial delivery failure (bestEffort)").catch(() => {});
+        await failDelivery(queueId, "partial delivery failure (bestEffort)").catch(
+          (err: unknown) => {
+            log.warn(
+              `failed to mark queued delivery ${queueId} as failed after partial failure; continuing best-effort delivery: ${formatErrorMessage(err)}`,
+            );
+          },
+        );
       } else {
         if (platformSendStarted) {
           await markQueuedPlatformOutcomeUnknown({
@@ -1344,7 +1350,11 @@ async function deliverOutboundPayloadsWithQueueCleanup(
       if (isDeliveryAbortError(err)) {
         await ackDelivery(queueId).catch(() => {});
       } else if (!platformResultsReturned) {
-        await failDelivery(queueId, formatErrorMessage(err)).catch(() => {});
+        await failDelivery(queueId, formatErrorMessage(err)).catch((failErr: unknown) => {
+          log.warn(
+            `failed to mark queued delivery ${queueId} as failed: ${formatErrorMessage(failErr)}`,
+          );
+        });
       }
     }
     throw err;
