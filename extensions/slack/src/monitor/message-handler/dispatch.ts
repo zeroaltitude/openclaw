@@ -498,17 +498,31 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     },
     typing: {
       start: async () => {
+        // [slack-latency-probe] T5: typing.start() invoked (pipeline reached signalRunStart)
+        const _slackProbeT5 = Date.now();
+        ctx.runtime.log?.(
+          `[slack-latency-probe] T5 typing_start_entry channel=${message.channel} ts=${message.ts}`,
+        );
         didSetStatus = true;
         await ctx.setSlackThreadStatus({
           channelId: message.channel,
           threadTs: statusThreadTs,
           status: "is typing...",
         });
+        // [slack-latency-probe] T5b: setSlackThreadStatus returned
+        ctx.runtime.log?.(
+          `[slack-latency-probe] T5b after_set_status channel=${message.channel} ts=${message.ts} delta_ms=${Date.now() - _slackProbeT5}`,
+        );
         if (typingReaction && message.ts) {
+          const _slackProbeReactStart = Date.now();
           await reactSlackMessage(message.channel, message.ts, typingReaction, {
             token: ctx.botToken,
             client: ctx.app.client,
           }).catch(() => {});
+          // [slack-latency-probe] T6: reactSlackMessage roundtrip done (reaction visible to user)
+          ctx.runtime.log?.(
+            `[slack-latency-probe] T6 reaction_added channel=${message.channel} ts=${message.ts} react_api_ms=${Date.now() - _slackProbeReactStart} delta_from_t5_ms=${Date.now() - _slackProbeT5}`,
+          );
         }
       },
       stop: async () => {

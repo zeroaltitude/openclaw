@@ -104,9 +104,20 @@ export function createSlackMessageHandler(params: {
         text: combinedText,
       };
       const seenMessageKey = buildSeenMessageKey(last.message.channel, last.message.ts);
+      // [slack-latency-probe] T2: post-debounce, about to start pipeline
+      const _slackProbeT2 = Date.now();
+      const _slackProbeChan = last.message.channel ?? "?";
+      const _slackProbeTs = last.message.ts ?? "?";
+      ctx.runtime.log?.(
+        `[slack-latency-probe] T2 onflush_entry channel=${_slackProbeChan} ts=${_slackProbeTs}`,
+      );
       try {
         const { prepareSlackMessage, dispatchPreparedSlackMessage } =
           await loadSlackMessagePipeline();
+        // [slack-latency-probe] T3: pipeline runtime loaded
+        ctx.runtime.log?.(
+          `[slack-latency-probe] T3 pipeline_loaded channel=${_slackProbeChan} ts=${_slackProbeTs} delta_from_t2_ms=${Date.now() - _slackProbeT2}`,
+        );
         const prepared = await prepareSlackMessage({
           ctx,
           account,
@@ -116,6 +127,10 @@ export function createSlackMessageHandler(params: {
             wasMentioned: combinedMentioned || last.opts.wasMentioned,
           },
         });
+        // [slack-latency-probe] T4: prepareSlackMessage done
+        ctx.runtime.log?.(
+          `[slack-latency-probe] T4 prepared channel=${_slackProbeChan} ts=${_slackProbeTs} delta_from_t2_ms=${Date.now() - _slackProbeT2} prepared=${prepared ? "yes" : "no"}`,
+        );
         if (!prepared) {
           return;
         }

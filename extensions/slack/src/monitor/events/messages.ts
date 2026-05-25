@@ -185,6 +185,14 @@ export function registerSlackMessageEvents(params: {
         return;
       }
 
+      // [slack-latency-probe] T1: openclaw receives event; compare with event_ts
+      const _slackProbeNow = Date.now();
+      const _slackProbeEventTs = Number(message.event_ts ?? message.ts ?? "0") * 1000;
+      const _slackProbeDeliveryMs =
+        _slackProbeEventTs > 0 ? _slackProbeNow - _slackProbeEventTs : -1;
+      ctx.runtime.log?.(
+        `[slack-latency-probe] T1 handler_entry channel=${message.channel} ts=${message.ts} delivery_lag_ms=${_slackProbeDeliveryMs}`,
+      );
       await handleSlackMessage(message, { source: "message" });
     } catch (err) {
       ctx.runtime.error?.(danger(`slack handler failed: ${formatErrorMessage(err)}`));
