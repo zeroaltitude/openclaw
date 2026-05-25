@@ -1045,6 +1045,7 @@ async function compactEmbeddedPiSessionDirectOnce(
       const extensionFactories = buildEmbeddedExtensionFactories({
         cfg: params.config,
         sessionManager,
+        workspaceDir: effectiveWorkspace,
         provider,
         modelId,
         model,
