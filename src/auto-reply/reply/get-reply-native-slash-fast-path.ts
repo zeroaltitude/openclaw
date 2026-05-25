@@ -6,7 +6,7 @@ import {
 import type { OpenClawConfig } from "../../config/config.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
-import { isNativeCommandTurn, resolveCommandTurnContext } from "../command-turn-context.js";
+import { isExplicitCommandTurn, resolveCommandTurnContext } from "../command-turn-context.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
 import type { ReplyPayload } from "../reply-payload.js";
 import type { MsgContext } from "../templating.js";
@@ -33,7 +33,17 @@ function loadStatusCommandRuntime() {
 }
 
 function resolveNativeSlashCommandName(ctx: MsgContext): string | undefined {
-  if (!isNativeCommandTurn(resolveCommandTurnContext(ctx))) {
+  // Accept both Discord's app-commands API interactions (`kind: "native"`)
+  // AND authorized text-typed slash commands (`kind: "text-slash"` with
+  // `authorized: true`). The old `isNativeCommandTurn` gate was too tight:
+  // when a user types `/status` as a message body (rather than picking it
+  // from Discord's slash UI), CommandSource is "text" and kind is
+  // "text-slash" — that should still trigger the fast path so the command
+  // is intercepted before the model is called. Without this, `/status` etc.
+  // get forwarded to the model as raw text, and on slow harnesses
+  // (claude-bridge, codex with cold start) the run times out trying to
+  // synthesize a status response from the model.
+  if (!isExplicitCommandTurn(resolveCommandTurnContext(ctx))) {
     return undefined;
   }
   const commandText = stripStructuralPrefixes(
