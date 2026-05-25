@@ -10,9 +10,11 @@ import {
 } from "../config/config.js";
 import { createConfigRuntimeEnv } from "../config/env-vars.js";
 import { privateFileStore } from "../infra/private-file-store.js";
-import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
-import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import {
+  resolvePluginMetadataSnapshot,
+  type PluginMetadataSnapshot,
+} from "../plugins/plugin-metadata-snapshot.js";
 import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentDir,
@@ -574,8 +576,9 @@ export async function ensureOpenClawModelsJson(
       : resolveAgentWorkspaceDir(cfg, resolveDefaultAgentId(cfg)));
   const pluginMetadataSnapshot =
     options.pluginMetadataSnapshot ??
-    getCurrentPluginMetadataSnapshot({
+    resolvePluginMetadataSnapshot({
       config: cfg,
+      env: createConfigRuntimeEnv(cfg),
       ...(workspaceDir ? { workspaceDir } : {}),
     });
   const agentDir = agentDirOverride?.trim() ? agentDirOverride.trim() : resolveDefaultAgentDir(cfg);
