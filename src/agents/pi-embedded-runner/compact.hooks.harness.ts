@@ -620,8 +620,8 @@ export async function loadCompactHooksHarness(): Promise<{
     splitSdkTools: vi.fn(() => ({ customTools: [] })),
   }));
 
-  vi.doMock("./compaction-safety-timeout.js", () => ({
-    compactWithSafetyTimeout: vi.fn(
+  vi.doMock("./compaction-safety-timeout.js", () => {
+    const compactWithSafetyTimeout = vi.fn(
       async (
         compact: () => Promise<unknown>,
         _timeoutMs?: number,
@@ -657,9 +657,27 @@ export async function loadCompactHooksHarness(): Promise<{
           }),
         ]);
       },
-    ),
-    resolveCompactionTimeoutMs: vi.fn(() => 30_000),
-  }));
+    );
+    return {
+      compactWithSafetyTimeout,
+      resolveCompactionTimeoutMs: vi.fn(() => 30_000),
+      // Mirror the real wrapper: bound the engine's compact() with the
+      // (mocked) safety timeout and thread the abort signal into its params.
+      compactContextEngineWithSafetyTimeout: vi.fn(
+        (
+          contextEngine: { compact: (params: Record<string, unknown>) => Promise<unknown> },
+          params: Record<string, unknown>,
+          timeoutMs?: number,
+          abortSignal?: AbortSignal,
+        ) =>
+          compactWithSafetyTimeout(
+            () => contextEngine.compact(abortSignal ? { ...params, abortSignal } : params),
+            timeoutMs,
+            abortSignal ? { abortSignal } : undefined,
+          ),
+      ),
+    };
+  });
 
   vi.doMock("./compaction-successor-transcript.js", async () => {
     const actual = await vi.importActual<typeof import("./compaction-successor-transcript.js")>(
