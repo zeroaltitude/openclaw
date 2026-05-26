@@ -212,6 +212,25 @@ export class ClaudeAppServerEventProjector {
     if (isTool) {
       this.recordToolCompletion(item);
       emitToolEvent(this.params, "result", item);
+    } else if (item.type === "agentMessage") {
+      // Emit completed assistant text blocks as preamble-style item events
+      // so they render as bullet lines in the channel draft preview
+      // alongside the tool lines. Mirrors codex's emitCommentaryProgress
+      // pattern (extensions/codex/src/app-server/event-projector.ts).
+      const text = typeof item.text === "string" ? item.text.trim() : "";
+      if (text) {
+        const itemId = typeof item.id === "string" ? item.id : undefined;
+        emitProjectedAgentEvent(this.params, {
+          stream: "item",
+          data: {
+            ...(itemId ? { itemId } : {}),
+            kind: "preamble",
+            title: "Preamble",
+            phase: "update",
+            progressText: text,
+          },
+        });
+      }
     }
     emitItemEvent(this.params, "end", item);
   }
@@ -282,13 +301,17 @@ export class ClaudeAppServerEventProjector {
       return;
     }
     this.textParts.push(p.delta);
-    // Forward token-level deltas to OpenClaw's agent-event bus so downstream
-    // consumers (Discord/Slack/etc.) can stream-update their messages
-    // instead of waiting for turn/completed.
-    emitProjectedAgentEvent(this.params, {
-      stream: "assistant",
-      data: { text: this.textParts.join(""), delta: p.delta },
-    });
+    // Codex (extensions/codex/src/app-server/event-projector.ts) never
+    // emits stream:"assistant". Channel renderers treat stream:"assistant"
+    // as the user-visible final reply and replace the accumulating tool/
+    // item draft preview with the running text, which would wipe out the
+    // 🛠️ tool lines and bullet preambles we want to preserve. Match
+    // codex: accumulate deltas internally for messagesSnapshot, but do
+    // not stream them to channel renderers. Each completed agentMessage
+    // item emits a preamble-style stream:"item" in handleItemLifecycle
+    // so intermediate text appears as a bullet in the draft preview
+    // alongside the tool lines; the final assistant text is delivered
+    // through messagesSnapshot at turn completion as a separate message.
   }
 
   private handleReasoningDelta(p: Record<string, unknown>): void {
