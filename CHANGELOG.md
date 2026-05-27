@@ -6,9 +6,7 @@ Docs: https://docs.openclaw.ai
 
 ### Changes
 
-- Agents/config: allow `agents.list[].experimental.localModelLean` so lean local-model mode can be enabled for one configured agent instead of globally.
 - Memory/QMD: persist a per-file export-state cache to `<qmdDir>/sessions/.export-state.json` and add a size/mtime stat fast path before `buildSessionEntry()` in `qmd-manager.exportSessions()`, so agents with thousands of session transcripts skip the full JSONL read, parse, redact, hash, and render pipeline when the source file is unchanged across boot and 5-minute interval syncs. The cache is gated by `SESSION_EXPORT_RENDER_VERSION` and the resolved export directory and is invalidated cleanly on schema, render-version, or `exportDir` mismatch. Thanks @zeroaltitude.
-- Providers/xAI: add device-code OAuth login so remote and headless setups can authorize xAI without a localhost browser callback. (#84005) Thanks @fuller-stack-dev.
 - Voice: share activation-name matching and consult-transcript screening through the realtime voice SDK so Discord, browser voice, and meeting surfaces can reuse one implementation.
 - Cron: default `cron.maxConcurrentRuns` to 8 so scheduled automations and their isolated agent turns can make progress in parallel without explicit configuration.
 - QA-Lab: add `qa coverage --match <query>` so focused proof selection can discover matching scenarios from existing metadata before running live or remote lanes.
