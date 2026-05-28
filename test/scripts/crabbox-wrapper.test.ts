@@ -1393,7 +1393,17 @@ describe("scripts/crabbox-wrapper", () => {
   it("preserves sparse changed-gate Git bootstrap for direct timeout-wrapped shell commands", () => {
     const result = runWrapper(
       "provider: hetzner, aws, local-container, blacksmith-testbox, or cloudflare\n",
-      ["run", "--provider", "aws", "--", "timeout", "1200s", "bash", "-lc", "pnpm check:changed"],
+      [
+        "run",
+        "--provider",
+        "aws",
+        "--",
+        "timeout",
+        "1200s",
+        "bash",
+        "-lc",
+        "pnpm check:changed",
+      ],
       {
         gitResponses: {
           ["config\u0000--bool\u0000core.sparseCheckout"]: { stdout: "true\n" },

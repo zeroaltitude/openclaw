@@ -71,9 +71,7 @@ export function ensurePlaywrightChromium(options = {}) {
   }
 
   if (!existsSync(executablePath)) {
-    log(
-      `[ui-e2e] Playwright install completed but Chromium is still missing at ${executablePath}.`,
-    );
+    log(`[ui-e2e] Playwright install completed but Chromium is still missing at ${executablePath}.`);
     return 1;
   }
   return 0;
