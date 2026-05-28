@@ -21,6 +21,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { stripEnvelope, stripMessageIdHints } from "../shared/chat-envelope.js";
 import { asFiniteNumber } from "../shared/number-coercion.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
+import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
 import { countToolResults, extractToolCallNames } from "../utils/transcript-tools.js";
 import {
   estimateUsageCost,
@@ -81,7 +82,11 @@ const emptyTotals = (): CostUsageTotals => ({
   missingCostEntries: 0,
 });
 
-const USAGE_COST_CACHE_VERSION = 3;
+// Bump when the *meaning* of cached totals changes (not just their inputs), so durable
+// caches written by older builds are rebuilt instead of served stale. Bumped to 4:
+// unpriced (unknown) zero-cost usage now counts toward missingCostEntries, so a warm
+// cache from a pre-change build would otherwise keep reporting the old complete-$0 totals.
+const USAGE_COST_CACHE_VERSION = 4;
 const USAGE_COST_CACHE_FILE = ".usage-cost-cache.json";
 const USAGE_COST_CACHE_LOCK_WRITE_GRACE_MS = 10_000;
 // Checkpoint policy for refreshCostUsageCache: bound the cost of full cache
@@ -89,14 +94,17 @@ const USAGE_COST_CACHE_LOCK_WRITE_GRACE_MS = 10_000;
 // limits triggers the next durable write.
 const USAGE_COST_CACHE_CHECKPOINT_FILES = 256;
 const USAGE_COST_CACHE_CHECKPOINT_INTERVAL_MS = 5_000;
+const USAGE_COST_TRANSCRIPT_STAT_CONCURRENCY = 32;
 const logger = createSubsystemLogger("usage-cost-cache");
 
 type UsageCostRefreshState = {
   agentId?: string;
+  cachePath: string;
   config?: OpenClawConfig;
   fullRefreshRequested: boolean;
   pendingSessionFiles: Set<string>;
   running: boolean;
+  sessionsDir: string;
   timer?: ReturnType<typeof setTimeout>;
 };
 
@@ -367,24 +375,37 @@ async function writeUsageCostCache(cachePath: string, cache: UsageCostCacheFile)
   });
 }
 
+async function listUsageCountedTranscriptFileStats(
+  agentId?: string,
+  params?: { minMtimeMs?: number; sessionsDir?: string },
+): Promise<UsageCostTranscriptFile[]> {
+  const sessionsDir = params?.sessionsDir ?? resolveSessionTranscriptsDirForAgent(agentId);
+  const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
+  const tasks = entries
+    .filter((entry) => entry.isFile() && isUsageCountedSessionTranscriptFileName(entry.name))
+    .map((entry) => async (): Promise<UsageCostTranscriptFile | undefined> => {
+      const filePath = path.join(sessionsDir, entry.name);
+      const stats = await fs.promises.stat(filePath).catch(() => null);
+      if (!stats) {
+        return undefined;
+      }
+      if (params?.minMtimeMs !== undefined && stats.mtimeMs < params.minMtimeMs) {
+        return undefined;
+      }
+      return { filePath, size: stats.size, mtimeMs: stats.mtimeMs };
+    });
+  const { results } = await runTasksWithConcurrency({
+    tasks,
+    limit: USAGE_COST_TRANSCRIPT_STAT_CONCURRENCY,
+  });
+  return results.filter((file): file is UsageCostTranscriptFile => Boolean(file));
+}
+
 async function listUsageCountedTranscriptFiles(
   agentId?: string,
+  params?: { sessionsDir?: string },
 ): Promise<UsageCostTranscriptFile[]> {
-  const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId);
-  const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
-  const files = await Promise.all(
-    entries
-      .filter((entry) => entry.isFile() && isUsageCountedSessionTranscriptFileName(entry.name))
-      .map(async (entry) => {
-        const filePath = path.join(sessionsDir, entry.name);
-        const stats = await fs.promises.stat(filePath).catch(() => null);
-        if (!stats) {
-          return undefined;
-        }
-        return { filePath, size: stats.size, mtimeMs: stats.mtimeMs };
-      }),
-  );
-  return files.filter((file): file is UsageCostTranscriptFile => Boolean(file));
+  return await listUsageCountedTranscriptFileStats(agentId, params);
 }
 
 function isUsageCostCacheEntryFresh(params: {
@@ -1018,6 +1039,40 @@ const applyCostTotal = (totals: CostUsageTotals, costTotal: number | undefined) 
   totals.totalCost += costTotal;
 };
 
+// A resolved cost config only counts as "known" pricing when it carries at least one
+// positive per-token rate (or tiered pricing). An all-zero config is indistinguishable
+// from "pricing unknown": e.g. codex models ship cost {input:0,output:0,...} in the
+// generated models.json because the Codex backend exposes no per-token price. Treating
+// such a config as a real $0 makes usage-cost report confident zero spend, which
+// silently blinds every budget/spike safeguard that keys off totalCost.
+const isModelPricingKnown = (cost: ReturnType<typeof resolveModelCostConfig>): boolean => {
+  if (!cost) {
+    return false;
+  }
+  if (cost.tieredPricing && cost.tieredPricing.length > 0) {
+    return true;
+  }
+  return cost.input > 0 || cost.output > 0 || cost.cacheRead > 0 || cost.cacheWrite > 0;
+};
+
+type UsageCostResolver = (params: {
+  provider?: string;
+  model?: string;
+}) => ReturnType<typeof resolveModelCostConfig>;
+
+function createUsageCostResolver(config?: OpenClawConfig): UsageCostResolver {
+  const cache = new Map<string, ReturnType<typeof resolveModelCostConfig>>();
+  return ({ provider, model }) => {
+    const key = `${provider ?? ""}\0${model ?? ""}`;
+    if (cache.has(key)) {
+      return cache.get(key);
+    }
+    const cost = resolveModelCostConfig({ provider, model, config });
+    cache.set(key, cost);
+    return cost;
+  };
+}
+
 async function canReadJsonlFromOffset(filePath: string, startOffset: number): Promise<boolean> {
   if (startOffset <= 0) {
     return true;
@@ -1077,10 +1132,12 @@ async function* readJsonlRecords(
 async function scanTranscriptFile(params: {
   filePath: string;
   config?: OpenClawConfig;
+  resolveCost?: UsageCostResolver;
   startOffset?: number;
   endOffset?: number;
   onEntry: (entry: ParsedTranscriptEntry) => void;
 }): Promise<void> {
+  const resolveCost = params.resolveCost ?? createUsageCostResolver(params.config);
   for await (const parsed of readJsonlRecords(
     params.filePath,
     params.startOffset,
@@ -1092,10 +1149,9 @@ async function scanTranscriptFile(params: {
     }
 
     if (entry.usage) {
-      const cost = resolveModelCostConfig({
+      const cost = resolveCost({
         provider: entry.provider,
         model: entry.model,
-        config: params.config,
       });
       if (cost?.tieredPricing && cost.tieredPricing.length > 0) {
         // When tiered pricing is configured, always recompute to override
@@ -1103,6 +1159,20 @@ async function scanTranscriptFile(params: {
         // Clear costBreakdown so downstream aggregation uses the recomputed total
         // instead of the stale flat-rate breakdown from the transport layer.
         entry.costTotal = estimateUsageCost({ usage: entry.usage, cost });
+        entry.costBreakdown = undefined;
+      } else if (
+        !isModelPricingKnown(cost) &&
+        (entry.costTotal === undefined || entry.costTotal === 0) &&
+        computeUsageTokenTotals(entry.usage).totalTokens > 0
+      ) {
+        // Pricing for this model is unknown: it has no positive per-token rate and no
+        // trustworthy recorded cost. The transport either recorded nothing or a
+        // fabricated $0 derived from an all-zero/default catalog entry. Surface this
+        // token-burning turn as a missing-cost entry instead of recording a confident
+        // $0, so budget and spike safeguards that read totalCost are not left blind to
+        // it. A turn carrying a real positive recorded cost is preserved by the guard
+        // above.
+        entry.costTotal = undefined;
         entry.costBreakdown = undefined;
       } else if (entry.costTotal === undefined) {
         // Fill in missing cost estimates.
@@ -1117,6 +1187,7 @@ async function scanTranscriptFile(params: {
 async function scanUsageFile(params: {
   filePath: string;
   config?: OpenClawConfig;
+  resolveCost?: UsageCostResolver;
   startOffset?: number;
   endOffset?: number;
   onEntry: (entry: ParsedUsageEntry) => void;
@@ -1124,6 +1195,7 @@ async function scanUsageFile(params: {
   await scanTranscriptFile({
     filePath: params.filePath,
     config: params.config,
+    resolveCost: params.resolveCost,
     startOffset: params.startOffset,
     endOffset: params.endOffset,
     onEntry: (entry) => {
@@ -1231,32 +1303,17 @@ export async function loadCostUsageSummary(params?: {
 
   const dailyMap = new Map<string, CostUsageTotals>();
   const totals = emptyTotals();
+  const resolveCost = createUsageCostResolver(params?.config);
 
-  const sessionsDir = resolveSessionTranscriptsDirForAgent(params?.agentId);
-  const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
-  const files = (
-    await Promise.all(
-      entries
-        .filter((entry) => entry.isFile() && isUsageCountedSessionTranscriptFileName(entry.name))
-        .map(async (entry) => {
-          const filePath = path.join(sessionsDir, entry.name);
-          const stats = await fs.promises.stat(filePath).catch(() => null);
-          if (!stats) {
-            return null;
-          }
-          // Include file if it was modified after our start time
-          if (stats.mtimeMs < sinceTime) {
-            return null;
-          }
-          return filePath;
-        }),
-    )
-  ).filter((filePath): filePath is string => Boolean(filePath));
+  const files = await listUsageCountedTranscriptFileStats(params?.agentId, {
+    minMtimeMs: sinceTime,
+  });
 
-  for (const filePath of files) {
+  for (const file of files) {
     await scanUsageFile({
-      filePath,
+      filePath: file.filePath,
       config: params?.config,
+      resolveCost,
       onEntry: (entry) => {
         const ts = entry.timestamp?.getTime();
         if (!ts || ts < sinceTime || ts > untilTime) {
@@ -1300,6 +1357,7 @@ export async function loadCostUsageSummary(params?: {
 async function scanUsageFileForCache(params: {
   file: UsageCostTranscriptFile;
   config?: OpenClawConfig;
+  resolveCost?: UsageCostResolver;
   previous?: UsageCostCacheFileEntry;
   includeSessionSummary?: boolean;
 }): Promise<UsageCostCacheFileEntry> {
@@ -1335,6 +1393,7 @@ async function scanUsageFileForCache(params: {
   await scanTranscriptFile({
     filePath: params.file.filePath,
     config: params.config,
+    resolveCost: params.resolveCost,
     startOffset,
     endOffset: params.file.size,
     onEntry: (entry) => {
@@ -1443,14 +1502,16 @@ async function scanUsageFileForCache(params: {
   };
 }
 
-export async function refreshCostUsageCache(params?: {
+async function refreshCostUsageCacheForPath(params?: {
   config?: OpenClawConfig;
   agentId?: string;
+  cachePath?: string;
   maxFiles?: number;
+  sessionsDir?: string;
   sessionFiles?: string[];
   startMs?: number;
 }): Promise<UsageCostRefreshResult> {
-  const cachePath = resolveUsageCostCachePath(params?.agentId);
+  const cachePath = params?.cachePath ?? resolveUsageCostCachePath(params?.agentId);
   const lock = await acquireUsageCostCacheRefreshLock(cachePath);
   if (!lock.acquired) {
     return "busy";
@@ -1458,7 +1519,9 @@ export async function refreshCostUsageCache(params?: {
   try {
     const pricingFingerprint = resolveUsageCostPricingFingerprint(params?.config);
     const cache = await readUsageCostCache(cachePath);
-    const files = await listUsageCountedTranscriptFiles(params?.agentId);
+    const files = await listUsageCountedTranscriptFiles(params?.agentId, {
+      sessionsDir: params?.sessionsDir,
+    });
     const sessionSummaryFiles = new Set(params?.sessionFiles ?? []);
     const refreshStartMs = params?.startMs;
     const refreshFiles =
@@ -1492,6 +1555,7 @@ export async function refreshCostUsageCache(params?: {
         return aSession - bSession || a.size - b.size || a.filePath.localeCompare(b.filePath);
       })
       .slice(0, maxFiles);
+    const resolveCost = createUsageCostResolver(params?.config);
 
     // Throttle full cache rewrites: writing a 100MB+ JSON cache after every
     // single scanned session balloons CPU/IO into O(N * cacheSize). Instead,
@@ -1505,6 +1569,7 @@ export async function refreshCostUsageCache(params?: {
       cache.files[file.filePath] = await scanUsageFileForCache({
         file,
         config: params?.config,
+        resolveCost,
         previous: cache.files[file.filePath],
         includeSessionSummary: sessionSummaryFiles.has(file.filePath),
       });
@@ -1530,6 +1595,16 @@ export async function refreshCostUsageCache(params?: {
   } finally {
     await lock.release();
   }
+}
+
+export async function refreshCostUsageCache(params?: {
+  config?: OpenClawConfig;
+  agentId?: string;
+  maxFiles?: number;
+  sessionFiles?: string[];
+  startMs?: number;
+}): Promise<UsageCostRefreshResult> {
+  return await refreshCostUsageCacheForPath(params);
 }
 
 export async function loadCostUsageSummaryFromCache(params: {
@@ -1588,7 +1663,7 @@ export async function loadCostUsageSummaryFromCache(params: {
     startMs: params.startMs,
     endMs: params.endMs,
     pricingFingerprint,
-    refreshing: usageCostRefreshes.has(params.agentId ?? "main") || refreshRunning,
+    refreshing: usageCostRefreshes.has(cachePath) || refreshRunning,
   });
 }
 
@@ -1663,7 +1738,8 @@ export async function loadSessionCostSummaryFromCache(params: {
       refreshRequested = true;
     }
   }
-  const refreshRunning = await isUsageCostCacheRefreshRunning(cachePath);
+  const refreshRunning =
+    usageCostRefreshes.has(cachePath) || (await isUsageCostCacheRefreshRunning(cachePath));
   let summary = stale ? null : (entry?.sessionSummary ?? null);
   if (!summary && params.refreshMode === "sync-when-empty") {
     summary = await loadSessionCostSummary({
@@ -1725,8 +1801,8 @@ export function requestCostUsageCacheRefresh(params?: {
   agentId?: string;
   sessionFiles?: string[];
 }): void {
-  const agentId = params?.agentId ?? "main";
-  const existing = usageCostRefreshes.get(agentId);
+  const cachePath = resolveUsageCostCachePath(params?.agentId);
+  const existing = usageCostRefreshes.get(cachePath);
   if (existing) {
     mergeUsageCostRefreshRequest(existing, params);
     return;
@@ -1734,14 +1810,16 @@ export function requestCostUsageCacheRefresh(params?: {
 
   const state: UsageCostRefreshState = {
     agentId: params?.agentId,
+    cachePath,
     config: params?.config,
     fullRefreshRequested: false,
     pendingSessionFiles: new Set(),
     running: false,
+    sessionsDir: path.dirname(cachePath),
   };
   mergeUsageCostRefreshRequest(state, params);
-  usageCostRefreshes.set(agentId, state);
-  scheduleUsageCostRefresh(agentId, state);
+  usageCostRefreshes.set(cachePath, state);
+  scheduleUsageCostRefresh(cachePath, state);
 }
 
 function mergeUsageCostRefreshRequest(
@@ -1768,7 +1846,7 @@ function mergeUsageCostRefreshRequest(
 }
 
 function scheduleUsageCostRefresh(
-  agentId: string,
+  refreshKey: string,
   state: UsageCostRefreshState,
   delayMs = 0,
 ): void {
@@ -1777,14 +1855,14 @@ function scheduleUsageCostRefresh(
   }
   const timer = setTimeout(() => {
     state.timer = undefined;
-    void runQueuedUsageCostRefresh(agentId, state);
+    void runQueuedUsageCostRefresh(refreshKey, state);
   }, delayMs);
   timer.unref?.();
   state.timer = timer;
 }
 
 async function runQueuedUsageCostRefresh(
-  agentId: string,
+  refreshKey: string,
   state: UsageCostRefreshState,
 ): Promise<void> {
   state.running = true;
@@ -1797,9 +1875,11 @@ async function runQueuedUsageCostRefresh(
         state.pendingSessionFiles.clear();
       }
       state.fullRefreshRequested = false;
-      const result = await refreshCostUsageCache({
+      const result = await refreshCostUsageCacheForPath({
+        cachePath: state.cachePath,
         config: state.config,
         agentId: state.agentId,
+        sessionsDir: state.sessionsDir,
         sessionFiles: fullRefreshRequested ? undefined : sessionFiles,
       });
       if (result === "busy") {
@@ -1819,9 +1899,9 @@ async function runQueuedUsageCostRefresh(
   } finally {
     state.running = false;
     if (state.fullRefreshRequested || state.pendingSessionFiles.size > 0) {
-      scheduleUsageCostRefresh(agentId, state, retryDelayMs);
+      scheduleUsageCostRefresh(refreshKey, state, retryDelayMs);
     } else {
-      usageCostRefreshes.delete(agentId);
+      usageCostRefreshes.delete(refreshKey);
     }
   }
 }
@@ -1836,33 +1916,22 @@ export async function discoverAllSessions(params?: {
   endMs?: number;
   includeFirstUserMessage?: boolean;
 }): Promise<DiscoveredSession[]> {
-  const sessionsDir = resolveSessionTranscriptsDirForAgent(params?.agentId);
-  const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
+  const files = await listUsageCountedTranscriptFileStats(params?.agentId, {
+    minMtimeMs: params?.startMs,
+  });
 
   const discovered = new Map<string, DiscoveredSession>();
 
-  for (const entry of entries) {
-    if (!entry.isFile() || !isUsageCountedSessionTranscriptFileName(entry.name)) {
-      continue;
-    }
-
-    const filePath = path.join(sessionsDir, entry.name);
-    const stats = await fs.promises.stat(filePath).catch(() => null);
-    if (!stats) {
-      continue;
-    }
-
-    // Filter by date range if provided
-    if (params?.startMs && stats.mtimeMs < params.startMs) {
-      continue;
-    }
+  for (const file of files) {
     // Do not exclude by endMs: a session can have activity in range even if it continued later.
+    const filePath = file.filePath;
+    const fileName = path.basename(filePath);
 
-    const sessionId = parseUsageCountedSessionIdFromFileName(entry.name);
+    const sessionId = parseUsageCountedSessionIdFromFileName(fileName);
     if (!sessionId) {
       continue;
     }
-    const isPrimaryTranscript = isPrimarySessionTranscriptFileName(entry.name);
+    const isPrimaryTranscript = isPrimarySessionTranscriptFileName(fileName);
 
     // Try to read first user message for label extraction
     let firstUserMessage: string | undefined;
@@ -1908,13 +1977,13 @@ export async function discoverAllSessions(params?: {
     const shouldReplace =
       !existing ||
       (isPrimaryTranscript && !existingIsPrimary) ||
-      (isPrimaryTranscript === existingIsPrimary && stats.mtimeMs >= existing.mtime);
+      (isPrimaryTranscript === existingIsPrimary && file.mtimeMs >= existing.mtime);
 
     if (shouldReplace) {
       discovered.set(sessionId, {
         sessionId,
         sessionFile: filePath,
-        mtime: stats.mtimeMs,
+        mtime: file.mtimeMs,
         firstUserMessage: firstUserMessage ?? existing?.firstUserMessage,
       });
       continue;
@@ -1968,10 +2037,12 @@ export async function loadSessionCostSummary(params: {
   const latencyValues: number[] = [];
   let lastUserTimestamp: number | undefined;
   const MAX_LATENCY_MS = 12 * 60 * 60 * 1000;
+  const resolveCost = createUsageCostResolver(params.config);
 
   await scanTranscriptFile({
     filePath: sessionFile,
     config: params.config,
+    resolveCost,
     onEntry: (entry) => {
       const ts = entry.timestamp?.getTime();
 
@@ -2257,10 +2328,12 @@ export async function loadSessionUsageTimeSeries(params: {
   const points: SessionUsageTimePoint[] = [];
   let cumulativeTokens = 0;
   let cumulativeCost = 0;
+  const resolveCost = createUsageCostResolver(params.config);
 
   await scanUsageFile({
     filePath: sessionFile,
     config: params.config,
+    resolveCost,
     onEntry: (entry) => {
       const ts = entry.timestamp?.getTime();
       if (!ts) {
@@ -2367,6 +2440,7 @@ export async function loadSessionLogs(params: {
     }
   }
   const limit = params.limit ?? 50;
+  const resolveCost = createUsageCostResolver(params.config);
 
   for await (const parsed of readJsonlRecords(sessionFile)) {
     try {
@@ -2481,10 +2555,9 @@ export async function loadSessionLogs(params: {
           if (breakdown?.total !== undefined) {
             cost = breakdown.total;
           } else {
-            const costConfig = resolveModelCostConfig({
+            const costConfig = resolveCost({
               provider: message.provider as string | undefined,
               model: message.model as string | undefined,
-              config: params.config,
             });
             cost = estimateUsageCost({ usage, cost: costConfig });
           }
