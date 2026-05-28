@@ -503,4 +503,163 @@ describe("commentary vs final agentMessage split", () => {
     expect(preambles[0]?.data.progressText).toBe("First note.");
     expect(acc.assistantTexts).toEqual(["Final answer."]);
   });
+
+  it("skips agentMessages already emitted as preambles when falling back to turn.items", () => {
+    // Edge case the server's phase tagging exists to disambiguate, but
+    // the projector also guards locally: a turn ending with intermediate
+    // prose + tool and no follow-up reply. The positional fallback used
+    // to pick "Let me check." from turn.items and re-deliver it as the
+    // final reply, duplicating what the user already saw as a preamble.
+    // With emittedPreambleItemIds tracking, the fallback now skips ids
+    // we've already surfaced as preambles.
+    const acc = emptyAcc();
+    const { projector, events } = makeProjectorWithCapture(acc);
+
+    projector.processNotification(
+      notif("item/started", { turnId: TURN_ID, item: { type: "agentMessage", id: "msg_1" } }),
+    );
+    projector.processNotification(
+      notif("item/agentMessage/delta", {
+        turnId: TURN_ID,
+        itemId: "msg_1",
+        delta: "Let me check.",
+      }),
+    );
+    projector.processNotification(
+      notif("item/completed", {
+        turnId: TURN_ID,
+        item: { type: "agentMessage", id: "msg_1", text: "Let me check." },
+      }),
+    );
+    // Tool runs — flushes msg_1 as preamble.
+    projector.processNotification(
+      notif("item/started", {
+        turnId: TURN_ID,
+        item: { type: "toolCall", id: "call_1", name: "Bash" },
+      }),
+    );
+    projector.processNotification(
+      notif("item/completed", {
+        turnId: TURN_ID,
+        item: { type: "toolCall", id: "call_1", name: "Bash", status: "completed" },
+      }),
+    );
+    // No follow-up agentMessage. Turn completes with msg_1 in items.
+    projector.processNotification(
+      notif("turn/completed", {
+        turnId: TURN_ID,
+        turn: {
+          id: TURN_ID,
+          status: "completed",
+          items: [
+            { type: "agentMessage", id: "msg_1", text: "Let me check." },
+            { type: "toolCall", id: "call_1", name: "Bash" },
+          ],
+        },
+      }),
+    );
+    projector.finalize();
+
+    const preambles = events.filter((e) => e.stream === "item" && e.data.kind === "preamble");
+    expect(preambles).toHaveLength(1);
+    expect(preambles[0]?.data.progressText).toBe("Let me check.");
+    // Critical: lastAssistant must be empty — we already surfaced this
+    // text as a preamble, so re-delivering it as the final reply would
+    // duplicate it in the channel.
+    expect(acc.assistantTexts).toEqual([]);
+  });
+
+  it("prefers a server-tagged final_answer item over positional fallback", () => {
+    // claude bridge >= 0.2.7 emits item/updated with phase: "final_answer"
+    // for the trailing agentMessage of an end_turn assistant message.
+    // When the projector's pendingAgentMessage path can't fire (e.g.
+    // because event loss left textParts empty), the turn/completed
+    // fallback should prefer the server-tagged item over the
+    // positional last-agentMessage.
+    const acc = emptyAcc();
+    const { projector, events } = makeProjectorWithCapture(acc);
+
+    // Two agentMessage blocks; the second was server-tagged final via
+    // item/updated. Simulate item/completed for both but DON'T leave
+    // either in pendingAgentMessage at turn/completed (by having a
+    // trailing item/started after msg_2 that "would have" flushed it).
+    projector.processNotification(
+      notif("item/started", { turnId: TURN_ID, item: { type: "agentMessage", id: "msg_1" } }),
+    );
+    projector.processNotification(
+      notif("item/completed", {
+        turnId: TURN_ID,
+        item: { type: "agentMessage", id: "msg_1", text: "Let me check.", phase: "commentary" },
+      }),
+    );
+    projector.processNotification(
+      notif("item/started", {
+        turnId: TURN_ID,
+        item: { type: "toolCall", id: "call_1", name: "Bash" },
+      }),
+    );
+    projector.processNotification(
+      notif("item/completed", {
+        turnId: TURN_ID,
+        item: { type: "toolCall", id: "call_1", name: "Bash", status: "completed" },
+      }),
+    );
+    projector.processNotification(
+      notif("item/started", { turnId: TURN_ID, item: { type: "agentMessage", id: "msg_2" } }),
+    );
+    projector.processNotification(
+      notif("item/completed", {
+        turnId: TURN_ID,
+        item: {
+          type: "agentMessage",
+          id: "msg_2",
+          text: "The answer is foo.",
+          phase: "commentary",
+        },
+      }),
+    );
+    // Server emits item/updated retagging msg_2 as final.
+    projector.processNotification(
+      notif("item/updated", {
+        turnId: TURN_ID,
+        item: {
+          type: "agentMessage",
+          id: "msg_2",
+          text: "The answer is foo.",
+          phase: "final_answer",
+        },
+      }),
+    );
+    // Simulate the pendingAgentMessage path missing (event ordering
+    // anomaly): a stray item/started arrives flushing msg_2 as preamble.
+    projector.processNotification(
+      notif("item/started", { turnId: TURN_ID, item: { type: "reasoning", id: "thought_1" } }),
+    );
+    // Now turn.items snapshot includes both messages, both with phase
+    // tags as the server emitted them.
+    projector.processNotification(
+      notif("turn/completed", {
+        turnId: TURN_ID,
+        turn: {
+          id: TURN_ID,
+          status: "completed",
+          items: [
+            { type: "agentMessage", id: "msg_1", text: "Let me check.", phase: "commentary" },
+            { type: "toolCall", id: "call_1", name: "Bash" },
+            {
+              type: "agentMessage",
+              id: "msg_2",
+              text: "The answer is foo.",
+              phase: "final_answer",
+            },
+          ],
+        },
+      }),
+    );
+    projector.finalize();
+
+    // msg_2 must win — server tagged it final. msg_1 was already
+    // emitted as preamble and is now in emittedPreambleItemIds.
+    expect(acc.assistantTexts).toEqual(["The answer is foo."]);
+  });
 });

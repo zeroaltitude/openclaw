@@ -109,8 +109,22 @@ export class ClaudeAppServerEventProjector {
   // The item still held at turn completion is the final reply — its text
   // becomes textParts (→ lastAssistant) instead of a preamble emission.
   // This mirrors codex's commentary-vs-final split without requiring the
-  // server to tag items.
+  // server to tag items. When the server *does* tag items (claude bridge
+  // >= 0.2.7 emits phase: "commentary" | "final_answer"), the positional
+  // heuristic still drives in-stream emission; phase is used as a
+  // tiebreaker in the turn/completed fallback below.
   private pendingAgentMessage: { itemId: string | undefined; text: string } | undefined;
+  // Item ids we've already emitted as preamble bullets. The turn/completed
+  // fallback (which scans turn.items for a trailing agentMessage when no
+  // block is held) must skip these or it would re-deliver intermediate
+  // prose as the final reply. This is the bridge-side guard against the
+  // edge case where a turn ends without a follow-up text block.
+  private readonly emittedPreambleItemIds = new Set<string>();
+  // Item ids the server explicitly tagged with phase: "final_answer" via
+  // an item/updated notification. Server-tagged finals take priority over
+  // the positional last-agentMessage heuristic when reconciling
+  // turn.items at turn/completed.
+  private readonly serverTaggedFinalItemIds = new Set<string>();
   private settled = false;
 
   constructor(
@@ -288,6 +302,24 @@ export class ClaudeAppServerEventProjector {
     if (!item) {
       return;
     }
+    if (item.type === "agentMessage") {
+      // Server (claude bridge >= 0.2.7) emits item/updated with
+      // phase: "final_answer" for the trailing agentMessage block of an
+      // assistant message whose stop_reason resolves to "end_turn".
+      // Record the itemId so the turn/completed fallback can prefer
+      // server-tagged finals over positional last-agentMessage guessing.
+      // This block is still in pendingAgentMessage at this point (the
+      // tag arrives between item/completed and turn/completed), so the
+      // primary "pendingAgentMessage -> textParts" path in
+      // handleTurnCompleted still runs as before — the tag only matters
+      // when that positional path can't fire.
+      const phase = typeof item.phase === "string" ? item.phase : null;
+      const itemId = typeof item.id === "string" ? item.id : undefined;
+      if (phase === "final_answer" && itemId) {
+        this.serverTaggedFinalItemIds.add(itemId);
+      }
+      return;
+    }
     if (!isToolItem(item)) {
       return;
     }
@@ -400,6 +432,9 @@ export class ClaudeAppServerEventProjector {
     }
     const { itemId, text } = this.pendingAgentMessage;
     this.pendingAgentMessage = undefined;
+    if (itemId) {
+      this.emittedPreambleItemIds.add(itemId);
+    }
     emitProjectedAgentEvent(this.params, {
       stream: "item",
       data: {
@@ -449,20 +484,82 @@ export class ClaudeAppServerEventProjector {
       this.pendingAgentMessage = undefined;
     } else if (turn?.items && this.textParts.length === 0) {
       // Fallback for the case where we never observed item/completed for
-      // the trailing agentMessage (event loss / abrupt settlement): take
-      // the last agentMessage from the authoritative turn.items snapshot.
-      // Only pick the LAST one — picking all would re-merge intermediate
-      // blocks that already went to M_draft as preambles.
-      for (let i = turn.items.length - 1; i >= 0; i -= 1) {
-        const item = turn.items[i];
-        if (item.type === "agentMessage" && typeof item.text === "string" && item.text) {
-          this.textParts.push(item.text);
-          break;
-        }
+      // the trailing agentMessage (event loss / abrupt settlement) OR
+      // the turn legitimately ended with no final reply (e.g.
+      // commentary + tool with no follow-up text). Reconcile against
+      // turn.items in three priority tiers; each tier excludes itemIds
+      // we've already emitted as preambles so we never re-deliver the
+      // in-channel transcript text as the final reply.
+      //
+      // 1. Server-tagged final (phase: "final_answer", or recorded via
+      //    item/updated). Trust the server's explicit signal.
+      // 2. turn.items entry with phase: "final_answer" (carried in the
+      //    authoritative turn snapshot when the projector missed the
+      //    item/updated for some reason).
+      // 3. Last agentMessage in turn.items that isn't already a
+      //    preamble — final positional fallback, behaves like the
+      //    pre-phase-tagging server.
+      const isPreamble = (id: string | undefined): boolean =>
+        id !== undefined && this.emittedPreambleItemIds.has(id);
+      const picked = pickFinalAgentMessageFromTurn(
+        turn.items,
+        this.serverTaggedFinalItemIds,
+        isPreamble,
+      );
+      if (picked) {
+        this.textParts.push(picked);
       }
     }
     return { kind: "completed", turn };
   }
+}
+
+function pickFinalAgentMessageFromTurn(
+  items: ReadonlyArray<{ id?: string; type?: string; text?: string; phase?: string | null }>,
+  serverTaggedFinalItemIds: ReadonlySet<string>,
+  isPreamble: (id: string | undefined) => boolean,
+): string | undefined {
+  // Tier 1: server-tagged final, recorded via item/updated.
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (
+      item?.type === "agentMessage" &&
+      typeof item.id === "string" &&
+      serverTaggedFinalItemIds.has(item.id) &&
+      typeof item.text === "string" &&
+      item.text
+    ) {
+      return item.text;
+    }
+  }
+  // Tier 2: phase: "final_answer" carried in the turn snapshot.
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (
+      item?.type === "agentMessage" &&
+      item.phase === "final_answer" &&
+      typeof item.text === "string" &&
+      item.text
+    ) {
+      return item.text;
+    }
+  }
+  // Tier 3: last agentMessage that isn't already a preamble (legacy
+  // behavior for servers that don't tag phase). Skipping preambles
+  // closes the duplicate-final edge case observed when a turn ends with
+  // commentary + tool and no follow-up reply.
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (
+      item?.type === "agentMessage" &&
+      typeof item.text === "string" &&
+      item.text &&
+      !isPreamble(typeof item.id === "string" ? item.id : undefined)
+    ) {
+      return item.text;
+    }
+  }
+  return undefined;
 }
 
 // ── pure helpers (exported for testability) ────────────────────────────────
