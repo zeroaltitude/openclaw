@@ -127,6 +127,14 @@ export type TurnStartParams = {
   cwd?: string;
   model?: string;
   effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  /**
+   * Per-turn Fast mode opt-in. Forwarded verbatim to the claude-bridge,
+   * which threads it into the Claude Agent SDK's `settings.fastMode`.
+   * The caller (run-attempt) is responsible for checking model capability
+   * (`supportsFastMode`) before setting this — the bridge does not re-gate.
+   * Bridge >= 0.2.8.
+   */
+  fastMode?: boolean;
 };
 
 export type TurnInterruptParams = { threadId: string; turnId: string };

@@ -776,6 +776,22 @@ async function runTurn(
   promptPrefix = "",
 ): Promise<Accumulator> {
   const effort = resolveReasoningEffort(params.thinkLevel, params.modelId);
+  // Fast mode (bridge >= 0.2.8): honor params.fastMode only when the
+  // resolved model supports Fast tier. Anthropic gates Fast per-model;
+  // openclaw's resolveFastModeState in src/agents/fast-mode.ts is the
+  // source of truth for user intent (session override > agent default >
+  // per-model config). Setting it for a non-capable model would either
+  // be silently ignored by the SDK or trip a runtime error — we'd rather
+  // skip it and log so misconfiguration is observable.
+  const fastModeRequested = params.fastMode === true;
+  const fastModeCapable = isFastModeCapableClaudeModel(params.modelId);
+  const fastMode = fastModeRequested && fastModeCapable;
+  if (fastModeRequested && !fastModeCapable) {
+    embeddedAgentLog.debug(
+      "claude-bridge: fastMode requested but model does not support Fast tier; skipping",
+      { modelId: params.modelId },
+    );
+  }
   const turnParamsCandidate: TurnStartParams = {
     threadId,
     input: buildInput(params, promptPrefix),
@@ -785,6 +801,7 @@ async function runTurn(
     cwd: effectiveWorkspace,
     model: params.modelId,
     ...(effort ? { effort } : {}),
+    ...(fastMode ? { fastMode: true } : {}),
   };
   // Outbound validation: catch a malformed turn/start params object
   // (empty threadId, unknown effort enum, etc.) before paying the round
@@ -885,6 +902,32 @@ async function runTurn(
 }
 
 // ─── Reasoning effort + dynamic-tools fingerprint + approval-promotion ─────
+
+/**
+ * Anthropic gates Fast tier per-model. As of bridge 0.2.8 / SDK
+ * @anthropic-ai/claude-agent-sdk surfaces, Fast mode is supported on the
+ * Opus 4.x line (4.6, 4.7, 4.8) and not on Sonnet or Haiku. Pattern-based
+ * recognition keeps the helper resilient to the same generation's revision
+ * suffixes (e.g. claude-opus-4-8-20260101) — Anthropic typically ships
+ * incremental snapshots under the same major-minor identifier.
+ *
+ * Kept local to the claude extension on purpose: per the extensions
+ * boundary in CLAUDE.md, cross-extension imports are not allowed. If the
+ * capability list grows beyond opus-4.x, lift this into a model
+ * `compat.supportsFastMode` flag and read it through the resolved model
+ * instead.
+ */
+function isFastModeCapableClaudeModel(modelId: string): boolean {
+  const lower = modelId.trim().toLowerCase();
+  return (
+    lower.startsWith("claude-opus-4-6") ||
+    lower.startsWith("claude-opus-4.6") ||
+    lower.startsWith("claude-opus-4-7") ||
+    lower.startsWith("claude-opus-4.7") ||
+    lower.startsWith("claude-opus-4-8") ||
+    lower.startsWith("claude-opus-4.8")
+  );
+}
 
 /**
  * Map openclaw thinkLevel onto the SDK's effort enum. Claude Code's
