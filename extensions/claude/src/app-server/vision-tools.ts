@@ -11,7 +11,7 @@
  * model id.
  */
 
-export function filterToolsForVisionInputs<T extends { name?: string }>(
+export function filterToolsForVisionInputs<T extends { name: string }>(
   tools: T[],
   params: {
     modelHasVision: boolean;

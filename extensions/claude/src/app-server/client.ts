@@ -14,6 +14,28 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { JsonValue, RpcMessage, RpcNotification, RpcRequest, RpcResponse } from "./types.js";
 
+// Keys that must never be forwarded to a child process — prevents prototype
+// pollution and injection via env. Mirrors codex transport-stdio pattern.
+const UNSAFE_ENV_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function resolveBridgeSpawnEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  overrides: Record<string, string | undefined> | undefined,
+): NodeJS.ProcessEnv {
+  const env = Object.create(null) as NodeJS.ProcessEnv;
+  for (const [k, v] of Object.entries(baseEnv)) {
+    if (!UNSAFE_ENV_KEYS.has(k)) {
+      env[k] = v;
+    }
+  }
+  for (const [k, v] of Object.entries(overrides ?? {})) {
+    if (!UNSAFE_ENV_KEYS.has(k)) {
+      env[k] = v;
+    }
+  }
+  return env;
+}
+
 export type ClaudeAppServerStartOptions = {
   command?: string;
   args?: string[];
@@ -79,7 +101,7 @@ export class ClaudeAppServerClient {
 
     const command = this.opts.command ?? DEFAULT_COMMAND;
     const args = this.opts.args ?? [];
-    const env: NodeJS.ProcessEnv = { ...process.env, ...this.opts.env };
+    const env = resolveBridgeSpawnEnv(process.env, this.opts.env);
 
     this.child = spawn(command, args, {
       env,

@@ -398,13 +398,16 @@ export async function runClaudeAppServerAttempt(
     // final answer as a NEW message below the transcript instead of
     // editing the transcript in place.
     result.preserveDraftPreviewOnFinalReply = true;
-    // Copy telemetry from the bridge — messaging-tool sends, media artifacts,
-    // audio-as-voice flag, heartbeat response. The bridge mutates these as
-    // each tool call lands.
+    // Copy telemetry from the bridge — messaging-tool sends, source replies,
+    // media artifacts, audio-as-voice flag, heartbeat response. The bridge
+    // mutates these as each tool call lands.
     result.didSendViaMessagingTool = bridge.telemetry.didSendViaMessagingTool;
     result.messagingToolSentTexts = bridge.telemetry.messagingToolSentTexts;
     result.messagingToolSentMediaUrls = bridge.telemetry.messagingToolSentMediaUrls;
     result.messagingToolSentTargets = bridge.telemetry.messagingToolSentTargets;
+    if (bridge.telemetry.messagingToolSourceReplyPayloads.length > 0) {
+      result.messagingToolSourceReplyPayloads = bridge.telemetry.messagingToolSourceReplyPayloads;
+    }
     if (bridge.telemetry.toolMediaUrls.length > 0) {
       result.toolMediaUrls = bridge.telemetry.toolMediaUrls;
     }
