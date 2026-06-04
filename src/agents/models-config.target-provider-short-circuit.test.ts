@@ -18,10 +18,12 @@ vi.mock("./model-auth-env-vars.js", () => ({
   listKnownProviderEnvApiKeyNames: () => ["OPENAI_API_KEY"],
   PROVIDER_ENV_API_KEY_CANDIDATES: { openai: ["OPENAI_API_KEY"] },
   resolveProviderEnvApiKeyCandidates: () => ({ openai: ["OPENAI_API_KEY"] }),
-  // Backfilled by the post-merge follow-up on PR #73260: model-auth-env
-  // now consumes these from model-auth-env-vars and the suite must mock
-  // them to keep the mock surface complete after the origin/main merge.
   resolveProviderEnvAuthEvidence: () => ({}),
+  resolveProviderEnvAuthLookupMaps: () => ({
+    aliasMap: {},
+    envCandidateMap: { openai: ["OPENAI_API_KEY"] },
+    authEvidenceMap: {},
+  }),
   listProviderEnvAuthLookupKeys: () => ["openai"],
   resolveProviderEnvAuthLookupKeys: () => ["openai"],
 }));
