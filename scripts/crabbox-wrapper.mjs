@@ -1913,7 +1913,7 @@ function shouldUseFullCheckoutForCleanRemoteSync(commandArgs, _providerName) {
   if (commandArgs[0] !== "run") {
     return false;
   }
-  if (hasOption(commandArgs, "--no-sync")) {
+  if (hasOption(commandArgs, "--no-sync") || hasOption(commandArgs, "--id")) {
     return false;
   }
   if (!isWorktreeClean()) {
