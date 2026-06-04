@@ -1,3 +1,8 @@
+/**
+ * Ensures the agent-local models.json and plugin model catalog sidecars match
+ * runtime config, discovered providers, auth-profile state, and generated
+ * catalog ownership.
+ */
 import { createHash } from "node:crypto";
 import { constants as FS_CONSTANTS, createReadStream } from "node:fs";
 import fs from "node:fs/promises";
@@ -477,6 +482,7 @@ async function readExistingModelsFile(pathname: string): Promise<{
   }
 }
 
+/** Best-effort chmod for generated models.json and plugin catalog files. */
 export async function ensureModelsFileModeForModelsJson(pathname: string): Promise<void> {
   // CWE-59 + CWE-367 hardening (Aisle high #1 on #72869 + Aisle medium
   // #1 on #73260):  the previous lstat-then-chmod sequence was racy —
@@ -510,6 +516,7 @@ export async function ensureModelsFileModeForModelsJson(pathname: string): Promi
   }
 }
 
+/** Atomic private-file-store write used by models.json generation. */
 export async function writeModelsFileAtomicForModelsJson(
   targetPath: string,
   contents: string,
@@ -668,6 +675,7 @@ async function withModelsJsonWriteLock<T>(targetPath: string, run: () => Promise
   }
 }
 
+/** Ensures models.json and plugin catalog sidecars are current for an agent. */
 export async function ensureOpenClawModelsJson(
   config?: OpenClawConfig,
   agentDirOverride?: string,
