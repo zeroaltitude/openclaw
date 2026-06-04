@@ -2,6 +2,12 @@
 
 Docs: https://docs.openclaw.ai
 
+## Unreleased
+
+### Changes
+
+- Memory/QMD: persist a per-file export-state cache to `<qmdDir>/sessions/.export-state.json` and add a size/mtime stat fast path before `buildSessionEntry()` in `qmd-manager.exportSessions()`, so agents with thousands of session transcripts skip the full JSONL read, parse, redact, hash, and render pipeline when the source file is unchanged across boot and 5-minute interval syncs. The cache is gated by `SESSION_EXPORT_RENDER_VERSION` and the resolved export directory and is invalidated cleanly on schema, render-version, or `exportDir` mismatch. Thanks @zeroaltitude.
+
 ## 2026.6.2
 
 ### Highlights
