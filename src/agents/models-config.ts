@@ -67,6 +67,38 @@ const AUTH_PROFILE_VOLATILE_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Volatile fields applied to `type: "token"` profile objects.  Mirrors
+ * the base set MINUS `expires`/`expiresAt`/`expiresIn`: those drive
+ * eligibility for token credentials (an expired token profile resolves
+ * to `null` in `resolveApiKeyForProfile`), so a fingerprint that strips
+ * them would let valid->expired transitions ride a stale ready-cache
+ * entry.  `access`/`refresh` and the `*At` session-management fields
+ * remain volatile for all profile types.
+ */
+const AUTH_PROFILE_VOLATILE_FIELDS_TOKEN: ReadonlySet<string> = new Set([
+  "access",
+  "refresh",
+  "issuedAt",
+  "refreshedAt",
+  "lastCheckedAt",
+  "lastRefreshAt",
+  "lastValidatedAt",
+]);
+
+/**
+ * Pick the volatile-fields set to apply when stripping an object that
+ * looks like a profile entry inside `auth-profiles.json`.  We detect the
+ * type by inspecting `type === "token"` directly on the object so any
+ * future profile types are covered by the OAuth/default branch.
+ */
+function getVolatileFieldsForProfileObject(value: Record<string, unknown>): ReadonlySet<string> {
+  if (value.type === "token") {
+    return AUTH_PROFILE_VOLATILE_FIELDS_TOKEN;
+  }
+  return AUTH_PROFILE_VOLATILE_FIELDS;
+}
+
+/**
  * Hard cap on the bytes we will read + parse from auth-profiles.json when
  * computing the stable fingerprint hash.  Without a cap, a crafted/large
  * profile file becomes a CPU + memory exhaustion vector via fs.readFile +
@@ -271,9 +303,16 @@ function stripAuthProfilesVolatileFields(value: unknown, depth: number): unknown
   // "constructor", "prototype") in untrusted input can't pollute the
   // resulting object's prototype chain.  Filter them explicitly too —
   // belt and suspenders (CWE-1321).
+  const valueRecord = value as Record<string, unknown>;
+  // Pick the volatile-field set based on the profile `type` so token profiles
+  // preserve their `expires*` fields (which drive eligibility in
+  // resolveApiKeyForProfile) while OAuth profiles strip them as session-rotation
+  // noise.  Restores the per-type fingerprint behavior (Round-5 #73260) that was
+  // dropped when the two models-config.ts perf rewrites were merged into integration.
+  const volatileFields = getVolatileFieldsForProfileObject(valueRecord);
   const result: Record<string, unknown> = Object.create(null);
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (AUTH_PROFILE_VOLATILE_FIELDS.has(key)) {
+  for (const [key, entry] of Object.entries(valueRecord)) {
+    if (volatileFields.has(key)) {
       continue;
     }
     if (DANGEROUS_PROTO_KEYS.has(key)) {
