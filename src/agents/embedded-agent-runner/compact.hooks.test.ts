@@ -2357,9 +2357,9 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
   });
 });
 
-describe("compactEmbeddedPiSessionDirect targetProvider wiring (Clawsweeper P2 round-6 on #73261)", () => {
+describe("compactEmbeddedAgentSessionDirect targetProvider wiring (Clawsweeper P2 round-6 on #73261)", () => {
   beforeAll(async () => {
-    ({ compactEmbeddedPiSessionDirect, compactEmbeddedPiSession } =
+    ({ compactEmbeddedAgentSessionDirect, compactEmbeddedAgentSession } =
       await loadCompactHooksHarness());
   });
 
@@ -2372,7 +2372,7 @@ describe("compactEmbeddedPiSessionDirect targetProvider wiring (Clawsweeper P2 r
     // { workspaceDir } — the targetProvider short-circuit never fired because options.targetProvider
     // was undefined.  After the fix, the resolved provider is forwarded so the scoped-cache
     // short-circuit can skip a full models.json plan when the disk config already matches.
-    await compactEmbeddedPiSessionDirect(wrappedCompactionArgs());
+    await compactEmbeddedAgentSessionDirect(wrappedCompactionArgs());
     expect(ensureOpenClawModelsJsonMock).toHaveBeenCalledWith(
       undefined,
       expect.any(String),
@@ -2382,7 +2382,7 @@ describe("compactEmbeddedPiSessionDirect targetProvider wiring (Clawsweeper P2 r
 
   it("threads the caller-supplied provider, not only the default, when a provider param is passed", async () => {
     // Confirm that the wiring follows the resolved provider rather than always "openai".
-    await compactEmbeddedPiSessionDirect(wrappedCompactionArgs({ provider: "anthropic" }));
+    await compactEmbeddedAgentSessionDirect(wrappedCompactionArgs({ provider: "anthropic" }));
     expect(ensureOpenClawModelsJsonMock).toHaveBeenCalledWith(
       undefined,
       expect.any(String),

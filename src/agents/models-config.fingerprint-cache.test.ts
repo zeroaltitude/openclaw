@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createFixtureSuite } from "../test-utils/fixture-suite.js";
+import { writePersistedAuthProfileStoreRaw } from "./auth-profiles/sqlite.js";
 import {
   installModelsConfigTestHooks,
   MODELS_CONFIG_IMPLICIT_ENV_VARS,
@@ -21,6 +22,11 @@ vi.mock("./model-auth-env-vars.js", () => ({
   resolveProviderEnvAuthEvidence: () => ({}),
   listProviderEnvAuthLookupKeys: () => ["openai"],
   resolveProviderEnvAuthLookupKeys: () => ["openai"],
+  resolveProviderEnvAuthLookupMaps: () => ({
+    aliasMap: {},
+    envCandidateMap: { openai: ["OPENAI_API_KEY"] },
+    authEvidenceMap: {},
+  }),
 }));
 
 vi.mock("../plugins/provider-runtime.js", () => ({
@@ -75,10 +81,11 @@ function createOpenAiConfig(): OpenClawConfig {
   };
 }
 
-async function writeAuthProfiles(agentDir: string, profiles: unknown): Promise<void> {
-  const target = path.join(agentDir, "auth-profiles.json");
-  await fs.mkdir(agentDir, { recursive: true });
-  await fs.writeFile(target, JSON.stringify(profiles));
+// Seed the canonical SQLite auth-profile store (the `auth_profile_store`
+// row) that `ensureOpenClawModelsJson` now fingerprints — NOT the legacy
+// `auth-profiles.json` file.  Synchronous upsert mirroring a real save.
+function writeAuthProfiles(agentDir: string, profiles: unknown): void {
+  writePersistedAuthProfileStoreRaw(profiles, agentDir);
 }
 
 beforeAll(async () => {
@@ -117,7 +124,7 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
     const agentDir = await fixtureSuite.createCaseDir("agent");
     const cfg = createOpenAiConfig();
 
-    await writeAuthProfiles(agentDir, {
+    writeAuthProfiles(agentDir, {
       version: 1,
       profiles: {
         "openai-codex:default": {
@@ -139,7 +146,7 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
     // rotate, but the set of providers the user can use does not change.
     // These fields stay in AUTH_PROFILE_VOLATILE_FIELDS.
     await new Promise((resolve) => setTimeout(resolve, 10));
-    await writeAuthProfiles(agentDir, {
+    writeAuthProfiles(agentDir, {
       version: 1,
       profiles: {
         "openai-codex:default": {
@@ -167,7 +174,7 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
     const agentDir = await fixtureSuite.createCaseDir("agent");
     const cfg = createOpenAiConfig();
 
-    await writeAuthProfiles(agentDir, {
+    writeAuthProfiles(agentDir, {
       version: 1,
       profiles: {
         "anthropic:default": {
@@ -183,7 +190,7 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
     expect(firstCount).toBe(1);
 
     await new Promise((resolve) => setTimeout(resolve, 10));
-    await writeAuthProfiles(agentDir, {
+    writeAuthProfiles(agentDir, {
       version: 1,
       profiles: {
         "anthropic:default": {
@@ -203,7 +210,7 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
     const agentDir = await fixtureSuite.createCaseDir("agent");
     const cfg = createOpenAiConfig();
 
-    await writeAuthProfiles(agentDir, {
+    writeAuthProfiles(agentDir, {
       version: 1,
       profiles: {
         "anthropic:default": {
@@ -218,7 +225,7 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
     const firstCount = resolveImplicitProvidersCallCount;
     expect(firstCount).toBe(1);
 
-    await writeAuthProfiles(agentDir, {
+    writeAuthProfiles(agentDir, {
       version: 1,
       profiles: {
         "anthropic:default": {
@@ -260,19 +267,17 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
     expect(resolveImplicitProvidersCallCount).toBe(2);
   });
 
-  it("forces a re-plan on every call while auth-profiles.json stays oversize (Codex P2 round-4 on #73260)", async () => {
-    // Round-4 follow-up: returning `null` for oversize auth-profiles
-    // collapsed every >8 MiB variant onto the same fingerprint
-    // contribution, so credential edits that kept the file oversize
-    // could keep hitting a stale cache.  The fix bypasses the readyCache
-    // entirely while the file is `uncacheable`, so EVERY call must
-    // re-plan — even when the file is byte-identical to the previous
-    // oversize call.
+  it("forces a re-plan on every call while the auth-profile store stays oversize (fail-closed cap)", async () => {
+    // A store payload over MAX_AUTH_PROFILES_BYTES is `uncacheable`, so the
+    // readyCache is bypassed entirely and EVERY call must re-plan — even
+    // when the payload is byte-identical to the previous oversize call.
+    // Guards against an oversize state collapsing onto a single fingerprint
+    // contribution and letting credential edits ride a stale cache.
     const agentDir = await fixtureSuite.createCaseDir("agent");
     const cfg = createOpenAiConfig();
 
     // Warm the cache with a small profile.
-    await writeAuthProfiles(agentDir, {
+    writeAuthProfiles(agentDir, {
       version: 1,
       profiles: {
         "anthropic:default": {
@@ -289,11 +294,10 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
     await ensureOpenClawModelsJson(cfg, agentDir);
     expect(resolveImplicitProvidersCallCount).toBe(1);
 
-    // Grow auth-profiles past the cap.  First oversize call: cache miss
+    // Grow the store payload past the cap.  First oversize call: cache miss
     // (different effective state) → re-plan.
-    const target = path.join(agentDir, "auth-profiles.json");
     const padding = "x".repeat(10 * 1024 * 1024); // 10 MiB > MAX_AUTH_PROFILES_BYTES
-    const oversizeContents = JSON.stringify({
+    writeAuthProfiles(agentDir, {
       version: 1,
       padding,
       profiles: {
@@ -304,13 +308,11 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
         },
       },
     });
-    await fs.writeFile(target, oversizeContents);
     await ensureOpenClawModelsJson(cfg, agentDir);
     expect(resolveImplicitProvidersCallCount).toBe(2);
 
-    // Repeat oversize call with byte-identical contents.  Under the
-    // round-3 implementation this would hit the cache (null === null);
-    // under the round-4 fix the cache is bypassed and we re-plan again.
+    // Repeat oversize call with byte-identical payload.  The store is
+    // `uncacheable`, so the cache stays bypassed and we re-plan again.
     await ensureOpenClawModelsJson(cfg, agentDir);
     expect(resolveImplicitProvidersCallCount).toBe(3);
 
@@ -320,7 +322,7 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
 
     // Restoring a small (different) profile re-enables caching, and
     // the next call after that should be a cache hit.
-    await writeAuthProfiles(agentDir, {
+    writeAuthProfiles(agentDir, {
       version: 1,
       profiles: {
         "google:default": {
@@ -364,56 +366,4 @@ describe("ensureOpenClawModelsJson fingerprint cache", () => {
     await ensureOpenClawModelsJson(cfg, agentDir);
     expect(resolveImplicitProvidersCallCount).toBe(2);
   }, 30_000);
-
-  it("invalidates the cache when auth-profiles.json transitions to oversize (Aisle/Codex P2 fail-closed on #73260)", async () => {
-    // Regression for the size-only sentinel bypass: previously an
-    // oversized auth-profiles.json yielded a deterministic
-    // `oversize:${size}` hash, so a same-size content swap would
-    // preserve the cache hit.  After the follow-up,
-    // `safeHashRegularFile` returns null on oversize — transitioning
-    // to oversize must therefore change the fingerprint and force a
-    // re-plan.
-    const agentDir = await fixtureSuite.createCaseDir("agent");
-    const cfg = createOpenAiConfig();
-
-    // Start with a small, hashable profile so the first call lands
-    // a cached entry keyed by a content-derived fingerprint.
-    await writeAuthProfiles(agentDir, {
-      version: 1,
-      profiles: {
-        "anthropic:default": {
-          type: "token",
-          provider: "anthropic",
-          token: "sk-ant-small", // pragma: allowlist secret
-        },
-      },
-    });
-    await ensureOpenClawModelsJson(cfg, agentDir);
-    const firstCount = resolveImplicitProvidersCallCount;
-    expect(firstCount).toBe(1);
-
-    // Now grow auth-profiles.json past the 8 MiB cap.  The previous
-    // implementation would still produce a deterministic
-    // `oversize:<size>` hash; the follow-up fix returns null,
-    // changing the fingerprint and forcing a re-plan.
-    const target = path.join(agentDir, "auth-profiles.json");
-    const padding = "x".repeat(10 * 1024 * 1024); // 10 MiB > MAX_AUTH_PROFILES_BYTES (8 MiB)
-    await fs.writeFile(
-      target,
-      JSON.stringify({
-        version: 1,
-        padding,
-        profiles: {
-          "anthropic:default": {
-            type: "token",
-            provider: "anthropic",
-            token: "sk-ant-small", // pragma: allowlist secret
-          },
-        },
-      }),
-    );
-
-    await ensureOpenClawModelsJson(cfg, agentDir);
-    expect(resolveImplicitProvidersCallCount).toBe(firstCount + 1);
-  }, 20_000);
 });

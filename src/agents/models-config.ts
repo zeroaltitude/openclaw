@@ -27,6 +27,10 @@ import {
   resolveDefaultAgentDir,
   resolveDefaultAgentId,
 } from "./agent-scope.js";
+import {
+  openAuthProfileDatabase,
+  readPersistedAuthProfileStoreRaw,
+} from "./auth-profiles/sqlite.js";
 import { MODELS_JSON_STATE, type ContentHashOutcome } from "./models-config-state.js";
 import { planOpenClawModelsJson } from "./models-config.plan.js";
 import { normalizeProviderSpecificConfig } from "./models-config.providers.policy.js";
@@ -37,6 +41,13 @@ import {
   type SecretDefaults,
 } from "./models-config.providers.secret-helpers.js";
 import type { ProviderConfig } from "./models-config.providers.secrets.js";
+import {
+  decodePluginModelCatalogRelativePathPluginId,
+  isGeneratedPluginModelCatalog,
+  isPluginModelCatalogRelativePath,
+  listPluginModelCatalogRelativePaths,
+  resolvePluginModelCatalogOwnerPluginId,
+} from "./plugin-model-catalog.js";
 import { stableStringify } from "./stable-stringify.js";
 
 export { resetModelsJsonReadyCacheForTest } from "./models-config-state.js";
@@ -45,7 +56,10 @@ export { resetModelsJsonReadyCacheForTest } from "./models-config-state.js";
  * Fields on an auth profile that rotate frequently without changing the
  * shape of what providers are available (OAuth token refreshes,
  * expirations).  We exclude them from the fingerprint so token rotation
- * does not invalidate the implicit-provider-discovery cache.
+ * does not invalidate the implicit-provider-discovery cache.  This is the
+ * default (OAuth / non-token) set; `type: "token"` profiles use the
+ * narrower `AUTH_PROFILE_VOLATILE_FIELDS_TOKEN` set below.  See
+ * `getVolatileFieldsForProfileObject` for the per-type selection.
  */
 const AUTH_PROFILE_VOLATILE_FIELDS: ReadonlySet<string> = new Set([
   "access",
@@ -67,11 +81,45 @@ const AUTH_PROFILE_VOLATILE_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Hard cap on the bytes we will read + parse from auth-profiles.json when
- * computing the stable fingerprint hash.  Without a cap, a crafted/large
- * profile file becomes a CPU + memory exhaustion vector via fs.readFile +
- * JSON.parse + recursive walk + stableStringify.  Above the cap we hash
- * raw bytes instead.
+ * Volatile fields applied to `type: "token"` profile objects.  Mirrors
+ * the base set MINUS `expires`/`expiresAt`/`expiresIn`: those drive
+ * eligibility for token credentials (an expired token profile resolves
+ * to `null` in `resolveApiKeyForProfile`), so a fingerprint that strips
+ * them would let valid->expired transitions ride a stale ready-cache
+ * entry.  `access`/`refresh` and the `*At` session-management fields
+ * remain volatile for all profile types.
+ */
+const AUTH_PROFILE_VOLATILE_FIELDS_TOKEN: ReadonlySet<string> = new Set([
+  "access",
+  "refresh",
+  "issuedAt",
+  "refreshedAt",
+  "lastCheckedAt",
+  "lastRefreshAt",
+  "lastValidatedAt",
+]);
+
+/**
+ * Pick the volatile-fields set to apply when stripping an object that
+ * looks like a profile entry inside the auth-profile store.  Profile
+ * entries are reached at depth=2 by `stripAuthProfilesVolatileFields`
+ * (root object -> `profiles` map -> profile value).  We detect the
+ * type by inspecting `type === "token"` directly on the object so any
+ * future profile types are covered by the OAuth/default branch.
+ */
+function getVolatileFieldsForProfileObject(value: Record<string, unknown>): ReadonlySet<string> {
+  if (value.type === "token") {
+    return AUTH_PROFILE_VOLATILE_FIELDS_TOKEN;
+  }
+  return AUTH_PROFILE_VOLATILE_FIELDS;
+}
+
+/**
+ * Sanity bound on the serialized auth-profile store payload we will hash
+ * for the fingerprint.  A multi-MiB store is not a realistic production
+ * state; above the cap `readAuthProfilesStableOutcome` fails closed
+ * (`uncacheable`) instead of spending CPU on the strip + stableStringify +
+ * sha256 of a pathological payload.
  */
 const MAX_AUTH_PROFILES_BYTES = 8 * 1024 * 1024;
 
@@ -222,35 +270,44 @@ async function safeReadFileOutcome(pathname: string, maxBytes: number): Promise<
 }
 
 /**
- * Compute a content-based outcome for auth-profiles.json that is
- * stable across OAuth token rotations.  Returns:
- *  - `{ kind: "absent" }` when the file does not exist.
- *  - `{ kind: "hashed", hash }` for a successfully-read profile file.
- *    JSON parse failures fall back to the raw-content hash so structural
- *    changes still register, just without canonicalization.
- *  - `{ kind: "uncacheable" }` for symlinks, non-regular files,
- *    oversize, or any I/O error.  The caller MUST bypass the readyCache
- *    in this state — otherwise oversize same-size variants would all
- *    collapse to a single fingerprint contribution and let credential
- *    edits keep hitting a stale entry.  See `ensureOpenClawModelsJson`
- *    for the bypass logic and Codex P2 follow-up on PR #73260 for the
- *    threat model.
+ * Compute a content-based outcome for the agent's auth-profile secrets
+ * store that is stable across OAuth token rotations.  Reads the CANONICAL
+ * SQLite store (`openclaw-agent.sqlite`, the `auth_profile_store` row) via
+ * the warm pooled agent DB handle — NOT the legacy `auth-profiles.json`
+ * file, which is migration-only debt per the storage policy ("SQLite
+ * only").  Hashing the legacy JSON file silently read `absent` for every
+ * agent already migrated to SQLite, so real credential changes never
+ * invalidated the implicit-provider-discovery cache.  Returns:
+ *  - `{ kind: "absent" }` when no persisted store row exists (no auth
+ *    profiles configured).  Stable absence is a valid steady-state hit.
+ *  - `{ kind: "hashed", hash }` for a present store, hashed AFTER stripping
+ *    per-type volatile session fields (`getVolatileFieldsForProfileObject`)
+ *    so OAuth token rotation does not bust the cache while structural /
+ *    static-credential / token-expiry changes still do.
+ *  - `{ kind: "uncacheable" }` on a DB read failure, or a store whose
+ *    stripped serialization exceeds MAX_AUTH_PROFILES_BYTES.  The caller
+ *    MUST bypass the readyCache in this state (fail closed) so a transient
+ *    read error or pathological payload cannot grant a stale cache hit.
  */
-async function readAuthProfilesStableOutcome(pathname: string): Promise<ContentHashOutcome> {
-  const outcome = await safeReadFileOutcome(pathname, MAX_AUTH_PROFILES_BYTES);
-  if (outcome.kind !== "hashed") {
-    return outcome;
-  }
+function readAuthProfilesStableOutcome(agentDir: string): ContentHashOutcome {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(outcome.raw.toString("utf8"));
+    parsed = readPersistedAuthProfileStoreRaw(agentDir, openAuthProfileDatabase(agentDir));
   } catch {
-    // File exists but is unparseable; the raw-content hash already
-    // reflects this.  Return it as-is so structural changes register.
-    return { kind: "hashed", hash: outcome.hash };
+    // DB open/read failure — fail closed rather than masquerade as absent.
+    return { kind: "uncacheable" };
+  }
+  if (parsed === null || parsed === undefined) {
+    return { kind: "absent" };
   }
   const stable = stripAuthProfilesVolatileFields(parsed, 0);
-  const stableHash = createHash("sha256").update(stableStringify(stable)).digest("hex");
+  const serialized = stableStringify(stable);
+  if (Buffer.byteLength(serialized, "utf8") > MAX_AUTH_PROFILES_BYTES) {
+    // Sanity bound on the hash input; a multi-MiB store payload is not a
+    // realistic production state, so fail closed instead of hashing it.
+    return { kind: "uncacheable" };
+  }
+  const stableHash = createHash("sha256").update(serialized).digest("hex");
   return { kind: "hashed", hash: stableHash };
 }
 
@@ -267,13 +324,22 @@ function stripAuthProfilesVolatileFields(value: unknown, depth: number): unknown
   if (Array.isArray(value)) {
     return value.map((entry) => stripAuthProfilesVolatileFields(entry, depth + 1));
   }
+  const valueRecord = value as Record<string, unknown>;
+  // Pick the volatile-field set based on the profile `type` so token
+  // profiles preserve their `expires*` fields (which drive eligibility
+  // in `resolveApiKeyForProfile`) while OAuth profiles strip them as
+  // session-rotation noise.  Non-profile objects (root, profile map,
+  // nested metadata) won't carry `type: "token"`, so they fall through
+  // to the default OAuth/non-token volatile set, preserving prior
+  // behavior outside profile entries.
+  const volatileFields = getVolatileFieldsForProfileObject(valueRecord);
   // Build with Object.create(null) so prototype-mutating keys ("__proto__",
   // "constructor", "prototype") in untrusted input can't pollute the
   // resulting object's prototype chain.  Filter them explicitly too —
   // belt and suspenders (CWE-1321).
   const result: Record<string, unknown> = Object.create(null);
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (AUTH_PROFILE_VOLATILE_FIELDS.has(key)) {
+  for (const [key, entry] of Object.entries(valueRecord)) {
+    if (volatileFields.has(key)) {
       continue;
     }
     if (DANGEROUS_PROTO_KEYS.has(key)) {
@@ -1289,16 +1355,12 @@ export async function ensureOpenClawModelsJson(
     });
   const agentDir = agentDirOverride?.trim() ? agentDirOverride.trim() : resolveDefaultAgentDir(cfg);
   const targetPath = path.join(agentDir, "models.json");
-  // Read auth-profiles.json BEFORE deciding whether to read or write to
-  // the readyCache.  When the file is `uncacheable` (oversize, symlink,
-  // I/O error) we must bypass the cache entirely — otherwise all
-  // oversize variants would collapse to a single fingerprint contribution
-  // and a credential edit that keeps the file oversize would keep hitting
-  // a stale entry (Codex P2 follow-up on PR #73260).  Bypassing the cache
-  // also avoids writing dead entries that an attacker who keeps the file
-  // oversize could never evict.
-  const authProfilesPath = path.join(agentDir, "auth-profiles.json");
-  const authProfilesOutcome = await readAuthProfilesStableOutcome(authProfilesPath);
+  // Read the auth-profile store BEFORE deciding whether to read or write
+  // the readyCache.  When the outcome is `uncacheable` (DB read failure or
+  // pathological payload) we must bypass the cache entirely (fail closed):
+  // otherwise a transient read error could let a credential change keep
+  // hitting a stale entry, and we'd write dead entries we could never evict.
+  const authProfilesOutcome = readAuthProfilesStableOutcome(agentDir);
   const cacheable = authProfilesOutcome.kind !== "uncacheable";
 
   const planAndWrite = (
@@ -1313,6 +1375,11 @@ export async function ensureOpenClawModelsJson(
       // are available to provider discovery without mutating process.env.
       const env = createConfigRuntimeEnv(cfg);
       const existingModelsFile = await readExistingModelsFile(targetPath);
+      const existingParsedForMerge = await mergeGeneratedPluginCatalogProvidersIntoExistingParsed({
+        agentDir,
+        existingParsed: existingModelsFile.parsed,
+        ...(pluginMetadataSnapshot ? { pluginMetadataSnapshot } : {}),
+      });
       const plan = await planOpenClawModelsJson({
         cfg,
         sourceConfigForSecrets: resolved.sourceConfigForSecrets,
@@ -1320,7 +1387,7 @@ export async function ensureOpenClawModelsJson(
         env,
         ...(workspaceDir ? { workspaceDir } : {}),
         existingRaw: existingModelsFile.raw,
-        existingParsed: existingModelsFile.parsed,
+        existingParsed: existingParsedForMerge,
         ...(pluginMetadataSnapshot ? { pluginMetadataSnapshot } : {}),
         ...(options.providerDiscoveryProviderIds
           ? { providerDiscoveryProviderIds: options.providerDiscoveryProviderIds }
@@ -1334,29 +1401,43 @@ export async function ensureOpenClawModelsJson(
       });
 
       if (plan.action === "skip") {
-        // No write performed; capture whatever's currently on disk so the
-        // cache can detect external edits between now and the next call.
+        // No models.json write performed; still reconcile generated plugin
+        // catalogs (write/remove) so plugin-provider files track config even
+        // on a skip, then capture whatever's currently on disk so the cache
+        // can detect external edits between now and the next call.
+        const wrotePluginCatalog = await writePluginCatalogsForModelsJson({
+          agentDir,
+          pluginCatalogWrites: plan.pluginCatalogWrites,
+        });
         const modelsJsonOutcome = await readModelsJsonContentOutcome(targetPath);
         return {
           fingerprint: fingerprintForEntry,
           modelsJsonOutcome,
-          result: { agentDir, wrote: false },
+          result: { agentDir, wrote: wrotePluginCatalog },
         };
       }
 
       if (plan.action === "noop") {
+        const wrotePluginCatalog = await writePluginCatalogsForModelsJson({
+          agentDir,
+          pluginCatalogWrites: plan.pluginCatalogWrites,
+        });
         await ensureModelsFileModeForModelsJson(targetPath);
         const modelsJsonOutcome = await readModelsJsonContentOutcome(targetPath);
         return {
           fingerprint: fingerprintForEntry,
           modelsJsonOutcome,
-          result: { agentDir, wrote: false },
+          result: { agentDir, wrote: wrotePluginCatalog },
         };
       }
 
       await fs.mkdir(agentDir, { recursive: true, mode: 0o700 });
       await writeModelsFileAtomicForModelsJson(targetPath, plan.contents);
       await ensureModelsFileModeForModelsJson(targetPath);
+      await writePluginCatalogsForModelsJson({
+        agentDir,
+        pluginCatalogWrites: plan.pluginCatalogWrites,
+      });
       // Capture the post-write outcome so subsequent cache checks can
       // detect any external edit / corruption that happens after this
       // point.
@@ -1542,7 +1623,7 @@ export async function ensureOpenClawModelsJson(
     // entry instead of carrying it forward — the next call would bypass
     // anyway, but evicting now keeps the readyCache from accumulating
     // dead entries.
-    const refreshedAuthOutcome = await readAuthProfilesStableOutcome(authProfilesPath);
+    const refreshedAuthOutcome = readAuthProfilesStableOutcome(agentDir);
     if (refreshedAuthOutcome.kind === "uncacheable") {
       if (MODELS_JSON_STATE.readyCache.get(cacheKey) === pending) {
         MODELS_JSON_STATE.readyCache.delete(cacheKey);
