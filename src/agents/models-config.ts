@@ -1509,9 +1509,20 @@ export async function ensureOpenClawModelsJson(
       }
 
       await fs.mkdir(agentDir, { recursive: true, mode: 0o700 });
-      await writeModelsFileAtomicForModelsJson(targetPath, plan.contents);
+      // Byte-equality write guard: the planner returns `action: "write"`
+      // whenever the root bytes are unchanged but plugin catalog sidecars
+      // still need (re)writing (see models-config.plan.ts — the noop arm
+      // only fires when `pluginCatalogWrites` is also empty). Without this
+      // guard, sidecar-only reconciliation churns the root `models.json`
+      // on disk and reports `wrote: true` even though root content did not
+      // change. Compare against the bytes read before planning and skip the
+      // atomic root write when they match, mirroring the no-op contract.
+      const wroteRoot = existingModelsFile.raw !== plan.contents;
+      if (wroteRoot) {
+        await writeModelsFileAtomicForModelsJson(targetPath, plan.contents);
+      }
       await ensureModelsFileModeForModelsJson(targetPath);
-      await writePluginCatalogsForModelsJson({
+      const wrotePluginCatalog = await writePluginCatalogsForModelsJson({
         agentDir,
         pluginCatalogWrites: plan.pluginCatalogWrites,
       });
@@ -1525,7 +1536,7 @@ export async function ensureOpenClawModelsJson(
         fingerprint: fingerprintForEntry,
         modelsJsonOutcome,
         pluginCatalogsOutcome,
-        result: { agentDir, wrote: true },
+        result: { agentDir, wrote: wroteRoot || wrotePluginCatalog },
       };
     });
 

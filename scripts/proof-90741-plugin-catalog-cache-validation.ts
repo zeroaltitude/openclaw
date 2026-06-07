@@ -1,13 +1,16 @@
 /**
  * Real-runtime behavior proof for PR #90741
- * (perf/models-config-cache-unified) — Clawsweeper review feedback round-1.
+ * (perf/models-config-cache-unified) — Clawsweeper review feedback rounds 1–2.
  *
- * Pins the two blocking findings from the durable Codex review:
+ * Pins the blocking findings from the durable Codex review:
  *
  *   [P1] Validate plugin catalogs before warm cache returns
  *        (src/agents/models-config.ts:1501-1504)
  *   [P2] Avoid creating the auth database for a fingerprint read
  *        (src/agents/models-config.ts:295)
+ *   [P2] Restore the root models.json byte-equality write guard for
+ *        plugin-catalog-only write plans (round-2;
+ *        src/agents/models-config.ts:1512)
  *
  * This script does NOT mock the seam under test.  It drives the real
  * `ensureOpenClawModelsJson` against:
@@ -23,7 +26,7 @@
  * config uses a static `apiKey` so no live provider fetch is attempted (the
  * cold plan still runs the real planner / catalog-write / reconcile path).
  *
- * It pins the contract from three angles:
+ * It pins the contract from four angles:
  *
  *   1. sidecar-drift-busts-cache-and-reconciles (security + correctness)
  *      Warm the readyCache with no sidecars, then plant a TAMPERED generated
@@ -51,6 +54,19 @@
  *      stable calls after the cold plan must issue zero further writes.  A
  *      regression that spuriously busts the cache would re-run the planner and
  *      re-write models.json, bumping the count.
+ *
+ *   4. plugin-catalog-only-write-preserves-root (P2, round-2)
+ *      Drives the REAL planner (no mock) with a config whose sole provider is
+ *      plugin-owned, so `planOpenClawModelsJson` splits it into a plugin
+ *      catalog sidecar and the root `models.json` reduces to
+ *      `{ "providers": {} }`.  Because a sidecar still needs writing, the
+ *      planner returns `action: "write"` even though the root bytes are
+ *      unchanged from a prior steady state.  Pre-fix (round-1 head) the caller
+ *      unconditionally rewrote root `models.json` on every write plan, churning
+ *      the file (new inode/mtime) and reporting `wrote: true` from a root write
+ *      that changed nothing.  Post-fix the byte-equality guard skips the root
+ *      write: we pin that the root file's inode + mtime are preserved across a
+ *      sidecar-only reconcile while the sidecar itself is (re)written.
  *
  * The proof is self-checking: any regression throws and exits non-zero.
  * Captured output must show "All runtime assertions passed." on success.
@@ -120,7 +136,7 @@ async function exists(p: string): Promise<boolean> {
 
 // ----- scenarios ---------------------------------------------------------
 async function scenarioSidecarDriftBustsCacheAndReconciles(): Promise<void> {
-  console.log("[1/3] sidecar-drift-busts-cache-and-reconciles");
+  console.log("[1/4] sidecar-drift-busts-cache-and-reconciles");
   const agentDir = await makeAgentDir("drift");
   const cfg = createOpenAiConfig();
   const sidecarPath = path.join(agentDir, encodePluginModelCatalogRelativePath("acme-plugin"));
@@ -152,7 +168,7 @@ async function scenarioSidecarDriftBustsCacheAndReconciles(): Promise<void> {
 }
 
 async function scenarioFingerprintReadDoesNotCreateAgentDb(): Promise<void> {
-  console.log("[2/3] fingerprint-read-does-not-create-agent-db");
+  console.log("[2/4] fingerprint-read-does-not-create-agent-db");
   const agentDir = await makeAgentDir("nodb");
   const cfg = createOpenAiConfig();
   const authDbPath = resolveAuthProfileDatabasePath(agentDir);
@@ -173,7 +189,7 @@ async function scenarioFingerprintReadDoesNotCreateAgentDb(): Promise<void> {
 }
 
 async function scenarioStableNoSidecarStillHits(): Promise<void> {
-  console.log("[3/3] stable-no-sidecar-still-hits");
+  console.log("[3/4] stable-no-sidecar-still-hits");
   const agentDir = await makeAgentDir("stable");
   const cfg = createOpenAiConfig();
   const modelsPath = path.join(agentDir, "models.json");
@@ -205,11 +221,124 @@ async function scenarioStableNoSidecarStillHits(): Promise<void> {
   console.log("    ok");
 }
 
+type EnsureSnapshot = NonNullable<
+  Parameters<typeof ensureOpenClawModelsJson>[2]
+>["pluginMetadataSnapshot"];
+
+/**
+ * Builds a minimal plugin metadata snapshot that assigns `providerId` to
+ * `pluginId` as a model-catalog owner.  Only the fields the planner +
+ * fingerprint builder read are populated: `owners` (catalog ownership),
+ * `manifestRegistry` (normalization), and `index` (fingerprint key + the
+ * enabled-plugin gate in `resolvePluginModelCatalogOwnerPluginId`).  The
+ * single index record is enabled and carries no `packageJson.path`, so the
+ * fingerprint's `resolvePackageJsonPath` short-circuits without touching
+ * disk.  Cast at the edge — the proof drives the real planner, not the
+ * full plugin discovery pipeline.
+ */
+function createOwnerSnapshotForProvider(params: {
+  providerId: string;
+  pluginId: string;
+}): EnsureSnapshot {
+  return {
+    index: {
+      version: 1,
+      hostContractVersion: "proof",
+      compatRegistryVersion: "proof",
+      migrationVersion: 1,
+      policyHash: "proof-policy-hash",
+      generatedAtMs: 1,
+      installRecords: {},
+      plugins: [{ pluginId: params.pluginId, enabled: true }],
+      diagnostics: [],
+    },
+    manifestRegistry: { plugins: [], diagnostics: [] },
+    owners: {
+      channels: new Map(),
+      channelConfigs: new Map(),
+      providers: new Map(),
+      modelCatalogProviders: new Map([[params.providerId, [params.pluginId]]]),
+      cliBackends: new Map(),
+      setupProviders: new Map(),
+      commandAliases: new Map(),
+      contracts: new Map(),
+    },
+  } as unknown as EnsureSnapshot;
+}
+
+async function scenarioPluginCatalogOnlyWritePreservesRoot(): Promise<void> {
+  console.log("[4/4] plugin-catalog-only-write-preserves-root");
+  const agentDir = await makeAgentDir("catalog-only");
+  const pluginId = "zai-plugin";
+  const providerId = "zai";
+  // Sole provider is plugin-owned, so the planner routes it entirely into a
+  // catalog sidecar and the root models.json reduces to { "providers": {} }.
+  const cfg: OpenClawConfig = {
+    models: {
+      providers: {
+        [providerId]: {
+          baseUrl: "https://api.z.ai/api/paas/v4",
+          // pragma: allowlist secret
+          apiKey: "sk-proof-static-value",
+          api: "openai-completions" as const,
+          models: [],
+        },
+      },
+    },
+  };
+  const snapshot = createOwnerSnapshotForProvider({ providerId, pluginId });
+  const rootPath = path.join(agentDir, "models.json");
+  const sidecarPath = path.join(agentDir, encodePluginModelCatalogRelativePath(pluginId));
+
+  // Cold plan: writes root models.json (providers: {}) and the catalog sidecar.
+  const cold = await ensureOpenClawModelsJson(cfg, agentDir, { pluginMetadataSnapshot: snapshot });
+  assert(cold.wrote === true, "cold plan should write (root + sidecar)");
+  assert(await exists(rootPath), "root models.json should exist after the cold plan");
+  assert(await exists(sidecarPath), "plugin catalog sidecar should exist after the cold plan");
+  const rootJson = JSON.parse(await fsPromises.readFile(rootPath, "utf8")) as {
+    providers?: Record<string, unknown>;
+  };
+  assert(
+    Object.keys(rootJson.providers ?? {}).length === 0,
+    "root models.json should carry no providers (all plugin-owned)",
+  );
+  const coldRootStat = await fsPromises.stat(rootPath);
+  const coldRootContent = await fsPromises.readFile(rootPath, "utf8");
+
+  // Delete the sidecar so the next plan MUST rewrite it. The root contents are
+  // byte-identical to disk, so this is a plugin-catalog-only write plan: the
+  // planner returns action "write" purely to (re)create the sidecar.
+  await fsPromises.rm(sidecarPath, { force: true });
+  assert(!(await exists(sidecarPath)), "sidecar removed to force a catalog-only write plan");
+
+  const reconcile = await ensureOpenClawModelsJson(cfg, agentDir, {
+    pluginMetadataSnapshot: snapshot,
+  });
+
+  // The sidecar was rewritten (so the call reconciled real state)...
+  assert(await exists(sidecarPath), "catalog sidecar must be (re)written by the plan");
+  assert(reconcile.wrote === true, "wrote must be true because the sidecar was reconciled");
+  // ...but the root models.json must NOT have been rewritten: same inode,
+  // same mtime, identical bytes. This is the round-2 byte-equality guard.
+  const warmRootStat = await fsPromises.stat(rootPath);
+  const warmRootContent = await fsPromises.readFile(rootPath, "utf8");
+  console.log(
+    `    root models.json ino cold=${coldRootStat.ino} warm=${warmRootStat.ino} mtimeMs cold=${coldRootStat.mtimeMs} warm=${warmRootStat.mtimeMs}`,
+  );
+  assert(warmRootContent === coldRootContent, "root models.json content must be unchanged");
+  assert(
+    warmRootStat.ino === coldRootStat.ino && warmRootStat.mtimeMs === coldRootStat.mtimeMs,
+    "root models.json must NOT be rewritten for a plugin-catalog-only write plan",
+  );
+  console.log("    ok");
+}
+
 // ----- main ---------------------------------------------------------------
 async function main(): Promise<void> {
   await scenarioSidecarDriftBustsCacheAndReconciles();
   await scenarioFingerprintReadDoesNotCreateAgentDb();
   await scenarioStableNoSidecarStillHits();
+  await scenarioPluginCatalogOnlyWritePreservesRoot();
   console.log("\nAll runtime assertions passed.");
 }
 
