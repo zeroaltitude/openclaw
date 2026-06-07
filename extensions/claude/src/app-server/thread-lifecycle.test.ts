@@ -36,9 +36,9 @@ function makeBridge(): ClaudeDynamicToolBridge {
 
 function makeClient(opts: {
   threadStartResponse?: unknown;
-  threadResumeError?: unknown;
+  threadResumeError?: Error;
   threadForkResponse?: unknown;
-  threadForkError?: unknown;
+  threadForkError?: Error;
 }): ClaudeAppServerClient {
   const request = vi.fn(async (method: string, _params?: unknown) => {
     if (method === "thread/start") {

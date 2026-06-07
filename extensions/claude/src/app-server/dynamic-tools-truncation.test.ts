@@ -198,8 +198,8 @@ describe("dynamic-tool result aggregate budgeting", () => {
     });
     expect(out.success).toBe(true);
     const totalText = out.contentItems
-      .filter((it): it is { type: "inputText"; text: string } => it.type === "inputText")
-      .map((it) => it.text)
+      .filter((item): item is { type: "inputText"; text: string } => item.type === "inputText")
+      .map((item) => item.text)
       .join("");
     expect(totalText.length).toBeLessThanOrEqual(150);
     expect(totalText).toMatch(/OpenClaw truncated dynamic tool result/);
@@ -229,7 +229,7 @@ describe("dynamic-tool result aggregate budgeting", () => {
       arguments: {},
     });
     const hasImage = out.contentItems.some(
-      (it) => it.type === "inputImage" && it.imageUrl === "https://example.test/img.png",
+      (item) => item.type === "inputImage" && item.imageUrl === "https://example.test/img.png",
     );
     expect(hasImage).toBe(true);
   });

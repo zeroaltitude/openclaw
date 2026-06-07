@@ -292,9 +292,9 @@ export class ClaudeAppServerEventProjector {
         }
         this.pendingAgentMessage = { itemId, text };
       }
-      return;
     }
-    // Other non-tool items (reasoning, SDK lifecycle): suppressed.
+    // Other non-tool items (reasoning, SDK lifecycle) and the agentMessage
+    // branch above are terminal here: suppressed, nothing left to emit.
   }
 
   private handleItemUpdated(p: Record<string, unknown>): void {

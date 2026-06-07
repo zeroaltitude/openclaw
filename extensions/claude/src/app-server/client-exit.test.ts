@@ -33,7 +33,10 @@ function makeFakeChild(): FakeChild {
   return child;
 }
 
-const flush = () => new Promise((resolve) => setImmediate(resolve));
+const flush = () =>
+  new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
 
 describe("ClaudeAppServerClient child-exit handling", () => {
   let child: FakeChild;

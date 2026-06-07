@@ -1523,7 +1523,7 @@ function renderClaudeWorkspaceBootstrapPromptContext(
   // avoid duplication. Everything else (SOUL.md, USER.md, IDENTITY.md,
   // HEARTBEAT.md, AGENTS.md, etc.) gets injected verbatim.
   const files = contextFiles
-    .filter((f) => !!f && typeof f.path === "string" && typeof f.content === "string")
+    .filter((f) => Boolean(f) && typeof f.path === "string" && typeof f.content === "string")
     .filter((f) => {
       const baseName = f.path.split("/").pop()?.toLowerCase() ?? "";
       return baseName !== "claude.md";

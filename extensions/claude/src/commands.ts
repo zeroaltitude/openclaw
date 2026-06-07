@@ -72,7 +72,6 @@ export async function handleClaudeCommand(
         return await handlers.handleThreads(ctx);
       case "resume":
         return await handlers.handleResume(ctx, rest);
-      case "help":
       default:
         return handlers.handleHelp();
     }

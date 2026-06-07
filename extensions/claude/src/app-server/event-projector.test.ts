@@ -577,7 +577,7 @@ describe("commentary vs final agentMessage split", () => {
     // fallback should prefer the server-tagged item over the
     // positional last-agentMessage.
     const acc = emptyAcc();
-    const { projector, events } = makeProjectorWithCapture(acc);
+    const { projector } = makeProjectorWithCapture(acc);
 
     // Two agentMessage blocks; the second was server-tagged final via
     // item/updated. Simulate item/completed for both but DON'T leave
