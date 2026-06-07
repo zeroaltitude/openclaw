@@ -49,6 +49,11 @@
             "type": "number",
             "minimum": 1,
             "description": "Idle watchdog: fail the turn if no notification arrives for this many ms. Default lives in code (DEFAULT_CLAUDE_APP_SERVER_TURN_IDLE_TIMEOUT_MS) for a single source of truth."
+          },
+          "progressIdleTimeoutMs": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Progress watchdog: fail the turn if no REAL activity (excluding keepalive heartbeats) arrives for this many ms while no turn items are in flight. Default lives in code (DEFAULT_CLAUDE_APP_SERVER_PROGRESS_IDLE_TIMEOUT_MS); omit here to avoid the manifest default shadowing it."
           }
         }
       },

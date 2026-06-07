@@ -23,6 +23,7 @@ const BASE_CFG: ResolvedClaudeAppServerConfig = {
     sandbox: { type: "dangerFullAccess" },
     turnTimeoutMs: 600_000,
     turnIdleTimeoutMs: 90_000,
+    progressIdleTimeoutMs: 300_000,
   },
   dynamicTools: { excludeNames: [] },
 };
@@ -243,6 +244,7 @@ describe("startOrResumeClaudeThread", () => {
         sandbox: { type: "readOnly" },
         turnTimeoutMs: 600_000,
         turnIdleTimeoutMs: 90_000,
+        progressIdleTimeoutMs: 300_000,
       },
       dynamicTools: { excludeNames: [] },
     };

@@ -40,6 +40,13 @@ export const DEFAULT_CLAUDE_APP_SERVER_SANDBOX: SandboxPolicy = { type: "dangerF
 export const DEFAULT_CLAUDE_APP_SERVER_TURN_TIMEOUT_MS = 30 * 60_000;
 export const DEFAULT_CLAUDE_APP_SERVER_TURN_IDLE_TIMEOUT_MS = 90_000;
 
+// Progress-idle watchdog default for the second idle watch in run-attempt.ts
+// (advances only on real activity, not the bridge keepalive; fires only when no
+// turn items are in flight). 5 min is the shipped default; operators can raise it
+// via appServer.progressIdleTimeoutMs for heavy turns that legitimately go quiet
+// between streamed tokens, short of the hard turnTimeoutMs ceiling.
+export const DEFAULT_CLAUDE_APP_SERVER_PROGRESS_IDLE_TIMEOUT_MS = 5 * 60_000;
+
 // Bare bin name of the bridge. Used only as the placeholder command when no
 // explicit override is set (commandSource "managed"); resolveManagedClaudeBridgeStartOptions
 // replaces it with the absolute path of the bundled binary before spawn.
@@ -67,6 +74,7 @@ export const CLAUDE_APP_SERVER_CONFIG_KEYS = [
   "sandbox",
   "turnTimeoutMs",
   "turnIdleTimeoutMs",
+  "progressIdleTimeoutMs",
 ] as const;
 
 export const CLAUDE_DYNAMIC_TOOLS_CONFIG_KEYS = ["exclude"] as const;
@@ -97,6 +105,7 @@ const appServerConfigSchema = z
     sandbox: sandboxConfigSchema.optional(),
     turnTimeoutMs: positiveIntegerSchema.optional(),
     turnIdleTimeoutMs: positiveIntegerSchema.optional(),
+    progressIdleTimeoutMs: positiveIntegerSchema.optional(),
   })
   .strict();
 
@@ -123,6 +132,7 @@ export type ClaudeAppServerRuntimeConfig = {
   sandbox: SandboxPolicy;
   turnTimeoutMs: number;
   turnIdleTimeoutMs: number;
+  progressIdleTimeoutMs: number;
 };
 
 export type ClaudeDynamicToolsRuntimeConfig = {
@@ -170,6 +180,7 @@ export function resolveClaudeAppServerConfig(raw: unknown): ResolvedClaudeAppSer
     sandbox: DEFAULT_CLAUDE_APP_SERVER_SANDBOX,
     turnTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_TURN_TIMEOUT_MS,
     turnIdleTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_TURN_IDLE_TIMEOUT_MS,
+    progressIdleTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_PROGRESS_IDLE_TIMEOUT_MS,
   };
   if (parsed) {
     if (parsed.args !== undefined) {
@@ -189,6 +200,9 @@ export function resolveClaudeAppServerConfig(raw: unknown): ResolvedClaudeAppSer
     }
     if (parsed.turnIdleTimeoutMs !== undefined) {
       appServer.turnIdleTimeoutMs = parsed.turnIdleTimeoutMs;
+    }
+    if (parsed.progressIdleTimeoutMs !== undefined) {
+      appServer.progressIdleTimeoutMs = parsed.progressIdleTimeoutMs;
     }
   }
 

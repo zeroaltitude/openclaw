@@ -758,7 +758,8 @@ class IdleTimeoutError extends Error {
 // no turn items are in flight — so a legitimately-slow native subagent (an open tool
 // item, silent on this SDK version) is never killed, while a genuine
 // no-progress/no-work-in-flight hang is torn down well before the hard ceiling.
-const CLAUDE_TURN_PROGRESS_IDLE_TIMEOUT_MS = 5 * 60_000;
+// Timeout sourced from cfg.appServer.progressIdleTimeoutMs
+// (DEFAULT_CLAUDE_APP_SERVER_PROGRESS_IDLE_TIMEOUT_MS) so operators can tune it.
 
 type Accumulator = {
   assistantTexts: string[];
@@ -910,7 +911,7 @@ async function runTurn(
     };
 
     progressWatch = createClaudeProgressWatch({
-      timeoutMs: CLAUDE_TURN_PROGRESS_IDLE_TIMEOUT_MS,
+      timeoutMs: cfg.appServer.progressIdleTimeoutMs,
       isSettled: () => settled,
       onStall: ({ idleMs, openItems }) => {
         if (settled) {
@@ -922,14 +923,14 @@ async function runTurn(
         embeddedAgentLog.warn("claude-bridge: turn made no progress; tearing down", {
           sessionId: params.sessionId,
           turnId,
-          progressIdleTimeoutMs: CLAUDE_TURN_PROGRESS_IDLE_TIMEOUT_MS,
+          progressIdleTimeoutMs: cfg.appServer.progressIdleTimeoutMs,
           openItems,
           idleMs,
         });
         client.request("turn/interrupt", { threadId, turnId }).catch(() => {});
         reject(
           new IdleTimeoutError(
-            `Claude turn made no progress for ${CLAUDE_TURN_PROGRESS_IDLE_TIMEOUT_MS}ms with no work in flight`,
+            `Claude turn made no progress for ${cfg.appServer.progressIdleTimeoutMs}ms with no work in flight`,
           ),
         );
       },

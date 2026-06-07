@@ -6,6 +6,7 @@ import {
   CLAUDE_APP_SERVER_CONFIG_KEYS,
   CLAUDE_DYNAMIC_TOOLS_CONFIG_KEYS,
   DEFAULT_CLAUDE_APP_SERVER_APPROVAL_POLICY,
+  DEFAULT_CLAUDE_APP_SERVER_PROGRESS_IDLE_TIMEOUT_MS,
   DEFAULT_CLAUDE_APP_SERVER_TURN_IDLE_TIMEOUT_MS,
   DEFAULT_CLAUDE_APP_SERVER_TURN_TIMEOUT_MS,
   DEFAULT_CLAUDE_BRIDGE_COMMAND,
@@ -29,6 +30,7 @@ describe("resolveClaudeAppServerConfig", () => {
         sandbox: { type: "dangerFullAccess" },
         turnTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_TURN_TIMEOUT_MS,
         turnIdleTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_TURN_IDLE_TIMEOUT_MS,
+        progressIdleTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_PROGRESS_IDLE_TIMEOUT_MS,
       },
       dynamicTools: {
         excludeNames: [],
@@ -47,6 +49,7 @@ describe("resolveClaudeAppServerConfig", () => {
           sandbox: "workspace-write",
           turnTimeoutMs: 1234,
           turnIdleTimeoutMs: 567,
+          progressIdleTimeoutMs: 890,
         },
         dynamicTools: {
           exclude: ["image", "read"],
@@ -62,6 +65,7 @@ describe("resolveClaudeAppServerConfig", () => {
         sandbox: { type: "workspaceWrite" },
         turnTimeoutMs: 1234,
         turnIdleTimeoutMs: 567,
+        progressIdleTimeoutMs: 890,
       },
       dynamicTools: {
         excludeNames: ["image", "read"],
@@ -92,6 +96,7 @@ describe("resolveClaudeAppServerConfig", () => {
         sandbox: { type: "dangerFullAccess" },
         turnTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_TURN_TIMEOUT_MS,
         turnIdleTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_TURN_IDLE_TIMEOUT_MS,
+        progressIdleTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_PROGRESS_IDLE_TIMEOUT_MS,
       },
       dynamicTools: {
         excludeNames: [],
