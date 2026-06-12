@@ -60,6 +60,7 @@ import {
   type AgentMessage,
   type EmbeddedRunAttemptParams,
   type EmbeddedRunAttemptResult,
+  type NormalizedUsage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { getSharedClaudeAppServerClient, type ClaudeAppServerClient } from "./client.js";
 import { resolveClaudeAppServerConfig, type ResolvedClaudeAppServerConfig } from "./config.js";
@@ -397,6 +398,7 @@ export async function runClaudeAppServerAttempt(
       tools: bridge.specs,
     });
     result.assistantTexts = accumulated.assistantTexts;
+    result.attemptUsage = accumulated.usage;
     result.toolMetas = accumulated.toolMetas;
     // Populate messagesSnapshot + lastAssistant so the auto-reply dispatcher
     // and provenance message_sending hook chain (which key on these fields,
@@ -865,6 +867,7 @@ type Accumulator = {
       isDynamic?: boolean;
     }
   >;
+  usage?: NormalizedUsage;
 };
 
 async function runTurn(

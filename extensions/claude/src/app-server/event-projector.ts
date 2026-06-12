@@ -23,8 +23,10 @@
 import {
   emitAgentEvent as emitGlobalAgentEvent,
   embeddedAgentLog,
+  normalizeUsage,
   runAgentHarnessAfterToolCallHook,
   type EmbeddedRunAttemptParams,
+  type NormalizedUsage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 
 /**
@@ -82,6 +84,7 @@ export type ProjectorAccumulator = {
       isDynamic?: boolean;
     }
   >;
+  usage?: NormalizedUsage;
 };
 
 export type ProjectorHookContext = {
@@ -126,6 +129,7 @@ export class ClaudeAppServerEventProjector {
   // turn.items at turn/completed.
   private readonly serverTaggedFinalItemIds = new Set<string>();
   private settled = false;
+  private tokenUsage: NormalizedUsage | undefined;
 
   constructor(
     private readonly turnId: string,
@@ -185,6 +189,9 @@ export class ClaudeAppServerEventProjector {
       case "item/reasoning/delta":
         this.handleReasoningDelta(p);
         return null;
+      case "thread/tokenUsage/updated":
+        this.handleTokenUsage(p);
+        return null;
       case "turn/error":
         this.settled = true;
         return { kind: "failed", error: this.errorFromTurnErrorPayload(p) };
@@ -226,6 +233,9 @@ export class ClaudeAppServerEventProjector {
     }
     if (this.reasoningParts.length > 0) {
       this.acc.reasoning = this.reasoningParts.join("");
+    }
+    if (this.tokenUsage) {
+      this.acc.usage = this.tokenUsage;
     }
   }
 
@@ -455,6 +465,20 @@ export class ClaudeAppServerEventProjector {
     emitReasoningDeltaEvent(this.params, p.delta, this.reasoningParts.join(""));
   }
 
+  private handleTokenUsage(p: Record<string, unknown>): void {
+    const tokenUsage = p.tokenUsage as Record<string, unknown> | undefined;
+    const current =
+      (tokenUsage ? readFirstRecord(tokenUsage, CURRENT_TOKEN_USAGE_KEYS) : undefined) ??
+      readFirstRecord(p, CURRENT_TOKEN_USAGE_KEYS);
+    if (!current) {
+      return;
+    }
+    const usage = normalizeTokenUsage(current);
+    if (usage) {
+      this.tokenUsage = usage;
+    }
+  }
+
   private errorFromTurnErrorPayload(p: Record<string, unknown>): Error {
     const err = p.error as { message?: string } | undefined;
     return new Error(`Claude turn error: ${err?.message ?? "turn/error"}`);
@@ -664,5 +688,81 @@ export function emitReasoningDeltaEvent(
   emitProjectedAgentEvent(params, {
     stream: "reasoning",
     data: { delta, text: accumulated },
+  });
+}
+
+// ── token usage helpers ────────────────────────────────────────────────────
+
+const CURRENT_TOKEN_USAGE_KEYS = [
+  "last",
+  "current",
+  "lastCall",
+  "lastCallUsage",
+  "lastTokenUsage",
+  "last_token_usage",
+] as const;
+
+function readFirstRecord(
+  obj: Record<string, unknown>,
+  keys: ReadonlyArray<string>,
+): Record<string, unknown> | undefined {
+  for (const key of keys) {
+    const val = obj[key];
+    if (val !== null && typeof val === "object" && !Array.isArray(val)) {
+      return val as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+function readNumber(obj: Record<string, unknown>, key: string): number | undefined {
+  const val = obj[key];
+  return typeof val === "number" ? val : undefined;
+}
+
+function readNumberAlias(
+  obj: Record<string, unknown>,
+  keys: ReadonlyArray<string>,
+): number | undefined {
+  for (const key of keys) {
+    const val = readNumber(obj, key);
+    if (val !== undefined) {
+      return val;
+    }
+  }
+  return undefined;
+}
+
+function normalizeTokenUsage(record: Record<string, unknown>): NormalizedUsage | undefined {
+  const promptTotalInput = readNumberAlias(record, [
+    "inputTokens",
+    "input_tokens",
+    "promptTokens",
+    "prompt_tokens",
+  ]);
+  const cacheRead = readNumberAlias(record, [
+    "cachedInputTokens",
+    "cached_input_tokens",
+    "cacheRead",
+    "cache_read",
+    "cache_read_input_tokens",
+    "cached_tokens",
+  ]);
+  const input =
+    promptTotalInput !== undefined && cacheRead !== undefined
+      ? Math.max(0, promptTotalInput - cacheRead)
+      : (promptTotalInput ?? readNumber(record, "input"));
+
+  return normalizeUsage({
+    input,
+    output: readNumberAlias(record, ["outputTokens", "output_tokens", "output"]),
+    cacheRead,
+    cacheWrite: readNumberAlias(record, [
+      "cacheWrite",
+      "cache_write",
+      "cacheCreationInputTokens",
+      "cache_creation_input_tokens",
+    ]),
+    total: readNumberAlias(record, ["totalTokens", "total_tokens", "total"]),
   });
 }
