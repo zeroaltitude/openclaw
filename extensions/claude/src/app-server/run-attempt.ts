@@ -1248,7 +1248,11 @@ function buildMessagesSnapshot(acc: Accumulator): AgentMessage[] {
     } as unknown as AgentMessage;
     messages.push(toolResult);
   }
-  // Final assistant text(s).
+  // Final assistant text(s). Attach real token usage from the accumulator so
+  // that lastAssistant.usage (read by the embedded runner for lastCallUsage)
+  // carries actual cache_read counts — without this, sessions.json totalTokens
+  // stays null and /status shows 0% context.
+  const turnUsage = acc.usage ?? { input: 0, output: 0, total: 0 };
   for (const text of acc.assistantTexts) {
     if (typeof text !== "string" || text.length === 0) {
       continue;
@@ -1259,7 +1263,7 @@ function buildMessagesSnapshot(acc: Accumulator): AgentMessage[] {
       api: "messages",
       provider: "anthropic",
       model: "",
-      usage: { input: 0, output: 0, total: 0 },
+      usage: turnUsage,
       stopReason: "stop",
       timestamp: now,
     } as unknown as AgentMessage;
