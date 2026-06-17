@@ -61,10 +61,8 @@ function findExecutableOnPath(command, envPath, platform, env, cwd) {
   }
   const extensions =
     platform === "win32"
-      ? (
-          env[Object.keys(env).find((key) => key.toLowerCase() === "pathext") ?? "PATHEXT"] ??
-          ".COM;.EXE;.BAT;.CMD"
-        )
+      ? (env[Object.keys(env).find((key) => key.toLowerCase() === "pathext") ?? "PATHEXT"] ??
+          ".COM;.EXE;.BAT;.CMD")
           .split(";")
           .filter(Boolean)
           .map((extension) => extension.toLowerCase())
