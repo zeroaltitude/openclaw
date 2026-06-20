@@ -2585,8 +2585,8 @@ export class QmdMemoryManager implements MemorySearchManager {
         if (cutoff && stat.mtimeMs < cutoff) {
           continue;
         }
-        // Verify content fingerprint: cheap sha1 over first+last 512 bytes
-        // catches any in-place modification that preserved size+mtime+ino.
+        // Verify a cheap edge fingerprint over first+last 512 bytes. It catches
+        // common append/truncate/edge rewrites without full-file hashing.
         const fingerprint = await computeContentFingerprint(sessionFile);
         if (fingerprint === cached.contentFingerprint) {
           // Verify the cached export target still exists on disk. If it was
