@@ -101,4 +101,18 @@ describe("buildAgentRuntimeAuthPlan", () => {
     expect(plan.authProfileProviderForAuth).toBe("fixture");
     expect(pluginRegistryMocks.loadPluginMetadataSnapshot).not.toHaveBeenCalled();
   });
+
+  it("treats the Claude bridge harness as the Anthropic auth owner", () => {
+    const plan = buildAgentRuntimeAuthPlan({
+      provider: "anthropic",
+      authProfileProvider: "anthropic",
+      sessionAuthProfileId: "anthropic:default",
+      harnessId: "claude-bridge",
+      harnessRuntime: "claude-bridge",
+      allowHarnessAuthProfileForwarding: true,
+    });
+
+    expect(plan.harnessAuthProvider).toBe("anthropic");
+    expect(plan.forwardedAuthProfileId).toBe("anthropic:default");
+  });
 });

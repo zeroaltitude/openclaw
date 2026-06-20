@@ -116,7 +116,10 @@ export async function runClaudeAppServerAttempt(
       command: cfg.appServer.command,
       commandSource: cfg.appServer.commandSource,
       args: cfg.appServer.args,
-      env: cfg.appServer.env,
+      env: resolveClaudeBridgeStartEnv({
+        configuredEnv: cfg.appServer.env,
+        resolvedApiKey: params.resolvedApiKey,
+      }),
     });
     client = getSharedClaudeAppServerClient(startOptions);
     await client.start();
@@ -523,6 +526,18 @@ export async function runClaudeAppServerAttempt(
     params.abortSignal?.removeEventListener("abort", onExternalAbort);
     unregisterServerRequest?.();
   }
+}
+
+export function resolveClaudeBridgeStartEnv(params: {
+  configuredEnv?: Record<string, string>;
+  resolvedApiKey?: string;
+}): Record<string, string> | undefined {
+  const env = { ...(params.configuredEnv ?? {}) };
+  const resolvedApiKey = params.resolvedApiKey?.trim();
+  if (resolvedApiKey && !env.ANTHROPIC_API_KEY?.trim()) {
+    env.ANTHROPIC_API_KEY = resolvedApiKey;
+  }
+  return Object.keys(env).length > 0 ? env : undefined;
 }
 
 // ─── Tool materialization ───────────────────────────────────────────────────

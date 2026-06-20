@@ -8,6 +8,7 @@ import {
   resolveBridgeSpawnEnv,
   resolveClaudeBridgeSpawnInvocation,
 } from "./client.js";
+import { resolveClaudeBridgeStartEnv } from "./run-attempt.js";
 import { MANAGED_CLAUDE_BRIDGE_PACKAGE, MIN_CLAUDE_BRIDGE_VERSION } from "./version.js";
 
 describe("assertSupportedBridgeVersion", () => {
@@ -90,6 +91,29 @@ describe("resolveBridgeSpawnEnv", () => {
     const env = resolveBridgeSpawnEnv({ PATH: "/usr/bin" }, { UNSET: undefined, KEEP: "v" });
     expect(env.KEEP).toBe("v");
     expect(Object.hasOwn(env, "UNSET")).toBe(false);
+  });
+});
+
+describe("resolveClaudeBridgeStartEnv", () => {
+  it("passes the resolved OpenClaw Anthropic token to the bridge as ANTHROPIC_API_KEY", () => {
+    expect(resolveClaudeBridgeStartEnv({ resolvedApiKey: " sk-ant-test " })).toEqual({
+      ANTHROPIC_API_KEY: "sk-ant-test",
+    });
+  });
+
+  it("preserves explicit bridge env and does not replace a configured Anthropic key", () => {
+    expect(
+      resolveClaudeBridgeStartEnv({
+        configuredEnv: {
+          ANTHROPIC_API_KEY: "configured-key",
+          CLAUDE_CONFIG_DIR: "/tmp/claude",
+        },
+        resolvedApiKey: "resolved-key",
+      }),
+    ).toEqual({
+      ANTHROPIC_API_KEY: "configured-key",
+      CLAUDE_CONFIG_DIR: "/tmp/claude",
+    });
   });
 });
 
