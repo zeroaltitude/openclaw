@@ -2217,7 +2217,6 @@ describe("gateway server chat", () => {
       const bytes = Buffer.byteLength(JSON.stringify(messages), "utf8");
       expect(bytes).toBeLessThanOrEqual(historyMaxBytes);
       expect(messages.length).toBeLessThan(45);
-      mockGetReplyFromConfigOnce(async () => undefined);
 
       await writeSessionStore({
         entries: {
@@ -2248,18 +2247,15 @@ describe("gateway server chat", () => {
       expect(stored["agent:main:main"]?.lastChannel).toBe("whatsapp");
       expect(stored["agent:main:main"]?.lastTo).toBe("+1555");
 
-      await vi.waitFor(
-        async () => {
-          const completed = await rpcReq<{ status?: string }>(ws, "chat.send", {
-            sessionKey: "main",
-            message: "hello",
-            idempotencyKey: "idem-route",
-          });
-          expect(completed.ok).toBe(true);
-          expect(completed.payload?.status).toBe("ok");
-        },
-        { timeout: 2_000, interval: 10 },
-      );
+      await vi.waitFor(async () => {
+        const completed = await rpcReq<{ status?: string }>(ws, "chat.send", {
+          sessionKey: "main",
+          message: "hello",
+          idempotencyKey: "idem-route",
+        });
+        expect(completed.ok).toBe(true);
+        expect(completed.payload?.status).toBe("ok");
+      }, FAST_WAIT_OPTS);
     });
   });
 
