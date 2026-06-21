@@ -197,15 +197,15 @@ vi.mock("openclaw/plugin-sdk/file-lock", async () => {
 });
 
 import { spawn as mockedSpawn } from "node:child_process";
-import {
-  readQmdSessionExportCacheEntry,
-  upsertQmdSessionExportCacheEntry,
-  type OpenClawConfig,
-} from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
+import { type OpenClawConfig } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import {
   requireNodeSqlite,
   resolveMemoryBackendConfig,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import {
+  readQmdSessionExportCacheEntry,
+  upsertQmdSessionExportCacheEntry,
+} from "openclaw/plugin-sdk/memory-core-qmd-export-cache-internal";
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
 import { QmdMemoryManager, resolveQmdMcporterSearchProcessTimeoutMs } from "./qmd-manager.js";
 

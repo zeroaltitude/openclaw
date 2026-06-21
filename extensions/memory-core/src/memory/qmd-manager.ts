@@ -10,18 +10,14 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { withFileLock } from "openclaw/plugin-sdk/file-lock";
 import {
   createSubsystemLogger,
-  deleteQmdSessionExportCacheEntries,
   isPathInside,
-  listQmdSessionExportCacheEntries,
   root,
   resolveAgentContextLimits,
   resolveMemorySearchSyncConfig,
   resolveAgentWorkspaceDir,
   resolveGlobalSingleton,
   resolveStateDir,
-  upsertQmdSessionExportCacheEntry,
   type OpenClawConfig,
-  type QmdSessionExportCacheOptions,
 } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import {
   buildSessionEntry,
@@ -54,6 +50,12 @@ import {
   type ResolvedQmdConfig,
   type ResolvedQmdMcporterConfig,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import {
+  deleteQmdSessionExportCacheEntries,
+  listQmdSessionExportCacheEntries,
+  upsertQmdSessionExportCacheEntry,
+  type QmdSessionExportCacheOptions,
+} from "openclaw/plugin-sdk/memory-core-qmd-export-cache-internal";
 import {
   addTimerTimeoutGraceMs,
   isFutureDateTimestampMs,
