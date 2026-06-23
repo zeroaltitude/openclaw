@@ -82,6 +82,7 @@ export interface QmdSessionExportCache {
   session_file: string;
   size: number;
   target: string;
+  target_fingerprint: string | null;
   updated_at: number;
 }
 

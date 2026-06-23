@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS qmd_session_export_cache (
   content_fingerprint TEXT NOT NULL,
   hash TEXT NOT NULL,
   target TEXT NOT NULL,
+  -- Nullable so the column can be added to schema-1 agent DBs via an additive
+  -- ALTER without a rewrite. Rows written before this column existed read back
+  -- NULL, which forces a one-time rebuild that repopulates it. Stores the SHA-1
+  -- of the rendered markdown bytes so the fast path can detect an externally
+  -- modified or corrupted export target and rebuild instead of preserving it.
+  target_fingerprint TEXT,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (session_file, export_dir, render_version)
 );

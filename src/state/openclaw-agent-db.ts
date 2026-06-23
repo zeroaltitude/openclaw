@@ -86,6 +86,10 @@ export type QmdSessionExportCacheEntry = QmdSessionExportCacheKey & {
   mtimeMs: number;
   size: number;
   target: string;
+  // SHA-1 of the rendered export markdown bytes. Null for rows written before
+  // the column existed; callers treat null as "unknown" and rebuild once to
+  // repopulate it rather than trusting the on-disk target's bytes.
+  targetFingerprint: string | null;
   updatedAt: number;
 };
 
@@ -104,6 +108,7 @@ function toQmdSessionExportCacheEntry(
     contentFingerprint: row.content_fingerprint,
     hash: row.hash,
     target: row.target,
+    targetFingerprint: row.target_fingerprint,
     updatedAt: row.updated_at,
   };
 }
@@ -120,6 +125,28 @@ function assertSupportedAgentSchemaVersion(db: DatabaseSync, pathname: string): 
       `OpenClaw agent database ${pathname} uses newer schema version ${userVersion}; this OpenClaw build supports ${OPENCLAW_AGENT_SCHEMA_VERSION}.`,
     );
   }
+}
+
+function tableHasColumn(db: DatabaseSync, tableName: string, columnName: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: unknown }>;
+  return rows.some((row) => row.name === columnName);
+}
+
+/**
+ * Add a nullable column to an existing agent table if it is missing.
+ *
+ * `CREATE TABLE IF NOT EXISTS` never alters an already-created table, so a new
+ * column must be backfilled via ALTER for agent DBs created by an older build.
+ * The migration is additive and nullable only, so it stays within schema
+ * `user_version` 1 (no rollback hazard) — old rows simply read the new column
+ * back as NULL until they are next rewritten.
+ */
+function ensureAgentTableColumn(db: DatabaseSync, tableName: string, columnSql: string): void {
+  const columnName = columnSql.trim().split(/\s+/, 1)[0];
+  if (!columnName || tableHasColumn(db, tableName, columnName)) {
+    return;
+  }
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnSql};`);
 }
 
 function ensureOpenClawAgentDatabasePermissions(
@@ -192,6 +219,8 @@ function ensureAgentSchema(db: DatabaseSync, agentId: string, pathname: string):
   assertSupportedAgentSchemaVersion(db, pathname);
   assertExistingSchemaOwner(readExistingSchemaMeta(db), agentId, pathname);
   db.exec(OPENCLAW_AGENT_SCHEMA_SQL);
+  // Additive, nullable backfill for agent DBs created before the column existed.
+  ensureAgentTableColumn(db, "qmd_session_export_cache", "target_fingerprint TEXT");
   const kysely = getNodeSqliteKysely<OpenClawAgentMetadataDatabase>(db);
   db.exec(`PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION};`);
   const now = Date.now();
@@ -378,6 +407,7 @@ export function upsertQmdSessionExportCacheEntry(
           content_fingerprint: entry.contentFingerprint,
           hash: entry.hash,
           target: entry.target,
+          target_fingerprint: entry.targetFingerprint,
           updated_at: entry.updatedAt,
         })
         .onConflict((conflict) =>
@@ -388,6 +418,7 @@ export function upsertQmdSessionExportCacheEntry(
             content_fingerprint: entry.contentFingerprint,
             hash: entry.hash,
             target: entry.target,
+            target_fingerprint: entry.targetFingerprint,
             updated_at: entry.updatedAt,
           }),
         ),

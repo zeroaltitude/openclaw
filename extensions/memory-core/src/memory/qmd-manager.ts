@@ -115,6 +115,14 @@ async function computeContentFingerprint(filePath: string): Promise<string> {
   return crypto.createHash("sha1").update(content).digest("hex");
 }
 
+// Fingerprint the rendered export markdown so the persistent fast path can
+// detect a target that was externally modified or corrupted on disk. Hashing
+// the rendered string (rather than re-reading the file we just wrote) keeps the
+// stored value authoritative: it is exactly what the export *should* contain.
+function computeStringFingerprint(content: string): string {
+  return crypto.createHash("sha1").update(content, "utf-8").digest("hex");
+}
+
 const QMD_EMBED_LOCK_MIN_WAIT_MS = 15 * 60 * 1000;
 const QMD_WRITE_LOCK_MIN_WAIT_MS = 5 * 60 * 1000;
 const QMD_EMBED_LOCK_RETRY_TEMPLATE = {
@@ -2604,10 +2612,25 @@ export class QmdMemoryManager implements MemorySearchManager {
         // still invalidate the cache before we skip rebuild/render/write.
         const fingerprint = await computeContentFingerprint(sessionFile);
         if (fingerprint === cached.contentFingerprint) {
-          // Verify the cached export target still exists on disk. If it was
-          // deleted out from under us, fall through to the slow rebuild path.
+          // Source bytes are unchanged. Before skipping the rebuild, confirm the
+          // export TARGET on disk still holds the bytes we rendered. Existence
+          // alone is not enough: an externally modified or corrupted target
+          // would otherwise be preserved across restarts. Read the target and
+          // compare its fingerprint against the cached rendered-markdown hash.
+          // A null cached fingerprint means the row predates this column, so we
+          // cannot trust the target's bytes — fall through to rebuild and
+          // repopulate the fingerprint.
+          let targetBytes: string | null = null;
           try {
-            await fs.access(target);
+            targetBytes = await fs.readFile(target, "utf-8");
+          } catch {
+            cachedTargetMissing = true;
+          }
+          if (
+            targetBytes !== null &&
+            cached.targetFingerprint !== null &&
+            computeStringFingerprint(targetBytes) === cached.targetFingerprint
+          ) {
             tracked.add(sessionFile);
             const identity = this.buildSessionArtifactMapping(
               sessionFile,
@@ -2620,8 +2643,6 @@ export class QmdMemoryManager implements MemorySearchManager {
             }
             keep.add(target);
             continue;
-          } catch {
-            cachedTargetMissing = true;
           }
         }
       }
@@ -2646,14 +2667,30 @@ export class QmdMemoryManager implements MemorySearchManager {
       if (identity) {
         artifactMappings.push(identity);
       }
-      if (
+      const renderedMarkdown = this.renderSessionMarkdown(entry);
+      const renderedFingerprint = computeStringFingerprint(renderedMarkdown);
+      // Decide whether the target on disk needs to be (re)written. Beyond the
+      // identity drift the cache already tracks, also rewrite when the on-disk
+      // target's bytes no longer match what we just rendered — this is what
+      // self-heals an externally modified or corrupted export. When the cache
+      // identity is unchanged we still verify the target bytes here, because a
+      // matching source hash would otherwise let a corrupted target survive.
+      let needsWrite =
         cachedTargetMissing ||
         !cachedTargetMatches ||
         !cached ||
         cached.hash !== entry.hash ||
-        cached.mtimeMs !== entry.mtimeMs
-      ) {
-        await exportRoot.write(targetName, this.renderSessionMarkdown(entry), {
+        cached.mtimeMs !== entry.mtimeMs;
+      if (!needsWrite) {
+        try {
+          const onDisk = await fs.readFile(target, "utf-8");
+          needsWrite = computeStringFingerprint(onDisk) !== renderedFingerprint;
+        } catch {
+          needsWrite = true;
+        }
+      }
+      if (needsWrite) {
+        await exportRoot.write(targetName, renderedMarkdown, {
           encoding: "utf-8",
         });
       }
@@ -2668,6 +2705,7 @@ export class QmdMemoryManager implements MemorySearchManager {
         contentFingerprint: fingerprint,
         hash: entry.hash,
         target,
+        targetFingerprint: renderedFingerprint,
         updatedAt: Date.now(),
       });
       keep.add(target);

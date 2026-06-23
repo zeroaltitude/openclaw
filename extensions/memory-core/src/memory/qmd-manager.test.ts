@@ -5505,6 +5505,57 @@ describe("QmdMemoryManager", () => {
     }
   });
 
+  it("rebuilds the session-export markdown when the cached target bytes are corrupted", async () => {
+    const sessionsDir = path.join(stateDir, "agents", agentId, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "session-1.jsonl");
+    const exportDir = path.join(stateDir, "agents", agentId, "qmd", "sessions");
+    const exportFile = path.join(exportDir, "session-1.md");
+    await fs.writeFile(
+      sessionFile,
+      '{"type":"message","message":{"role":"user","content":"hello"}}\n',
+      "utf-8",
+    );
+
+    const currentMemory = cfg.memory;
+    cfg = {
+      ...cfg,
+      memory: {
+        ...currentMemory,
+        qmd: {
+          ...currentMemory?.qmd,
+          sessions: { enabled: true },
+        },
+      },
+    } as OpenClawConfig;
+
+    // First boot writes the markdown and persists the export-state cache,
+    // including the rendered target's content fingerprint.
+    const first = await createManager();
+    try {
+      await first.manager.sync({ reason: "manual" });
+      expect(await fs.readFile(exportFile, "utf-8")).toContain("hello");
+    } finally {
+      await first.manager.close();
+    }
+
+    // Corrupt the export target out from under us while the source jsonl and
+    // its SQLite cache entry (size+mtime+content fingerprint) stay intact.
+    // Existence-only validation would preserve this corruption; target-byte
+    // validation must detect the drift and rebuild.
+    await fs.writeFile(exportFile, "corrupted external edit\n", "utf-8");
+
+    const second = await createManager();
+    try {
+      await second.manager.sync({ reason: "manual" });
+      const rebuilt = await fs.readFile(exportFile, "utf-8");
+      expect(rebuilt).toContain("hello");
+      expect(rebuilt).not.toContain("corrupted external edit");
+    } finally {
+      await second.manager.close();
+    }
+  });
+
   it("rebuilds the expected export when a current-scope cache row points elsewhere", async () => {
     const sessionsDir = path.join(stateDir, "agents", agentId, "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
