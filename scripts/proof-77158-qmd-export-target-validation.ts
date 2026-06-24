@@ -2,38 +2,64 @@
  * Real-runtime proof for PR #77158 — validate cached export-target bytes before
  * the QMD session-export fast path skips a rebuild.
  *
+ * This proof drives the ACTUAL production integration path end to end: a real
+ * `QmdMemoryManager` instance runs its real (private) `exportSessions()` method
+ * against a real per-agent SQLite export cache, a real session transcript corpus
+ * accessor, and real on-disk markdown targets. It does NOT re-implement the
+ * fast-path / slow-path decision — every SKIP-vs-REBUILD choice is made by the
+ * shipped `exportSessions()` code itself. An earlier version of this script
+ * simulated the cache/fs decision directly with the helper functions; that could
+ * pass even if `exportSessions()` regressed, so it is replaced here.
+ *
  * WHAT IS REAL (no mocks of the seam under test):
- *  - The per-agent SQLite database and the `qmd_session_export_cache` table are
- *    real: opened via the production `openOpenClawAgentDatabase` against a real
- *    on-disk temp state dir, with the real schema (including the new
- *    `target_fingerprint` column) and the real additive ALTER migration.
- *  - The cache reads/writes go through the production
- *    `upsertQmdSessionExportCacheEntry` / `listQmdSessionExportCacheEntries` /
- *    `readQmdSessionExportCacheEntry` helpers — the same functions QMD's
- *    `exportSessions()` calls.
- *  - The export source `.jsonl` and the export target `.md` are real files on
- *    disk; every stat / read / write hits the real filesystem.
- *  - The fast-path predicate (stat identity + source content fingerprint +
- *    TARGET BYTE fingerprint) is exercised exactly as `exportSessions()` wires
- *    it, including the SHA-1 fingerprint primitives used in production.
+ *  - The manager: `QmdMemoryManager.create({ mode: "status" })` builds the real
+ *    manager. `status` mode initializes collections but never spawns the `qmd`
+ *    binary, so `exportSessions()` runs with its real collaborators and zero
+ *    process stubbing.
+ *  - The export driver: the real private `exportSessions()` method, invoked
+ *    directly (the same method the production sync loop calls). Its stat fast
+ *    path, content fingerprint check, TARGET BYTE fingerprint check, slow-path
+ *    rebuild, cache upsert, stale-entry deletion, and artifact-mapping write all
+ *    execute as shipped.
+ *  - The session corpus: the real `listSessionTranscriptCorpusEntriesForAgent`
+ *    accessor reads a real `sessions.json` + real `.jsonl` transcript on disk,
+ *    resolved through the real runtime-config snapshot.
+ *  - The export cache: the real per-agent SQLite DB and `qmd_session_export_cache`
+ *    table (including the new `target_fingerprint` column and additive ALTER
+ *    migration), read/written through the production
+ *    `listQmdSessionExportCacheEntries` / `readQmdSessionExportCacheEntry` /
+ *    `upsertQmdSessionExportCacheEntry` helpers.
+ *  - The artifact index: `replaceQmdSessionArtifactMappings` writes the real
+ *    qmd index SQLite at the manager's real `indexPath`.
+ *  - Every stat / read / write hits the real filesystem under a temp state dir.
  *
  * WHAT IS STUBBED:
- *  - Nothing in the seam. We do not spawn the real `qmd` binary (that is the
- *    indexing layer, not the export-cache fast path), so the proof drives the
- *    cache + fs decision directly with the production helpers rather than the
- *    full `QmdMemoryManager.create()` boot, which would shell out to qmd.
+ *  - Nothing in the seam under test. The real `qmd` binary (the indexing/search
+ *    layer) is never spawned because `mode: "status"` short-circuits before any
+ *    spawn AND `exportSessions()` itself shells out to nothing — it only touches
+ *    the cache DB, the corpus accessor, the filesystem, and the artifact index.
+ *    The legacy "row predates the target_fingerprint column" state is produced by
+ *    re-upserting the manager's own cache row with `targetFingerprint: null`
+ *    through the REAL upsert helper (the production write path persists null),
+ *    then letting the real `exportSessions()` decide what to do with it.
  *
  * SCENARIOS (each self-checks; the script throws + exits non-zero on any
  * invariant violation):
- *  (a) clean cache hit — source unchanged AND target bytes intact -> SKIP rebuild.
- *  (b) source unchanged but target bytes CORRUPTED on disk -> REBUILD (the
- *      regression this PR pins; existence-only validation would preserve it).
- *  (c) source CHANGED -> REBUILD.
- *  (d) legacy cache row with NULL target_fingerprint (pre-column DB, populated
- *      via the real ALTER migration) -> the fast path cannot trust the target
- *      bytes, so it re-enters the slow path and REPOPULATES the fingerprint;
- *      and when the target is ALSO corrupted, it rebuilds rather than trusting
- *      the unverifiable bytes.
+ *  (a) cold cache -> exportSessions BUILDS the markdown and persists a non-null
+ *      target fingerprint.
+ *  (b) clean cache hit — source unchanged AND target bytes intact -> SKIP (no
+ *      rewrite; the on-disk bytes and mtime are preserved).
+ *  (c) source unchanged but target bytes CORRUPTED on disk -> REBUILD + self-heal
+ *      (the regression this PR pins; existence-only validation would preserve the
+ *      corruption).
+ *  (d) source CHANGED -> REBUILD with the new content.
+ *  (e) legacy cache row with NULL target_fingerprint (pre-column DB, written via
+ *      the real upsert helper):
+ *        e.1 target bytes correct -> the fast path cannot trust them, so
+ *            exportSessions re-enters the slow path and REPOPULATES the
+ *            fingerprint; the next round becomes a verified fast skip.
+ *        e.2 NULL fingerprint AND corrupted target -> REBUILD rather than trust
+ *            the unverifiable bytes.
  *
  * RUN: pnpm tsx scripts/proof-77158-qmd-export-target-validation.ts
  */
@@ -42,33 +68,21 @@ import { mkdtempSync, rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
+import { resolveMemoryBackendConfig } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import { QmdMemoryManager } from "../extensions/memory-core/src/memory/qmd-manager.js";
+import { setRuntimeConfigSnapshot } from "../src/config/config.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   listQmdSessionExportCacheEntries,
-  openOpenClawAgentDatabase,
   readQmdSessionExportCacheEntry,
   upsertQmdSessionExportCacheEntry,
-  type QmdSessionExportCacheEntry,
   type QmdSessionExportCacheOptions,
 } from "../src/state/openclaw-agent-db.js";
 
 const AGENT_ID = "main";
 const RENDER_VERSION = 1;
-
-// Mirror the production fingerprint primitives byte-for-byte:
-// computeContentFingerprint(file) and computeStringFingerprint(rendered).
-function fileFingerprint(content: Buffer): string {
-  return crypto.createHash("sha1").update(content).digest("hex");
-}
-function stringFingerprint(content: string): string {
-  return crypto.createHash("sha1").update(content, "utf-8").digest("hex");
-}
-
-function renderSessionMarkdown(sessionFile: string, body: string): string {
-  const header = `# Session ${path.basename(sessionFile, path.extname(sessionFile))}`;
-  const trimmed = body.trim().length ? body.trim() : "(empty)";
-  return `${header}\n\n${trimmed}\n`;
-}
+const SESSION_BASENAME = "session-1";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -76,276 +90,229 @@ function assert(condition: unknown, message: string): asserts condition {
   }
 }
 
-/**
- * Replays the production fast-path decision from QMD `exportSessions()` against
- * the real SQLite cache + real fs for a single tracked session file. Returns
- * whether the markdown was (re)built and the post-run cached fingerprint so the
- * caller can assert self-healing and repopulation.
- */
-async function runExportRound(params: {
-  options: QmdSessionExportCacheOptions;
-  sessionFile: string;
-  exportDir: string;
-  target: string;
-  renderBody: string;
-}): Promise<{ rebuilt: boolean; cachedTargetFingerprint: string | null }> {
-  const { options, sessionFile, exportDir, target, renderBody } = params;
-  const stat = await fs.stat(sessionFile);
-  const cachedEntries = listQmdSessionExportCacheEntries(options, {
-    exportDir,
-    renderVersion: RENDER_VERSION,
-  });
-  const cached = cachedEntries.find((entry) => entry.sessionFile === sessionFile) ?? null;
-  const cachedTargetMatches = cached?.target === target;
+// Internal handle for the manager's two private members we need: the real
+// exportSessions() driver and the real per-agent index path (for diagnostics).
+type ManagerInternals = {
+  exportSessions: () => Promise<void>;
+  indexPath: string;
+};
 
-  // --- Fast path (mirrors exportSessions lines ~2601-2635) ---
-  let cachedTargetMissing = false;
-  if (
-    cached &&
-    cachedTargetMatches &&
-    cached.size === stat.size &&
-    cached.mtimeMs === stat.mtimeMs &&
-    cached.ino === stat.ino
-  ) {
-    const sourceFp = fileFingerprint(await fs.readFile(sessionFile));
-    if (sourceFp === cached.contentFingerprint) {
-      let targetBytes: string | null = null;
-      try {
-        targetBytes = await fs.readFile(target, "utf-8");
-      } catch {
-        cachedTargetMissing = true;
-      }
-      if (
-        targetBytes !== null &&
-        cached.targetFingerprint !== null &&
-        stringFingerprint(targetBytes) === cached.targetFingerprint
-      ) {
-        // SKIP: source unchanged and target bytes intact.
-        return { rebuilt: false, cachedTargetFingerprint: cached.targetFingerprint };
-      }
-    }
-  }
-
-  // --- Slow path (mirrors exportSessions lines ~2636-2702) ---
-  const rendered = renderSessionMarkdown(sessionFile, renderBody);
-  const renderedFingerprint = stringFingerprint(rendered);
-  const entryHash = stringFingerprint(`${stat.size}:${renderBody}`); // stand-in for entry.hash identity
-  let needsWrite =
-    cachedTargetMissing ||
-    !cachedTargetMatches ||
-    !cached ||
-    cached.hash !== entryHash ||
-    cached.mtimeMs !== stat.mtimeMs;
-  if (!needsWrite) {
-    try {
-      const onDisk = await fs.readFile(target, "utf-8");
-      needsWrite = stringFingerprint(onDisk) !== renderedFingerprint;
-    } catch {
-      needsWrite = true;
-    }
-  }
-  if (needsWrite) {
-    await fs.mkdir(exportDir, { recursive: true });
-    await fs.writeFile(target, rendered, "utf-8");
-  }
-  upsertQmdSessionExportCacheEntry(options, {
-    sessionFile,
-    exportDir,
-    renderVersion: RENDER_VERSION,
-    size: stat.size,
-    mtimeMs: stat.mtimeMs,
-    ino: stat.ino,
-    contentFingerprint: fileFingerprint(await fs.readFile(sessionFile)),
-    hash: entryHash,
-    target,
-    targetFingerprint: renderedFingerprint,
-    updatedAt: Date.now(),
-  });
-  return { rebuilt: needsWrite, cachedTargetFingerprint: renderedFingerprint };
+function internals(manager: QmdMemoryManager): ManagerInternals {
+  return manager as unknown as ManagerInternals;
 }
 
 async function main(): Promise<void> {
   const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "proof-77158-"));
-  process.env.OPENCLAW_STATE_DIR = path.join(tmpRoot, "state");
-  const options: QmdSessionExportCacheOptions = { agentId: AGENT_ID, env: process.env };
+  const stateDir = path.join(tmpRoot, "state");
+  const workspaceDir = path.join(tmpRoot, "workspace");
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  await fs.mkdir(workspaceDir, { recursive: true });
 
-  // Force the real agent DB (and schema + migration) to materialize on disk.
-  openOpenClawAgentDatabase(options);
+  // A minimal real config: qmd backend with session export enabled. The runtime
+  // snapshot makes the corpus accessor resolve the session store deterministically
+  // to <stateDir>/agents/main/sessions (the default layout) rather than reading
+  // the host machine's real OpenClaw config.
+  const cfg = {
+    agents: {
+      defaults: {
+        workspace: workspaceDir,
+      },
+    },
+    memory: {
+      backend: "qmd",
+      qmd: {
+        includeDefaultMemory: false,
+        update: { interval: "0s", debounceMs: 0, onBoot: false },
+        sessions: { enabled: true },
+        paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+      },
+    },
+  } as unknown as OpenClawConfig;
+  setRuntimeConfigSnapshot(cfg);
 
-  const sessionsDir = path.join(process.env.OPENCLAW_STATE_DIR, "agents", AGENT_ID, "sessions");
-  const exportDir = path.join(
-    process.env.OPENCLAW_STATE_DIR,
-    "agents",
-    AGENT_ID,
-    "qmd",
-    "sessions",
-  );
+  const sessionsDir = path.join(stateDir, "agents", AGENT_ID, "sessions");
   await fs.mkdir(sessionsDir, { recursive: true });
-  const sessionFile = path.join(sessionsDir, "session-1.jsonl");
-  const target = path.join(exportDir, "session-1.md");
+  const sessionFile = path.join(sessionsDir, `${SESSION_BASENAME}.jsonl`);
+  // sessions.json maps the transcript to a stable session identity so the corpus
+  // accessor surfaces it (mirrors the qmd-manager unit-test harness).
+  await fs.writeFile(
+    path.join(sessionsDir, "sessions.json"),
+    JSON.stringify({
+      "agent:main:chat:thread": {
+        sessionFile: `${SESSION_BASENAME}.jsonl`,
+        sessionId: SESSION_BASENAME,
+      },
+    }),
+    "utf-8",
+  );
 
   const sourceV1 = '{"type":"message","message":{"role":"user","content":"hello"}}\n';
   const sourceV2 = '{"type":"message","message":{"role":"user","content":"goodbye"}}\n';
   await fs.writeFile(sessionFile, sourceV1, "utf-8");
 
+  const resolved = resolveMemoryBackendConfig({ cfg, agentId: AGENT_ID });
+  const manager = await QmdMemoryManager.create({
+    cfg,
+    agentId: AGENT_ID,
+    resolved,
+    mode: "status",
+  });
+  assert(manager !== null, "QmdMemoryManager.create must return a manager");
+
+  const exportCacheOptions: QmdSessionExportCacheOptions = {
+    agentId: AGENT_ID,
+    env: process.env,
+  };
+  // exportSessions() resolves the export dir as <qmdDir>/sessions when the config
+  // does not override it. Recompute the same default for assertions.
+  const exportDir = path.join(stateDir, "agents", AGENT_ID, "qmd", "sessions");
+  const target = path.join(exportDir, `${SESSION_BASENAME}.md`);
+
+  const runExport = () => internals(manager).exportSessions();
+  const readTarget = async (): Promise<string | null> => {
+    try {
+      return await fs.readFile(target, "utf-8");
+    } catch {
+      return null;
+    }
+  };
+  const readCacheRow = () =>
+    readQmdSessionExportCacheEntry(exportCacheOptions, {
+      sessionFile,
+      exportDir,
+      renderVersion: RENDER_VERSION,
+    });
+  const targetStat = () => fs.stat(target);
+
   try {
-    // First export: cold cache -> must build and persist a non-null fingerprint.
-    const cold = await runExportRound({
-      options,
-      sessionFile,
-      exportDir,
-      target,
-      renderBody: sourceV1,
-    });
-    assert(cold.rebuilt, "first export must build the markdown");
-    assert(cold.cachedTargetFingerprint !== null, "first export must persist a target fingerprint");
+    // (a) cold cache -> build markdown + persist a non-null target fingerprint.
+    await runExport();
+    const coldBody = await readTarget();
+    assert(coldBody !== null, "(a) cold export must create the target markdown");
+    assert(coldBody.includes("hello"), "(a) cold export markdown must contain rendered body");
+    const coldRow = readCacheRow();
+    assert(coldRow !== null, "(a) cold export must persist a cache row");
+    assert(coldRow.target === target, "(a) cache row must record the export target path");
     assert(
-      (await fs.readFile(target, "utf-8")).includes("hello"),
-      "first export markdown must contain rendered body",
+      coldRow.targetFingerprint !== null,
+      "(a) cold export must persist a non-null target fingerprint",
     );
-    console.log("[setup] cold export built target and persisted fingerprint");
+    assert(
+      coldRow.targetFingerprint ===
+        crypto.createHash("sha1").update(coldBody, "utf-8").digest("hex"),
+      "(a) persisted target fingerprint must equal the SHA-1 of the written markdown",
+    );
+    console.log("[a] cold export -> built target and persisted target fingerprint");
 
-    // (a) clean cache hit: source unchanged AND target intact -> SKIP.
-    const clean = await runExportRound({
-      options,
-      sessionFile,
-      exportDir,
-      target,
-      renderBody: sourceV1,
-    });
-    assert(!clean.rebuilt, "(a) clean cache hit must NOT rebuild");
-    console.log("[a] clean cache hit -> skipped rebuild (as expected)");
+    // (b) clean cache hit: source unchanged AND target intact -> SKIP (no rewrite).
+    const beforeStat = await targetStat();
+    await runExport();
+    const afterStat = await targetStat();
+    assert(
+      afterStat.mtimeMs === beforeStat.mtimeMs,
+      "(b) clean cache hit must NOT rewrite the target (mtime must be unchanged)",
+    );
+    assert((await readTarget())?.includes("hello"), "(b) target content must remain intact");
+    console.log("[b] clean cache hit -> skipped rebuild (target untouched)");
 
-    // (b) source unchanged but target bytes CORRUPTED -> REBUILD (the regression).
+    // (c) source unchanged but target bytes CORRUPTED -> REBUILD + self-heal.
     await fs.writeFile(target, "corrupted external edit\n", "utf-8");
-    const corrupted = await runExportRound({
-      options,
-      sessionFile,
-      exportDir,
-      target,
-      renderBody: sourceV1,
-    });
-    assert(corrupted.rebuilt, "(b) corrupted target must trigger a rebuild");
-    const healed = await fs.readFile(target, "utf-8");
-    assert(healed.includes("hello"), "(b) rebuilt target must contain correct content");
+    await runExport();
+    const healed = await readTarget();
+    assert(healed !== null, "(c) corrupted target must be rebuilt");
+    assert(healed.includes("hello"), "(c) rebuilt target must contain the correct content");
     assert(
       !healed.includes("corrupted external edit"),
-      "(b) corruption must be overwritten, not preserved",
+      "(c) corruption must be overwritten, not preserved",
     );
-    console.log("[b] corrupted target bytes -> rebuilt and self-healed (regression pinned)");
+    console.log("[c] corrupted target bytes -> rebuilt and self-healed (regression pinned)");
 
     // Confirm we are back to a clean skip after healing.
-    const afterHeal = await runExportRound({
-      options,
-      sessionFile,
-      exportDir,
-      target,
-      renderBody: sourceV1,
-    });
-    assert(!afterHeal.rebuilt, "post-heal clean hit must skip again");
-
-    // (c) source CHANGED -> REBUILD.
-    await fs.writeFile(sessionFile, sourceV2, "utf-8");
-    const changed = await runExportRound({
-      options,
-      sessionFile,
-      exportDir,
-      target,
-      renderBody: sourceV2,
-    });
-    assert(changed.rebuilt, "(c) changed source must trigger a rebuild");
+    const healedStat = await targetStat();
+    await runExport();
+    const afterHealStat = await targetStat();
     assert(
-      (await fs.readFile(target, "utf-8")).includes("goodbye"),
-      "(c) rebuilt target must reflect new source",
+      afterHealStat.mtimeMs === healedStat.mtimeMs,
+      "(c) post-heal clean hit must skip again (no rewrite)",
     );
-    console.log("[c] source changed -> rebuilt (as expected)");
 
-    // (d) legacy row with NULL target_fingerprint -> REBUILD once, then repopulate.
-    // Simulate a pre-column cache row by upserting with targetFingerprint=null
-    // through the REAL upsert helper (the production write path persists null).
-    const current = readQmdSessionExportCacheEntry(options, {
-      sessionFile,
-      exportDir,
-      renderVersion: RENDER_VERSION,
-    });
-    assert(current !== null, "(d) precondition: cache row must exist");
-    const legacy: QmdSessionExportCacheEntry = { ...current, targetFingerprint: null };
-    upsertQmdSessionExportCacheEntry(options, legacy);
-    const reloaded = readQmdSessionExportCacheEntry(options, {
-      sessionFile,
-      exportDir,
-      renderVersion: RENDER_VERSION,
-    });
+    // (d) source CHANGED -> REBUILD with new content.
+    await fs.writeFile(sessionFile, sourceV2, "utf-8");
+    await runExport();
+    const changed = await readTarget();
+    assert(changed !== null, "(d) changed source must produce a target");
+    assert(changed.includes("goodbye"), "(d) rebuilt target must reflect the new source");
+    assert(!changed.includes("hello"), "(d) rebuilt target must not retain the stale body");
+    console.log("[d] source changed -> rebuilt with new content");
+
+    // (e) legacy row with NULL target_fingerprint -> rebuild + repopulate.
+    // Re-upsert the manager's own cache row with targetFingerprint=null through
+    // the REAL upsert helper (the production write path persists null), then let
+    // the real exportSessions() decide what to do with it.
+    const current = readCacheRow();
+    assert(current !== null, "(e) precondition: a cache row must exist");
+    upsertQmdSessionExportCacheEntry(exportCacheOptions, { ...current, targetFingerprint: null });
+    const reloaded = readCacheRow();
     assert(
       reloaded?.targetFingerprint === null,
-      "(d) legacy row must round-trip a NULL fingerprint through the real DB",
+      "(e) legacy row must round-trip a NULL fingerprint through the real DB",
     );
-    // d.1: legacy row + correct target bytes. The fast path cannot trust the
-    // bytes (no recorded fingerprint), so it re-enters the slow path. No rewrite
-    // is needed (bytes are correct), but the fingerprint MUST be repopulated so
-    // the next round becomes a verified fast skip.
-    const legacyRound = await runExportRound({
-      options,
-      sessionFile,
-      exportDir,
-      target,
-      renderBody: sourceV2,
-    });
-    assert(
-      legacyRound.cachedTargetFingerprint !== null,
-      "(d.1) legacy round must repopulate the target fingerprint",
-    );
-    const repopulated = readQmdSessionExportCacheEntry(options, {
-      sessionFile,
-      exportDir,
-      renderVersion: RENDER_VERSION,
-    });
+
+    // e.1: legacy NULL + correct on-disk bytes. The fast path cannot trust the
+    // bytes, so exportSessions re-enters the slow path and repopulates the
+    // fingerprint. The next round must then be a verified fast skip.
+    await runExport();
+    const repopulated = readCacheRow();
     assert(
       repopulated?.targetFingerprint !== null,
-      "(d.1) repopulated row must have a non-null fingerprint persisted",
+      "(e.1) legacy round must repopulate a non-null target fingerprint",
     );
-    // And now it is a verified fast skip.
-    const legacyAfter = await runExportRound({
-      options,
-      sessionFile,
-      exportDir,
-      target,
-      renderBody: sourceV2,
-    });
-    assert(!legacyAfter.rebuilt, "(d.1) repopulated row must skip on the next clean round");
+    const repopStat = await targetStat();
+    await runExport();
+    const afterRepopStat = await targetStat();
+    assert(
+      afterRepopStat.mtimeMs === repopStat.mtimeMs,
+      "(e.1) repopulated row must skip on the next clean round (no rewrite)",
+    );
+    console.log("[e.1] legacy NULL fingerprint + correct bytes -> repopulated, then verified skip");
 
-    // d.2: legacy NULL fingerprint AND a corrupted target -> must rebuild rather
-    // than preserve the corruption. Re-introduce a NULL-fingerprint row, then
-    // corrupt the on-disk target.
-    const beforeCorrupt = readQmdSessionExportCacheEntry(options, {
-      sessionFile,
+    // e.2: legacy NULL fingerprint AND corrupted target -> rebuild, not preserve.
+    const before2 = readCacheRow();
+    assert(before2 !== null, "(e.2) precondition: a cache row must exist");
+    upsertQmdSessionExportCacheEntry(exportCacheOptions, { ...before2, targetFingerprint: null });
+    await fs.writeFile(target, "legacy corruption\n", "utf-8");
+    await runExport();
+    const legacyHealed = await readTarget();
+    assert(legacyHealed !== null, "(e.2) legacy NULL + corrupted target must produce a target");
+    assert(
+      legacyHealed.includes("goodbye"),
+      "(e.2) rebuilt target must contain the correct content",
+    );
+    assert(
+      !legacyHealed.includes("legacy corruption"),
+      "(e.2) corruption must be overwritten, not preserved",
+    );
+    console.log("[e.2] legacy NULL fingerprint + corrupted target -> rebuilt (corruption healed)");
+
+    // Sanity: exactly one tracked session remains cached for this export dir.
+    const finalEntries = listQmdSessionExportCacheEntries(exportCacheOptions, {
       exportDir,
       renderVersion: RENDER_VERSION,
     });
-    assert(beforeCorrupt !== null, "(d.2) precondition: cache row must exist");
-    upsertQmdSessionExportCacheEntry(options, { ...beforeCorrupt, targetFingerprint: null });
-    await fs.writeFile(target, "legacy corruption\n", "utf-8");
-    const legacyCorrupt = await runExportRound({
-      options,
-      sessionFile,
-      exportDir,
-      target,
-      renderBody: sourceV2,
-    });
-    assert(legacyCorrupt.rebuilt, "(d.2) legacy NULL + corrupted target must rebuild");
-    const legacyHealed = await fs.readFile(target, "utf-8");
-    assert(legacyHealed.includes("goodbye"), "(d.2) rebuilt target must contain correct content");
     assert(
-      !legacyHealed.includes("legacy corruption"),
-      "(d.2) corruption must be overwritten, not preserved",
+      finalEntries.length === 1 && finalEntries[0]?.sessionFile === sessionFile,
+      "final cache state must track exactly the one exported session",
     );
-    console.log(
-      "[d] legacy NULL fingerprint -> repopulated when bytes ok; rebuilt when bytes corrupt",
+    assert(
+      typeof internals(manager).indexPath === "string" && internals(manager).indexPath.length > 0,
+      "manager must expose a real artifact index path (artifact mappings were written there)",
     );
 
     console.log("All runtime assertions passed.");
   } finally {
+    await manager?.close().catch(() => undefined);
     closeOpenClawAgentDatabasesForTest();
+    setRuntimeConfigSnapshot(cfg); // leave a defined snapshot; cleared below
     delete process.env.OPENCLAW_STATE_DIR;
     rmSync(tmpRoot, { recursive: true, force: true });
   }

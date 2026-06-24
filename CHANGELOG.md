@@ -2,12 +2,6 @@
 
 Docs: https://docs.openclaw.ai
 
-## Unreleased
-
-### Fixes
-
-- Memory: a QMD session-export markdown file that was corrupted or modified outside OpenClaw now self-heals on the next export instead of persisting indefinitely. The persistent export cache records the rendered target's content fingerprint and re-validates the on-disk target's bytes before taking the stat fast path, rebuilding when they drift. (#77158)
-
 ## 2026.6.9
 
 ### Highlights
