@@ -2585,10 +2585,21 @@ export class QmdMemoryManager implements MemorySearchManager {
       let stat: Awaited<ReturnType<typeof fs.stat>>;
       try {
         stat = await fs.stat(sessionFile);
-      } catch {
-        // File vanished between listing and stat; let orphan cleanup handle
-        // any stale export below.
-        continue;
+      } catch (err) {
+        // Only treat genuinely-missing files (ENOENT / ENOTDIR / not-found) as
+        // "vanished between listing and stat" and let orphan cleanup handle the
+        // stale export below. Every other stat failure (EACCES, EPERM, an
+        // fs-safe policy rejection, a non-regular path, etc.) must abort the
+        // whole sync by rethrowing — matching statRegularFile()'s contract on
+        // the slow path. If we swallowed those here the session would be left
+        // out of `keep`/`tracked`, and the cleanup pass below would DELETE the
+        // existing markdown export and drop its artifact mapping on a transient
+        // or permission error. That is the data-loss regression we must avoid:
+        // aborting preserves the existing export until the next clean sync.
+        if (isFileMissingError(err)) {
+          continue;
+        }
+        throw err;
       }
       const targetName = `${path.basename(sessionFile, ".jsonl")}.md`;
       const target = path.join(exportDir, targetName);

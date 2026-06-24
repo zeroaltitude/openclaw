@@ -60,6 +60,12 @@
  *            fingerprint; the next round becomes a verified fast skip.
  *        e.2 NULL fingerprint AND corrupted target -> REBUILD rather than trust
  *            the unverifiable bytes.
+ *  (f) non-missing stat error on the SOURCE (EACCES) -> exportSessions() ABORTS
+ *      by rethrowing and PRESERVES the existing export, instead of swallowing the
+ *      error, dropping the session from keep/tracked, and letting orphan cleanup
+ *      DELETE the markdown export. Pins the data-loss regression: the stat
+ *      precheck must only `continue` for genuinely-missing errors and rethrow the
+ *      rest, matching statRegularFile()'s contract on the slow path.
  *
  * RUN: pnpm tsx scripts/proof-77158-qmd-export-target-validation.ts
  */
@@ -293,6 +299,65 @@ async function main(): Promise<void> {
       "(e.2) corruption must be overwritten, not preserved",
     );
     console.log("[e.2] legacy NULL fingerprint + corrupted target -> rebuilt (corruption healed)");
+
+    // (f) non-missing stat error on the source -> exportSessions() ABORTS by
+    // rethrowing and PRESERVES the existing export. This pins the data-loss
+    // regression Clawsweeper flagged: the stat precheck must only swallow
+    // genuinely-missing errors (ENOENT/ENOTDIR/not-found). A non-missing failure
+    // (EACCES/EPERM/fs-policy/non-regular path) must abort the whole sync —
+    // matching statRegularFile()'s contract on the slow path — instead of letting
+    // the session drop out of `keep`/`tracked` and have the orphan-cleanup pass
+    // DELETE the existing markdown export. We inject the error by wrapping the
+    // real fs.stat for the source path only; every other stat passes through.
+    await runExport(); // ensure a clean export+cache exist before the failure
+    const preFailBody = await readTarget();
+    assert(preFailBody !== null, "(f) precondition: an export must exist before the stat failure");
+    const realStat = fs.stat.bind(fs);
+    const statDescriptor = Object.getOwnPropertyDescriptor(fs, "stat");
+    (fs as unknown as { stat: typeof fs.stat }).stat = (async (
+      statTarget: Parameters<typeof fs.stat>[0],
+      statOptions?: Parameters<typeof fs.stat>[1],
+    ) => {
+      if (statTarget === sessionFile) {
+        throw Object.assign(new Error(`EACCES: permission denied, stat '${String(statTarget)}'`), {
+          code: "EACCES",
+        });
+      }
+      return realStat(statTarget, statOptions);
+    }) as typeof fs.stat;
+    let aborted = false;
+    try {
+      await runExport();
+    } catch (err) {
+      aborted = true;
+      assert(
+        (err as NodeJS.ErrnoException)?.code === "EACCES",
+        "(f) non-missing stat error must propagate (sync aborts), not be swallowed",
+      );
+    } finally {
+      if (statDescriptor) {
+        Object.defineProperty(fs, "stat", statDescriptor);
+      }
+    }
+    assert(
+      aborted,
+      "(f) exportSessions() must rethrow a non-missing stat error and abort the sync",
+    );
+    const survived = await readTarget();
+    assert(survived !== null, "(f) the existing export must survive a non-missing stat failure");
+    assert(
+      survived === preFailBody,
+      "(f) the existing export bytes must be preserved unchanged when the sync aborts",
+    );
+    console.log(
+      "[f] non-missing stat error -> sync aborted; existing export preserved (regression pinned)",
+    );
+
+    // Confirm a clean export still works once the transient error clears.
+    await runExport();
+    const recovered = await readTarget();
+    assert(recovered !== null, "(f) export must succeed again once the stat error clears");
+    assert(recovered === preFailBody, "(f) recovered export must match the prior good bytes");
 
     // Sanity: exactly one tracked session remains cached for this export dir.
     const finalEntries = listQmdSessionExportCacheEntries(exportCacheOptions, {

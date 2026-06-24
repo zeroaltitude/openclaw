@@ -5556,6 +5556,140 @@ describe("QmdMemoryManager", () => {
     }
   });
 
+  it("preserves an existing export when the source stat fails with a non-missing error", async () => {
+    // Regression: the stat precheck on the fast path must only swallow
+    // genuinely-missing errors (ENOENT/ENOTDIR/not-found). A non-missing stat
+    // failure (EACCES, EPERM, an fs policy rejection, a non-regular path, ...)
+    // must abort the whole sync by rethrowing — matching statRegularFile()'s
+    // contract on the slow path. If it were swallowed, the session would drop
+    // out of `keep`/`tracked` and the orphan-cleanup pass would DELETE the
+    // existing markdown export. Aborting preserves the existing export until a
+    // later clean sync can re-derive it.
+    const sessionsDir = path.join(stateDir, "agents", agentId, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "session-1.jsonl");
+    const exportDir = path.join(stateDir, "agents", agentId, "qmd", "sessions");
+    const exportFile = path.join(exportDir, "session-1.md");
+    await fs.writeFile(
+      sessionFile,
+      '{"type":"message","message":{"role":"user","content":"hello"}}\n',
+      "utf-8",
+    );
+
+    const currentMemory = cfg.memory;
+    cfg = {
+      ...cfg,
+      memory: {
+        ...currentMemory,
+        qmd: {
+          ...currentMemory?.qmd,
+          sessions: { enabled: true },
+        },
+      },
+    } as OpenClawConfig;
+
+    // First boot writes the markdown export and persists the export-state cache.
+    const first = await createManager();
+    try {
+      await first.manager.sync({ reason: "manual" });
+      expect(await fs.readFile(exportFile, "utf-8")).toContain("hello");
+    } finally {
+      await first.manager.close();
+    }
+
+    const realStat = fs.stat.bind(fs);
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation((async (
+      target: Parameters<typeof fs.stat>[0],
+      options?: Parameters<typeof fs.stat>[1],
+    ) => {
+      if (target === sessionFile) {
+        const denied = Object.assign(
+          new Error(`EACCES: permission denied, stat '${String(target)}'`),
+          { code: "EACCES" },
+        );
+        throw denied;
+      }
+      return realStat(target, options);
+    }) as typeof fs.stat);
+
+    // Second boot: the stat precheck for session-1.jsonl throws EACCES. The sync
+    // must abort (surfacing the error) WITHOUT deleting the existing export.
+    const second = await createManager();
+    try {
+      await expect(second.manager.sync({ reason: "manual" })).rejects.toMatchObject({
+        code: "EACCES",
+      });
+    } finally {
+      statSpy.mockRestore();
+      await second.manager.close();
+    }
+
+    // The existing markdown export must still be on disk and unchanged.
+    const preserved = await fs.readFile(exportFile, "utf-8");
+    expect(preserved).toContain("hello");
+  });
+
+  it("takes the fast continue path when the source vanishes with ENOENT", async () => {
+    // The optimization itself must not regress: a genuinely-missing source file
+    // (ENOENT between listing and stat) still continues past that entry rather
+    // than aborting the sync. The orphan-cleanup pass then prunes its stale
+    // export, and any other sessions still export normally.
+    const sessionsDir = path.join(stateDir, "agents", agentId, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const survivingSessionFile = path.join(sessionsDir, "session-keep.jsonl");
+    const vanishingSessionFile = path.join(sessionsDir, "session-gone.jsonl");
+    const exportDir = path.join(stateDir, "agents", agentId, "qmd", "sessions");
+    const survivingExportFile = path.join(exportDir, "session-keep.md");
+    await fs.writeFile(
+      survivingSessionFile,
+      '{"type":"message","message":{"role":"user","content":"keep me"}}\n',
+      "utf-8",
+    );
+    await fs.writeFile(
+      vanishingSessionFile,
+      '{"type":"message","message":{"role":"user","content":"gone soon"}}\n',
+      "utf-8",
+    );
+
+    const currentMemory = cfg.memory;
+    cfg = {
+      ...cfg,
+      memory: {
+        ...currentMemory,
+        qmd: {
+          ...currentMemory?.qmd,
+          sessions: { enabled: true },
+        },
+      },
+    } as OpenClawConfig;
+
+    const realStat = fs.stat.bind(fs);
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation((async (
+      target: Parameters<typeof fs.stat>[0],
+      options?: Parameters<typeof fs.stat>[1],
+    ) => {
+      if (target === vanishingSessionFile) {
+        const missing = Object.assign(
+          new Error(`ENOENT: no such file or directory, stat '${String(target)}'`),
+          { code: "ENOENT" },
+        );
+        throw missing;
+      }
+      return realStat(target, options);
+    }) as typeof fs.stat);
+
+    const { manager } = await createManager();
+    try {
+      // The ENOENT on session-gone.jsonl must NOT abort the sync; session-keep
+      // still exports successfully.
+      await manager.sync({ reason: "manual" });
+      expect(await fs.readFile(survivingExportFile, "utf-8")).toContain("keep me");
+    } finally {
+      statSpy.mockRestore();
+      await manager.close();
+    }
+  });
+
   it("rebuilds the expected export when a current-scope cache row points elsewhere", async () => {
     const sessionsDir = path.join(stateDir, "agents", agentId, "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
