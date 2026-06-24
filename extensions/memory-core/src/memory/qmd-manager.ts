@@ -2658,6 +2658,15 @@ export class QmdMemoryManager implements MemorySearchManager {
         }
       }
       // Slow path: rebuild the entry and write the markdown if needed.
+      // Capture the source content fingerprint immediately before rendering so
+      // the value we persist is bound to (approximately) the same bytes that
+      // produce the rendered markdown. Re-validating this fingerprint after the
+      // write (below) closes the cache-identity race: a same-size,
+      // mtime-preserving transcript rewrite landing between render and the
+      // fingerprint reread would otherwise persist a NEW source fingerprint
+      // paired with OLD rendered target bytes, yielding a later stale fast-path
+      // cache hit.
+      const preRenderFingerprint = await computeContentFingerprint(sessionFile);
       const entry = await buildSessionEntry(sessionFile, {
         generatedByDreamingNarrative: corpusEntry.generatedByDreamingNarrative === true,
         generatedByCronRun: corpusEntry.generatedByCronRun === true,
@@ -2705,20 +2714,42 @@ export class QmdMemoryManager implements MemorySearchManager {
           encoding: "utf-8",
         });
       }
-      const fingerprint = await computeContentFingerprint(sessionFile);
-      upsertQmdSessionExportCacheEntry(exportCacheOptions, {
-        sessionFile,
-        exportDir,
-        renderVersion: SESSION_EXPORT_RENDER_VERSION,
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-        ino: stat.ino,
-        contentFingerprint: fingerprint,
-        hash: entry.hash,
-        target,
-        targetFingerprint: renderedFingerprint,
-        updatedAt: Date.now(),
-      });
+      // Re-validate the source identity AFTER rendering and writing. If the
+      // transcript was rewritten during our render window (even a same-size,
+      // mtime-preserving rewrite that the stat precheck cannot see), the source
+      // bytes no longer match what `renderedMarkdown`/`targetFingerprint`
+      // describe. Persisting (postFingerprint, oldTargetFingerprint) here would
+      // let a future fast path content-match the NEW source while serving the
+      // OLD rendered target. Bind the persisted source fingerprint to the
+      // rendered bytes: only cache when the pre-render and post-write
+      // fingerprints agree. On any disagreement, skip the cache upsert for this
+      // entry so the next sync re-derives against the settled bytes — the
+      // target we just wrote stays on disk and tracked, but no stale cache row
+      // is persisted to be served on the fast path.
+      const postWriteFingerprint = await computeContentFingerprint(sessionFile);
+      if (postWriteFingerprint === preRenderFingerprint) {
+        upsertQmdSessionExportCacheEntry(exportCacheOptions, {
+          sessionFile,
+          exportDir,
+          renderVersion: SESSION_EXPORT_RENDER_VERSION,
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          ino: stat.ino,
+          contentFingerprint: preRenderFingerprint,
+          hash: entry.hash,
+          target,
+          targetFingerprint: renderedFingerprint,
+          updatedAt: Date.now(),
+        });
+      } else {
+        // Source mutated mid-render: drop any prior cache row so the next sync
+        // cannot take the fast path against a now-mismatched rendered target.
+        deleteQmdSessionExportCacheEntries(exportCacheOptions, {
+          exportDir,
+          renderVersion: SESSION_EXPORT_RENDER_VERSION,
+          sessionFiles: [sessionFile],
+        });
+      }
       keep.add(target);
     }
     const exported = await exportRoot.list(".").catch(() => []);

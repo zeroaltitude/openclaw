@@ -66,6 +66,13 @@
  *      DELETE the markdown export. Pins the data-loss regression: the stat
  *      precheck must only `continue` for genuinely-missing errors and rethrow the
  *      rest, matching statRegularFile()'s contract on the slow path.
+ *  (g) cache-identity race: a same-size, mtime-preserving transcript rewrite
+ *      landing BETWEEN the slow-path render and the post-write source-fingerprint
+ *      reread. The buggy ordering would persist (newSrcFp, oldTargetBytes),
+ *      yielding a later stale fast-path hit. The fix binds the persisted source
+ *      fingerprint to the rendered bytes (captured before render, re-validated
+ *      after write) and refuses to cache on disagreement, so a subsequent clean
+ *      export re-renders the settled source instead of serving stale markdown.
  *
  * RUN: pnpm tsx scripts/proof-77158-qmd-export-target-validation.ts
  */
@@ -358,6 +365,103 @@ async function main(): Promise<void> {
     const recovered = await readTarget();
     assert(recovered !== null, "(f) export must succeed again once the stat error clears");
     assert(recovered === preFailBody, "(f) recovered export must match the prior good bytes");
+
+    // (g) cache-identity race: a same-size, mtime-preserving transcript rewrite
+    // landing BETWEEN the slow-path render and the post-write source-fingerprint
+    // reread. The buggy ordering renders the OLD bytes into the target, then
+    // reads the (now NEW) source for the persisted content fingerprint, so it
+    // would persist (newSrcFp, oldTargetBytes). A later fast path then
+    // content-matches the NEW source, finds the OLD target bytes intact, and
+    // serves stale markdown forever. The fix binds the persisted fingerprint to
+    // the rendered bytes — capturing it before the render and re-validating it
+    // after the write, refusing to cache on disagreement. We reproduce the
+    // interleaving against the REAL exportSessions() by injecting the rewrite at
+    // the moment the freshly-rendered body has hit the target but the source has
+    // not yet been re-read for its fingerprint.
+    const raceV1 = '{"type":"message","message":{"role":"user","content":"alpha"}}\n';
+    const raceV2 = '{"type":"message","message":{"role":"user","content":"bravo"}}\n'; // slow-path render
+    const raceV3 = '{"type":"message","message":{"role":"user","content":"carol"}}\n'; // raced rewrite
+    assert(
+      raceV2.length === raceV1.length && raceV3.length === raceV1.length,
+      "(g) precondition: all three race transcripts must be the same byte length",
+    );
+
+    // Settle the cache on raceV1 so the next export takes the slow path on raceV2.
+    await fs.writeFile(sessionFile, raceV1, "utf-8");
+    await runExport();
+    assert((await readTarget())?.includes("alpha"), "(g) precondition: target must render raceV1");
+
+    // Move to raceV2 (the bytes the slow path will render), preserving mtime so
+    // the stat precheck cannot distinguish it from raceV3 once raced.
+    const raceBaseStat = await targetStat().then(() => fs.stat(sessionFile));
+    await fs.writeFile(sessionFile, raceV2, "utf-8");
+    await fs.utimes(sessionFile, raceBaseStat.atime, raceBaseStat.mtime);
+
+    const realReadFile = fs.readFile.bind(fs);
+    const realWriteFile = fs.writeFile.bind(fs);
+    const realUtimes = fs.utimes.bind(fs);
+    const readFileDescriptor = Object.getOwnPropertyDescriptor(fs, "readFile");
+    let racedOnce = false;
+    (fs as unknown as { readFile: typeof fs.readFile }).readFile = (async (
+      readTargetPath: Parameters<typeof fs.readFile>[0],
+      readOptions?: Parameters<typeof fs.readFile>[1],
+    ) => {
+      const isSourceBufferRead =
+        readTargetPath === sessionFile && (readOptions === undefined || readOptions === null);
+      if (isSourceBufferRead && !racedOnce) {
+        // Has the freshly-rendered slow-path markdown ("bravo") already landed on
+        // the target? If so, this Buffer read is the post-write source
+        // fingerprint read — slip the same-size, mtime-preserving rewrite in
+        // just before it observes the source.
+        let renderedTarget: string;
+        try {
+          renderedTarget = await realReadFile(target, "utf-8");
+        } catch {
+          renderedTarget = "";
+        }
+        if (renderedTarget.includes("bravo")) {
+          racedOnce = true;
+          await realWriteFile(sessionFile, raceV3, "utf-8");
+          await realUtimes(sessionFile, raceBaseStat.atime, raceBaseStat.mtime);
+        }
+      }
+      return realReadFile(readTargetPath, readOptions);
+    }) as typeof fs.readFile;
+    try {
+      await runExport();
+    } finally {
+      if (readFileDescriptor) {
+        Object.defineProperty(fs, "readFile", readFileDescriptor);
+      }
+    }
+    assert(racedOnce, "(g) the race injection must have fired (post-write fingerprint read raced)");
+
+    // The on-disk source now holds raceV3 ("carol"). The invariant: the next
+    // clean export must NOT serve a stale fast-path hit. With the bug, a
+    // mismatched (newSrcFp, oldTargetBytes) row was persisted, so this export
+    // content-matches the source, finds the old "bravo" target, and SKIPS the
+    // rebuild — leaving stale markdown. With the fix, no such row exists (the
+    // pre/post fingerprints disagreed and the cache row was dropped), so the
+    // export re-renders from the settled source.
+    await runExport();
+    const settledRace = await readTarget();
+    assert(settledRace !== null, "(g) post-race export must produce a target");
+    assert(
+      settledRace.includes("carol"),
+      "(g) post-race export must reflect the settled source bytes (no stale fast-path hit)",
+    );
+    assert(
+      !settledRace.includes("bravo"),
+      "(g) post-race export must not retain the pre-race rendered body",
+    );
+    console.log(
+      "[g] mid-render transcript rewrite -> no stale (newSrcFp, oldTarget) cache hit (race pinned)",
+    );
+
+    // Restore the source to the canonical single-session state for the final
+    // sanity check below.
+    await fs.writeFile(sessionFile, sourceV2, "utf-8");
+    await runExport();
 
     // Sanity: exactly one tracked session remains cached for this export dir.
     const finalEntries = listQmdSessionExportCacheEntries(exportCacheOptions, {

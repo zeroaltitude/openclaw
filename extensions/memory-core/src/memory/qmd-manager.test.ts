@@ -5395,6 +5395,131 @@ describe("QmdMemoryManager", () => {
     }
   });
 
+  it("does not persist a stale cache entry when the transcript is rewritten mid-render", async () => {
+    // Cache-identity race regression. In the slow path the manager renders the
+    // markdown from one read of the transcript, then re-reads the transcript to
+    // compute the persisted source content fingerprint. A same-size,
+    // mtime-preserving rewrite landing BETWEEN those two reads would persist a
+    // NEW source fingerprint paired with the OLD rendered target bytes. A later
+    // fast path then content-matches the NEW source, finds the OLD target bytes
+    // intact, and serves stale markdown forever. The fix binds the persisted
+    // fingerprint to the rendered bytes: it captures the source fingerprint
+    // before rendering and re-validates it after the write, refusing to cache
+    // when the two disagree. This test injects exactly that interleaving and
+    // asserts no stale fast-path cache survives.
+    const sessionsDir = path.join(stateDir, "agents", agentId, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "session-1.jsonl");
+    const exportDir = path.join(stateDir, "agents", agentId, "qmd", "sessions");
+    const exportFile = path.join(exportDir, "session-1.md");
+    const firstTranscript = '{"type":"message","message":{"role":"user","content":"hello"}}\n';
+    const slowPathTranscript = '{"type":"message","message":{"role":"user","content":"howdy"}}\n';
+    const racedTranscript = '{"type":"message","message":{"role":"user","content":"hullo"}}\n';
+    // All three are the same byte length so the stat precheck cannot distinguish
+    // them once mtime is preserved — this is what makes the race observable.
+    expect(slowPathTranscript.length).toBe(firstTranscript.length);
+    expect(racedTranscript.length).toBe(firstTranscript.length);
+    await fs.writeFile(sessionFile, firstTranscript, "utf-8");
+
+    const currentMemory = cfg.memory;
+    cfg = {
+      ...cfg,
+      memory: {
+        ...currentMemory,
+        qmd: {
+          ...currentMemory?.qmd,
+          sessions: { enabled: true },
+        },
+      },
+    } as OpenClawConfig;
+
+    // First boot: export the original transcript and persist a clean cache row.
+    const first = await createManager();
+    try {
+      await first.manager.sync({ reason: "manual" });
+      expect(await fs.readFile(exportFile, "utf-8")).toContain("hello");
+    } finally {
+      await first.manager.close();
+    }
+
+    // Drive the slow path on the second boot by changing the transcript content
+    // (same byte length, mtime preserved) so the cached fingerprint no longer
+    // matches and the manager rebuilds. The slow-path rebuild is where the race
+    // window lives.
+    const firstStat = await fs.stat(sessionFile);
+    await fs.writeFile(sessionFile, slowPathTranscript, "utf-8");
+    await fs.utimes(sessionFile, firstStat.atime, firstStat.mtime);
+
+    // Inject the rewrite at the render -> fingerprint boundary. The manager's
+    // source content fingerprint is computed via fs.readFile(path) in Buffer
+    // mode (no encoding); the render reads the transcript through a different
+    // SDK primitive, and the rendered markdown is written to the export target
+    // BEFORE the post-write fingerprint read. So a Buffer-mode read of the
+    // session file that happens AFTER the freshly-rendered slow-path markdown
+    // ("howdy") has already landed on the export target is the post-write
+    // fingerprint read. At that exact point — render done, target written, but
+    // the persisted source fingerprint not yet taken — we slip in a same-size,
+    // mtime-preserving transcript rewrite ("hullo"). This reproduces the
+    // (newSrcFp, oldTargetBytes) interleaving precisely.
+    //
+    // This trigger is robust to the fix: the pre-render fingerprint read (which
+    // the fix adds) happens while the export target still holds the PREVIOUS
+    // boot's render ("hello"), so it does not fire; only the post-write read,
+    // by which time the target reads "howdy", does.
+    const realReadFile = fs.readFile.bind(fs);
+    const realWriteFile = fs.writeFile.bind(fs);
+    const realUtimes = fs.utimes.bind(fs);
+    let racedOnce = false;
+    const readSpy = vi.spyOn(fs, "readFile").mockImplementation((async (
+      target: Parameters<typeof fs.readFile>[0],
+      options?: Parameters<typeof fs.readFile>[1],
+    ) => {
+      const isSessionBufferRead =
+        target === sessionFile && (options === undefined || options === null);
+      if (isSessionBufferRead && !racedOnce) {
+        // Has the freshly-rendered slow-path markdown already hit the target?
+        let renderedTarget: string;
+        try {
+          renderedTarget = await realReadFile(exportFile, "utf-8");
+        } catch {
+          renderedTarget = "";
+        }
+        if (renderedTarget.includes("howdy")) {
+          racedOnce = true;
+          await realWriteFile(sessionFile, racedTranscript, "utf-8");
+          await realUtimes(sessionFile, firstStat.atime, firstStat.mtime);
+        }
+      }
+      return realReadFile(target as never, options as never);
+    }) as typeof fs.readFile);
+
+    const second = await createManager();
+    try {
+      await second.manager.sync({ reason: "manual" });
+    } finally {
+      readSpy.mockRestore();
+      await second.manager.close();
+    }
+    // The injection must have fired, or the test proves nothing.
+    expect(racedOnce).toBe(true);
+
+    // The on-disk transcript now holds the raced bytes ("hullo"). The critical
+    // invariant: the next clean sync must NOT serve a stale fast-path hit. If a
+    // mismatched (newSrcFp, oldTargetBytes) row had been persisted, a third sync
+    // would content-match the source, find the old target bytes, and skip the
+    // rebuild — leaving the export stale. With the fix, no such row exists, so
+    // the third sync re-renders from the current transcript.
+    const third = await createManager();
+    try {
+      await third.manager.sync({ reason: "manual" });
+      const settled = await fs.readFile(exportFile, "utf-8");
+      expect(settled).toContain("hullo");
+      expect(settled).not.toContain("howdy");
+    } finally {
+      await third.manager.close();
+    }
+  });
+
   it("ignores stale cache entries scoped to a previous exportDir", async () => {
     const sessionsDir = path.join(stateDir, "agents", agentId, "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
