@@ -321,7 +321,7 @@ async function main(): Promise<void> {
     assert(preFailBody !== null, "(f) precondition: an export must exist before the stat failure");
     const realStat = fs.stat.bind(fs);
     const statDescriptor = Object.getOwnPropertyDescriptor(fs, "stat");
-    (fs as unknown as { stat: typeof fs.stat }).stat = (async (
+    (fs as unknown as { stat: typeof fs.stat }).stat = async (
       statTarget: Parameters<typeof fs.stat>[0],
       statOptions?: Parameters<typeof fs.stat>[1],
     ) => {
@@ -331,11 +331,11 @@ async function main(): Promise<void> {
         });
       }
       return realStat(statTarget, statOptions);
-    }) as typeof fs.stat;
+    };
     let aborted = false;
     try {
       await runExport();
-    } catch (err) {
+    } catch (err: unknown) {
       aborted = true;
       assert(
         (err as NodeJS.ErrnoException)?.code === "EACCES",
@@ -402,7 +402,7 @@ async function main(): Promise<void> {
     const realUtimes = fs.utimes.bind(fs);
     const readFileDescriptor = Object.getOwnPropertyDescriptor(fs, "readFile");
     let racedOnce = false;
-    (fs as unknown as { readFile: typeof fs.readFile }).readFile = (async (
+    (fs as unknown as { readFile: typeof fs.readFile }).readFile = async (
       readTargetPath: Parameters<typeof fs.readFile>[0],
       readOptions?: Parameters<typeof fs.readFile>[1],
     ) => {
@@ -426,7 +426,7 @@ async function main(): Promise<void> {
         }
       }
       return realReadFile(readTargetPath, readOptions);
-    }) as typeof fs.readFile;
+    };
     try {
       await runExport();
     } finally {

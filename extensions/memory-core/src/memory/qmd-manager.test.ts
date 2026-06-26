@@ -6031,7 +6031,7 @@ describe("QmdMemoryManager", () => {
     }
 
     const realStat = fs.stat.bind(fs);
-    const statSpy = vi.spyOn(fs, "stat").mockImplementation((async (
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (
       target: Parameters<typeof fs.stat>[0],
       options?: Parameters<typeof fs.stat>[1],
     ) => {
@@ -6043,7 +6043,7 @@ describe("QmdMemoryManager", () => {
         throw denied;
       }
       return realStat(target, options);
-    }) as typeof fs.stat);
+    });
 
     // Second boot: the stat precheck for session-1.jsonl throws EACCES. The sync
     // must abort (surfacing the error) WITHOUT deleting the existing export.
@@ -6097,7 +6097,7 @@ describe("QmdMemoryManager", () => {
     } as OpenClawConfig;
 
     const realStat = fs.stat.bind(fs);
-    const statSpy = vi.spyOn(fs, "stat").mockImplementation((async (
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (
       target: Parameters<typeof fs.stat>[0],
       options?: Parameters<typeof fs.stat>[1],
     ) => {
@@ -6109,7 +6109,7 @@ describe("QmdMemoryManager", () => {
         throw missing;
       }
       return realStat(target, options);
-    }) as typeof fs.stat);
+    });
 
     const { manager } = await createManager();
     try {
