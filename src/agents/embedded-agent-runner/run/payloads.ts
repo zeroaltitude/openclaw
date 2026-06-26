@@ -252,6 +252,15 @@ export function buildEmbeddedRunPayloads(params: {
   runAborted?: boolean;
   didSendDeterministicApprovalPrompt?: boolean;
   heartbeatToolResponse?: HeartbeatToolResponse;
+  /**
+   * When true, mark the assistant-answer reply payloads with
+   * `preserveDraftPreview: true` so the channel renderer keeps the
+   * draft/live-preview message (M_draft) and delivers the answer as a new
+   * message below it. Set per-agent — claude-server opts in to preserve its
+   * preamble-driven transcript; codex and others omit and stay on the
+   * default in-place finalize behavior.
+   */
+  preserveDraftPreviewOnFinalReply?: boolean;
 }): ReplyPayload[] {
   if (params.heartbeatToolResponse) {
     return [createHeartbeatToolResponsePayload(params.heartbeatToolResponse)];
@@ -271,6 +280,7 @@ export function buildEmbeddedRunPayloads(params: {
     interactive?: ReplyPayload["interactive"];
     channelData?: Record<string, unknown>;
     nonTerminalToolErrorWarning?: boolean;
+    preserveDraftPreview?: boolean;
     sourceReplyMirror?: {
       idempotencyKey?: string;
     };
@@ -526,6 +536,7 @@ export function buildEmbeddedRunPayloads(params: {
       replyToId,
       replyToTag,
       replyToCurrent,
+      ...(params.preserveDraftPreviewOnFinalReply ? { preserveDraftPreview: true } : {}),
     });
     hasUserFacingAssistantReply = true;
     if (cleanedText && hasExplicitMutatingToolFailureAcknowledgement(cleanedText)) {
@@ -628,6 +639,9 @@ export function buildEmbeddedRunPayloads(params: {
       }
       if (item.channelData) {
         payload.channelData = item.channelData;
+      }
+      if (item.preserveDraftPreview) {
+        payload.preserveDraftPreview = true;
       }
       if (item.sourceReplyMirror) {
         // Source-reply mirrors are transcript artifacts, not channel sends.
