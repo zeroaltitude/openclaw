@@ -62,11 +62,13 @@ import {
   type EmbeddedRunAttemptResult,
   type NormalizedUsage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { loadExecApprovals } from "openclaw/plugin-sdk/exec-approvals-runtime";
 import { getSharedClaudeAppServerClient, type ClaudeAppServerClient } from "./client.js";
 import { resolveClaudeAppServerConfig, type ResolvedClaudeAppServerConfig } from "./config.js";
 import { createClaudeDynamicToolBridge, type ClaudeDynamicToolBridge } from "./dynamic-tools.js";
 import { ClaudeAppServerEventProjector } from "./event-projector.js";
 import { resolveManagedClaudeBridgeStartOptions } from "./managed-binary.js";
+import { resolveOpenClawExecPolicyForClaudeAppServer } from "./policy.js";
 import { createClaudeProgressWatch, type ClaudeProgressWatch } from "./progress-watch.js";
 import {
   assertTurnStartParams,
@@ -94,7 +96,25 @@ export async function runClaudeAppServerAttempt(
 ): Promise<EmbeddedRunAttemptResult> {
   const attemptStartedAt = Date.now();
   const result = emptyResult(params);
-  const cfg = resolveClaudeAppServerConfig(options.pluginConfig);
+  // Resolve the effective core exec-policy (tools.exec.{mode,security,ask} from
+  // the openclaw root config + per-agent override + per-turn override + the
+  // exec-approvals floor file) so resolveClaudeAppServerConfig can DERIVE the
+  // bridge's default approvalPolicy / sandbox from it plus the enterprise
+  // requirements.toml floor — mirroring codex/run-attempt.ts which feeds
+  // resolveOpenClawExecPolicyForCodexAppServer into resolveCodexAppServerRuntimeOptions.
+  const execPolicy = resolveOpenClawExecPolicyForClaudeAppServer({
+    execOverrides: params.execOverrides,
+    approvals: loadExecApprovals(),
+    config: params.config,
+    agentId: params.agentId,
+  });
+  const cfg = resolveClaudeAppServerConfig(options.pluginConfig, {
+    config: params.config,
+    agentId: params.agentId,
+    agentDir: params.agentDir,
+    execPolicy,
+    env: process.env,
+  });
   let client: ClaudeAppServerClient | undefined;
 
   const ac = new AbortController();

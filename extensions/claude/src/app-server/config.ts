@@ -23,6 +23,10 @@
  */
 
 import { z } from "zod";
+import {
+  resolveClaudeAppServerPolicy,
+  type OpenClawExecPolicyForClaudeAppServer,
+} from "./policy.js";
 import type { ApprovalPolicy, SandboxPolicy } from "./types.js";
 
 export const DEFAULT_CLAUDE_APP_SERVER_APPROVAL_POLICY: ApprovalPolicy = "never";
@@ -154,8 +158,33 @@ export type ResolvedClaudeAppServerConfig = {
  * defaults for that section rather than letting a partial cast leak into
  * the turn runner. Sections are parsed independently so partial
  * misconfiguration doesn't kill all defaults.
+ *
+ * approvalPolicy / sandbox DEFAULTS are derived by resolveClaudeAppServerPolicy
+ * (mirrors codex/config.ts) from core exec-policy + an enterprise
+ * requirements.toml floor, instead of the old static never/danger-full-access.
+ * Explicit appServer.approvalPolicy / appServer.sandbox config still wins
+ * (it is fed into the policy resolver as the highest-precedence input), and an
+ * explicit env override still wins over the derived default. Callers that lack
+ * the openclaw root config / agent / exec-policy context (most tests, and any
+ * pre-existing caller) get the old yolo defaults (never / danger-full-access)
+ * because the resolver short-circuits to yolo when no requirements floor and no
+ * touched exec-policy are present.
  */
-export function resolveClaudeAppServerConfig(raw: unknown): ResolvedClaudeAppServerConfig {
+export function resolveClaudeAppServerConfig(
+  raw: unknown,
+  policyContext?: {
+    config?: unknown;
+    agentId?: string;
+    agentDir?: string;
+    execPolicy?: OpenClawExecPolicyForClaudeAppServer;
+    env?: NodeJS.ProcessEnv;
+    requirementsToml?: string | null;
+    requirementsPath?: string;
+    readRequirementsFile?: (path: string) => string | undefined;
+    platform?: NodeJS.Platform;
+    hostName?: string;
+  },
+): ResolvedClaudeAppServerConfig {
   const root = asRecord(raw);
   const appServerParsed = appServerConfigSchema.safeParse(root.appServer ?? {});
   const dynamicToolsParsed = dynamicToolsConfigSchema.safeParse(root.dynamicTools ?? {});
@@ -173,11 +202,33 @@ export function resolveClaudeAppServerConfig(raw: unknown): ResolvedClaudeAppSer
       ? "env"
       : "managed";
 
+  // Derive approvalPolicy + sandbox defaults via the guardian/requirements
+  // resolver (mirrors codex/config.ts). Explicit appServer config is the
+  // highest-precedence input into the resolver, so a configured value still
+  // wins; an env override wins over the requirements-derived default. With no
+  // requirements floor and no touched exec-policy the resolver short-circuits
+  // to the legacy yolo defaults (never / danger-full-access), preserving prior
+  // behavior for callers that don't thread policy context.
+  const configApprovalPolicy = parsed?.approvalPolicy;
+  const configSandbox =
+    parsed?.sandbox !== undefined ? normalizeSandbox(parsed.sandbox) : undefined;
+  const policy = resolveClaudeAppServerPolicy({
+    configApprovalPolicy,
+    configSandbox,
+    env: policyContext?.env ?? process.env,
+    execPolicy: policyContext?.execPolicy,
+    requirementsToml: policyContext?.requirementsToml,
+    requirementsPath: policyContext?.requirementsPath,
+    readRequirementsFile: policyContext?.readRequirementsFile,
+    platform: policyContext?.platform,
+    hostName: policyContext?.hostName,
+  });
+
   const appServer: ClaudeAppServerRuntimeConfig = {
     command,
     commandSource,
-    approvalPolicy: DEFAULT_CLAUDE_APP_SERVER_APPROVAL_POLICY,
-    sandbox: DEFAULT_CLAUDE_APP_SERVER_SANDBOX,
+    approvalPolicy: policy.approvalPolicy,
+    sandbox: policy.sandbox,
     turnTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_TURN_TIMEOUT_MS,
     turnIdleTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_TURN_IDLE_TIMEOUT_MS,
     progressIdleTimeoutMs: DEFAULT_CLAUDE_APP_SERVER_PROGRESS_IDLE_TIMEOUT_MS,
@@ -188,12 +239,6 @@ export function resolveClaudeAppServerConfig(raw: unknown): ResolvedClaudeAppSer
     }
     if (parsed.env !== undefined) {
       appServer.env = parsed.env;
-    }
-    if (parsed.approvalPolicy !== undefined) {
-      appServer.approvalPolicy = parsed.approvalPolicy;
-    }
-    if (parsed.sandbox !== undefined) {
-      appServer.sandbox = normalizeSandbox(parsed.sandbox);
     }
     if (parsed.turnTimeoutMs !== undefined) {
       appServer.turnTimeoutMs = parsed.turnTimeoutMs;

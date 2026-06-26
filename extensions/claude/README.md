@@ -103,6 +103,26 @@ treated as endless TODOs.
 - **Rate-limit surfacing**, **image payload sanitizer**, **plugin
   inventory + thread config fingerprint** — all server-side; see
   "Hot-path features" above.
+- **Guardian / requirements approval+sandbox floor** — the bridge's
+  default `appServer.approvalPolicy` / `appServer.sandbox` are DERIVED
+  (mirroring codex's `resolveCodexAppServerRuntimeOptions`) from core
+  `tools.exec.{mode,security,ask}` plus an enterprise requirements floor,
+  instead of a static `never` / `danger-full-access`. See
+  `src/app-server/policy.ts`. Resolution precedence: explicit
+  `appServer.approvalPolicy` / `appServer.sandbox` config →
+  `OPENCLAW_CLAUDE_APP_SERVER_APPROVAL_POLICY` env → requirements/exec
+  guardian default → implicit yolo default. With no exec policy and no
+  requirements file the prior permissive default is preserved.
+  - Requirements floor path (TOML; same schema keys as codex —
+    `allowed_approval_policies`, `allowed_sandbox_modes`, and
+    `[[remote_sandbox_config]]` host-glob blocks):
+    - Unix: `/etc/openclaw-claude/requirements.toml`
+    - Windows: `%ProgramData%\OpenClaw\Claude\requirements.toml`
+    - Override via `OPENCLAW_CLAUDE_APP_SERVER_REQUIREMENTS`.
+  - The codex-intrinsic `approvalsReviewer` / model-backed-reviewer /
+    `guardian_subagent` machinery is OMITTED — the Claude protocol has
+    no reviewer equivalent; the floor resolves only `approvalPolicy` +
+    `sandbox`.
 - **Vision-tools filter** — bridge-side strip of redundant `image`
   tool when the model has native vision.
 - **Event projection** — codex-style item/started + item/completed
