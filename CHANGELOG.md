@@ -2,6 +2,12 @@
 
 Docs: https://docs.openclaw.ai
 
+## Unreleased
+
+### Changes
+
+- **Constrainable bundled Claude harness:** the Claude app-server harness now derives its default `approvalPolicy` / `sandbox` from your core `tools.exec` policy and an enterprise `/etc/openclaw-claude/requirements.toml` floor (`allowed_approval_policies` / `allowed_sandbox_modes`), instead of only a static permissive default — so operators and enterprises can constrain the bundled Claude harness via the same mechanism Codex already uses (`/etc/codex/requirements.toml`). Explicit `appServer.approvalPolicy` / `appServer.sandbox` plugin config and the env overrides still win; with no exec policy and no requirements file the prior `never` / `danger-full-access` default is preserved. (#86655)
+
 ## 2026.6.10
 
 ### Highlights
