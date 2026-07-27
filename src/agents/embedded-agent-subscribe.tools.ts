@@ -1137,6 +1137,74 @@ export function extractMessagingToolSend(
     : undefined;
 }
 
+/**
+ * Whether a `message` send resolves to the current source conversation, and so is
+ * a source reply rather than an unrelated outbound side effect.
+ *
+ * `isDeliveredMessageToolOnlySourceReplyResult` normally learns this from the
+ * gateway's trusted `sourceReplyRoute: "current-source"` result tag, which is only
+ * applied when a signed message-action turn capability accompanies the call. That
+ * capability is not threaded into harnesses that reach the `message` tool over the
+ * loopback MCP server (the Claude app-server bridge among them), so their sends
+ * never carry the tag — and an explicit-route send (channel/target/to) is then
+ * rejected even when it delivered to the current source, wrongly tripping
+ * stranded-reply recovery.
+ *
+ * The runner is an in-process trusted caller, so it verifies the route directly:
+ * resolve the send's destination, resolve the destination an implicit (routeless)
+ * send of the same action would reach, and compare. Both sides go through
+ * `extractMessagingToolSend` so normalization is identical and cannot drift.
+ */
+export function messagingSendResolvesToCurrentSource(
+  toolName: string,
+  args: Record<string, unknown>,
+  options?: Parameters<typeof extractMessagingToolSend>[2],
+): boolean {
+  if (normalizeToolName(toolName) !== "message") {
+    return false;
+  }
+  // Route comparison is a read-only probe, so drop `hasRepliedRef` before
+  // resolving: it reaches the auto-thread resolver, which may flip the ref to
+  // record that a reply-to was consumed. Resolving twice with it would burn a
+  // single-use reply-to (`replyToMode: "first"` / `"batched"`) on a probe. It
+  // only influences implicit-thread resolution, never `to`/`provider`, so
+  // omitting it cannot change the comparison below.
+  const routeOptions = options ? { ...options, hasRepliedRef: undefined } : undefined;
+  const target = extractMessagingToolSend(toolName, args, routeOptions);
+  const targetTo = normalizeOptionalString(target?.to);
+  if (!targetTo) {
+    return false;
+  }
+  // The same action with no destination resolves to the current source. Transport
+  // hints (`provider`/`channel`) are carried over because they name the transport
+  // rather than the destination: an unset hint defaults the resolved provider to
+  // "message", which would make the provider comparison below mismatch for every
+  // send that named its channel. Destination keys (`target`/`to`/`channelId`) are
+  // deliberately not carried over — resolving without them is what yields the
+  // current-source baseline. `accountId` is also withheld so an explicitly
+  // cross-account send fails the comparison and still trips recovery.
+  const referenceArgs: Record<string, unknown> = {
+    action: normalizeOptionalString(args.action) ?? "send",
+  };
+  for (const hint of ["provider", "channel"] as const) {
+    const value = normalizeOptionalString(args[hint]);
+    if (value) {
+      referenceArgs[hint] = value;
+    }
+  }
+  const reference = extractMessagingToolSend(toolName, referenceArgs, routeOptions);
+  const referenceTo = normalizeOptionalString(reference?.to);
+  if (!referenceTo) {
+    return false;
+  }
+  return (
+    targetTo === referenceTo &&
+    normalizeOptionalLowercaseString(target?.provider) ===
+      normalizeOptionalLowercaseString(reference?.provider) &&
+    normalizeOptionalString(target?.accountId) === normalizeOptionalString(reference?.accountId)
+  );
+}
+
 /** Reconciles pending send evidence with the provider's successful action result. */
 export function extractMessagingToolSendResult(
   pending: MessagingToolSend,

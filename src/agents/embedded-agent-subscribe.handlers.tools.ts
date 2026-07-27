@@ -77,6 +77,7 @@ import {
   extractToolErrorCode,
   extractMessagingToolSend,
   extractMessagingToolSendResult,
+  messagingSendResolvesToCurrentSource,
   extractToolErrorMessage,
   extractToolResultText,
   filterToolResultMediaUrls,
@@ -1560,6 +1561,22 @@ export async function handleToolExecutionEnd(
         args: startArgs,
         result,
         isError: isToolError,
+        // Sends that reach the `message` tool over the loopback MCP server never
+        // carry the gateway's trusted current-source route tag (the turn
+        // capability that mints it is not threaded into the harness subprocess),
+        // so an explicit-route reply to this very conversation would otherwise be
+        // rejected as evidence and trip stranded-reply recovery. The runner
+        // verifies the route itself instead.
+        allowExplicitSourceRoute: messagingSendResolvesToCurrentSource(toolName, messagingArgs, {
+          config: ctx.params.config,
+          currentChannelId: ctx.params.currentChannelId,
+          currentMessagingTarget: ctx.params.currentMessagingTarget,
+          currentThreadId:
+            ctx.params.currentThreadId ??
+            parseSessionThreadInfoFast(ctx.params.sessionKey).threadId,
+          currentMessageId: ctx.params.currentMessageId,
+          replyToMode: ctx.params.replyToMode,
+        }),
       })
     ) {
       ctx.state.messageToolOnlySourceReplyDelivered = true;

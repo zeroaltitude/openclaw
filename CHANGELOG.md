@@ -50,6 +50,7 @@ Docs: https://docs.openclaw.ai
 - **Plugin install provenance warnings:** require explicit `--force` acknowledgement for arbitrary executable plugin sources in CLI and chat installs, keep trusted ClawHub, bundled, official-catalog, and tracked-update flows frictionless, and restrict Crestodian installs to trusted sources. (#102197) Thanks @jesse-merhi.
 
 ### Fixes
+- **Loopback-harness source replies:** count an explicit-route `message` send that reaches the current source conversation as a delivered source reply in harnesses that call the tool over the loopback MCP server (the Claude app-server bridge among them), so `message_tool_only` channel sessions no longer fire stranded-reply recovery — duplicating the reply or posting a delivery-failure notice — after a successful send.
 
 - **Control UI initial prompts:** keep accepted first messages visible across Gateway transport reconnects by binding the process-local handoff to the logical browser client instead of the per-handshake hello snapshot.
 - **Gateway exec deny fallback:** fail closed immediately when shell-expanded arguments prevent an allowlisted command from producing an enforceable execution plan and effective policy is `ask=off` with `askFallback=deny`, instead of registering an approval that can only time out. Fixes #113191. Thanks @shakkernerd.
