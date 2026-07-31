@@ -140,7 +140,7 @@ describe("dispatchReplyFromConfig stale visible admission recovery", () => {
     expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
   });
 
-  it("sends overload feedback when stuck recovery expires the active reply", async () => {
+  it("sends stalled-reclaim feedback when stuck recovery expires the active reply", async () => {
     let resolverStarted: () => void = () => {};
     const resolverStartedPromise = new Promise<void>((resolve) => {
       resolverStarted = resolve;
@@ -163,7 +163,7 @@ describe("dispatchReplyFromConfig stale visible admission recovery", () => {
 
     await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
     expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledWith({
-      text: "⚠️ Your reply was dropped because the gateway was overloaded. Please retry.",
+      text: "⚠️ Your reply was dropped: the run made no progress and was reclaimed by stuck-session recovery. The session is intact — please retry.",
       isError: true,
     });
   });
