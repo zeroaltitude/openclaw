@@ -140,31 +140,37 @@ describe("dispatchReplyFromConfig stale visible admission recovery", () => {
     expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
   });
 
-  it("sends stalled-reclaim feedback when stuck recovery expires the active reply", async () => {
-    let resolverStarted: () => void = () => {};
-    const resolverStartedPromise = new Promise<void>((resolve) => {
-      resolverStarted = resolve;
-    });
-    const dispatchParams = createVisibleDispatchParams(async (_ctx, options) => {
-      resolverStarted();
-      await new Promise<void>((resolve) => {
-        options?.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+  it.each(["no_activity", "stuck_recovery"] as const)(
+    "sends truthful stalled feedback when %s expires the active reply",
+    async (reason) => {
+      let resolverStarted: () => void = () => {};
+      const resolverStartedPromise = new Promise<void>((resolve) => {
+        resolverStarted = resolve;
       });
-      const error = new Error("reply expired");
-      error.name = "AbortError";
-      throw error;
-    });
+      const dispatchParams = createVisibleDispatchParams(async (_ctx, options) => {
+        resolverStarted();
+        await new Promise<void>((resolve) => {
+          options?.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        const error = new Error("reply expired");
+        error.name = "AbortError";
+        throw error;
+      });
 
-    const dispatchPromise = dispatchReplyFromConfig(dispatchParams);
-    await resolverStartedPromise;
-    const operation = replyRunRegistry.get(sessionKey);
-    expect(operation).toBeDefined();
-    expect(expireStaleReplyOperation(operation!, "stuck_recovery")).toBe(true);
+      const dispatchPromise = dispatchReplyFromConfig(dispatchParams);
+      await resolverStartedPromise;
+      const operation = replyRunRegistry.get(sessionKey);
+      expect(operation).toBeDefined();
+      expect(expireStaleReplyOperation(operation!, reason)).toBe(true);
 
-    await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
-    expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledWith({
-      text: "⚠️ Your reply was dropped: the run made no progress and was reclaimed by stuck-session recovery. The session is intact — please retry.",
-      isError: true,
-    });
-  });
+      await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
+      expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledWith({
+        text:
+          reason === "stuck_recovery"
+            ? "⚠️ Your reply was dropped: the run made no progress and was reclaimed by stuck-session recovery. The session is intact — please retry."
+            : "⚠️ Your reply was dropped: the run showed no activity past the stale threshold and was reclaimed. The session is intact — please retry.",
+        isError: true,
+      });
+    },
+  );
 });
