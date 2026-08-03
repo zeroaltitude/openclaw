@@ -10,6 +10,7 @@ import type {
 } from "../../../context-engine/types.js";
 import { drainPluginNextTurnInjectionContext } from "../../../plugins/host-hook-state.js";
 import { buildPluginAgentTurnPrepareContext } from "../../../plugins/host-hooks.js";
+import { buildDroppedPromptBuildDispatchResult } from "../../../plugins/prompt-build-drop-notice.js";
 import type {
   PluginAgentTurnPrepareResult,
   PluginNextTurnInjectionRecord,
@@ -173,7 +174,10 @@ export async function resolvePromptBuildHookResult(params: {
         )
         .catch((hookErr: unknown) => {
           log.warn(`before_prompt_build hook failed: ${String(hookErr)}`);
-          return undefined;
+          // The dispatch itself rejected, so no handler's contribution survived.
+          // Tell the agent the prompt is short something instead of silently
+          // handing it a context that looks whole.
+          return buildDroppedPromptBuildDispatchResult();
         })
     : undefined;
   return {

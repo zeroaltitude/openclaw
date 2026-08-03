@@ -110,6 +110,10 @@ import type {
   PluginHookSkillProposalEvaluationOutcome,
 } from "./hook-types.js";
 import {
+  formatDroppedPromptBuildContributionNotice,
+  type PromptBuildContributionDrop,
+} from "./prompt-build-drop-notice.js";
+import {
   type PluginSubagentRequesterContext,
   withPluginSubagentRequesterContext,
 } from "./runtime/subagent-requester-context.js";
@@ -198,6 +202,22 @@ const DEFAULT_MODIFYING_HOOK_TIMEOUT_MS_BY_HOOK: Partial<Record<PluginHookName, 
   skill_proposal_evaluate: 120_000,
 };
 
+/**
+ * Marks a hook rejection that came from the runner's own budget rather than the
+ * handler. Callers that surface drops to the agent need to tell "the plugin threw"
+ * apart from "the plugin ran out of time"; the message is unchanged so existing
+ * log assertions keep matching.
+ */
+class HookTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`timed out after ${timeoutMs}ms`);
+    this.name = "HookTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 function deepFreezeHookValue<T>(value: T, seen = new WeakSet<object>()): T {
   if ((typeof value !== "object" && typeof value !== "function") || value === null) {
     return value;
@@ -224,6 +244,16 @@ type ModifyingHookPolicy<K extends PluginHookName, TResult> = {
   shouldStop?: (result: TResult) => boolean;
   terminalLabel?: string;
   onTerminal?: (params: { hookName: K; pluginId: string; result: TResult }) => void;
+  /**
+   * Called when a handler's contribution is discarded because it threw or ran out
+   * of time. Lets a caller surface the loss instead of silently returning a merged
+   * result that is missing one plugin's share.
+   */
+  onHandlerDropped?: (params: {
+    hookName: K;
+    pluginId: string;
+    reason: "failed" | "timed-out";
+  }) => void;
 };
 
 type PluginTargetedInboundClaimOutcome =
@@ -651,7 +681,7 @@ export function createHookRunner(
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        reject(new Error(`timed out after ${timeoutMs}ms`));
+        reject(new HookTimeoutError(timeoutMs));
       }, timeoutMs);
       if (optionsResult.unref) {
         timer.unref?.();
@@ -779,6 +809,11 @@ export function createHookRunner(
         if (err instanceof HookIsolationError) {
           throw err;
         }
+        policy.onHandlerDropped?.({
+          hookName,
+          pluginId: hook.pluginId,
+          reason: err instanceof HookTimeoutError ? "timed-out" : "failed",
+        });
         handleHookError({ hookName, pluginId: hook.pluginId, error: err });
       }
     }
@@ -943,6 +978,28 @@ export function createHookRunner(
   }
 
   /**
+   * Folds the drop notice into the prompt-build result so a lost contribution is
+   * visible to the agent instead of being indistinguishable from "nothing to add".
+   * The notice leads the prepend slot so it sits next to whatever context survived.
+   */
+  const withPromptBuildDropNotice = (
+    result: PluginHookBeforePromptBuildResult | undefined,
+    drops: readonly PromptBuildContributionDrop[],
+  ): PluginHookBeforePromptBuildResult | undefined => {
+    const notice = formatDroppedPromptBuildContributionNotice(drops);
+    if (!notice) {
+      return result;
+    }
+    return {
+      ...result,
+      prependContext: concatOptionalTextSegments({
+        left: notice,
+        right: result?.prependContext,
+      }),
+    };
+  };
+
+  /**
    * Run before_prompt_build hook.
    * Allows plugins to inject context and system prompt before prompt submission.
    */
@@ -950,18 +1007,37 @@ export function createHookRunner(
     event: PluginHookBeforePromptBuildEvent,
     ctx: PluginHookAgentContext,
   ): Promise<PluginHookBeforePromptBuildResult | undefined> {
-    if (beforePromptBuildDispatch.getStore()?.active) {
+    const registeredHooks = getHooksForName(registry, "before_prompt_build");
+    if (registeredHooks.length === 0) {
       return undefined;
+    }
+    if (beforePromptBuildDispatch.getStore()?.active) {
+      // A prompt-build hook started a nested run, so this inner build skips every
+      // handler to avoid recursion. Say so — in the log and in the prompt — rather
+      // than handing the nested agent a context that merely looks complete.
+      const skippedPluginIds = [...new Set(registeredHooks.map((hook) => hook.pluginId))];
+      logger?.warn?.(
+        `[hooks] before_prompt_build skipped for ${skippedPluginIds.length} plugin(s) (re-entrant prompt build): ${skippedPluginIds.join(", ")}`,
+      );
+      return withPromptBuildDropNotice(
+        undefined,
+        skippedPluginIds.map((pluginId) => ({ pluginId, reason: "skipped-reentrant" as const })),
+      );
     }
     const token = { active: true };
     return await beforePromptBuildDispatch.run(token, async () => {
+      const drops: PromptBuildContributionDrop[] = [];
       try {
-        return await runModifyingHook<"before_prompt_build", PluginHookBeforePromptBuildResult>(
+        const result = await runModifyingHook<
           "before_prompt_build",
-          event,
-          ctx,
-          { mergeResults: mergeBeforePromptBuild },
-        );
+          PluginHookBeforePromptBuildResult
+        >("before_prompt_build", event, ctx, {
+          mergeResults: mergeBeforePromptBuild,
+          onHandlerDropped: ({ pluginId, reason }) => {
+            drops.push({ pluginId, reason });
+          },
+        });
+        return withPromptBuildDropNotice(result, drops);
       } finally {
         token.active = false;
       }

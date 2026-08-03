@@ -6,6 +6,7 @@
  */
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { buildDroppedPromptBuildDispatchResult } from "../../plugins/prompt-build-drop-notice.js";
 import type { PluginHookBeforePromptBuildResult } from "../../plugins/types.js";
 import { joinPresentTextSegments } from "../../shared/text/join-segments.js";
 import type { BootstrapContextRunKind } from "../bootstrap-mode.js";
@@ -77,7 +78,10 @@ export async function resolveAgentHarnessBeforePromptBuildResult(params: {
   const promptBuildResult = hookRunner?.hasHooks("before_prompt_build")
     ? await hookRunner.runBeforePromptBuild(promptEvent, hookCtx).catch((error: unknown) => {
         log.warn(`before_prompt_build hook failed: ${String(error)}`);
-        return undefined;
+        // The dispatch itself rejected, so no handler's contribution survived.
+        // Tell the agent the prompt is short something instead of silently
+        // handing it a context that looks whole.
+        return buildDroppedPromptBuildDispatchResult();
       })
     : undefined;
   const systemPrompt = resolvePromptBuildSystemPrompt({

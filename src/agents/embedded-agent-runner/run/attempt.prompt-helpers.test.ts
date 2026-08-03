@@ -287,6 +287,34 @@ describe("resolvePromptBuildHookResult drain cache", () => {
     forgetPromptBuildDrainCacheForRun("tools-allow-run");
   });
 
+  it("marks the prompt when the before_prompt_build dispatch itself rejects", async () => {
+    // A rejected dispatch loses every plugin contribution. The turn must say so
+    // rather than presenting a context that merely looks complete.
+    hostHookStateMocks.drainPluginNextTurnInjectionContext.mockReset();
+    hostHookStateMocks.drainPluginNextTurnInjectionContext.mockResolvedValue({
+      queuedInjections: [],
+      prependContext: "queued context",
+    });
+
+    const result = await resolvePromptBuildHookResult({
+      config: {},
+      prompt: "what is on my plate?",
+      messages: [],
+      hookCtx: { runId: "dispatch-reject-run", sessionKey: "agent:main:main" },
+      hookRunner: {
+        hasHooks: vi.fn((hookName: string) => hookName === "before_prompt_build"),
+        runBeforePromptBuild: vi.fn(async () => {
+          throw new Error("hook dispatch exploded");
+        }),
+      },
+    });
+
+    expect(result.prependContext).toContain("<dropped_plugin_context>");
+    expect(result.prependContext).toContain("before_prompt_build dispatch: failed");
+    expect(result.prependContext).toContain("queued context");
+    forgetPromptBuildDrainCacheForRun("dispatch-reject-run");
+  });
+
   it("does not drain global injections or heartbeat contributions for commitment-only runs", async () => {
     hostHookStateMocks.drainPluginNextTurnInjectionContext.mockReset();
     const runAgentTurnPrepare = vi.fn(async () => ({ prependContext: "turn policy" }));

@@ -139,4 +139,32 @@ describe("resolveAgentHarnessBeforePromptBuildResult", () => {
     expect(promptHandler).toHaveBeenCalledTimes(1);
     expect(result.prompt).toBe("turn policy\n\ndue commitment");
   });
+
+  it("surfaces a failed prompt-build handler in the harness prompt", async () => {
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "before_prompt_build",
+          pluginId: "openclaw-beads",
+          handler: () => {
+            throw new Error("beads build failed");
+          },
+        },
+      ]),
+    );
+
+    const result = await resolveAgentHarnessBeforePromptBuildResult({
+      prompt: "what is ready?",
+      developerInstructions: "base instructions",
+      messages: [],
+      ctx: { trigger: "heartbeat", agentId: "agent-1", sessionKey: "session-1" },
+    });
+
+    expect(result.prompt).toContain('plugin "openclaw-beads" (before_prompt_build): failed');
+    expect(result.prompt).toContain("what is ready?");
+    // The prompt-input range must still point at the original prompt text.
+    expect(result.prompt.slice(result.promptInputRange?.start, result.promptInputRange?.end)).toBe(
+      "what is ready?",
+    );
+  });
 });

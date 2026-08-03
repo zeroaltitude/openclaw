@@ -1911,7 +1911,7 @@ describe("prepareCliRunContext", () => {
     expect(promptContext?.senderId).toBe("user-789");
   });
 
-  it("preserves the base prompt when prompt-build hooks fail", async () => {
+  it("preserves the base prompt and marks the drop when prompt-build hooks fail", async () => {
     const hookRunner = {
       hasHooks: vi.fn((hookName: string) => hookName === "before_prompt_build"),
       runBeforePromptBuild: vi.fn(async () => {
@@ -1922,7 +1922,11 @@ describe("prepareCliRunContext", () => {
 
     const context = await fixture.prepare({});
 
-    expect(context.params.prompt).toBe("latest ask");
+    // The base prompt survives, but the run must not look like the hooks had
+    // nothing to contribute — the lost contribution is named in the prompt.
+    expect(context.params.prompt).toContain("latest ask");
+    expect(context.params.prompt).toContain("before_prompt_build dispatch: failed");
+    expect(context.params.prompt).not.toContain("hook exploded");
     expect(context.systemPrompt).toContain("You are a personal assistant running inside OpenClaw.");
     expect(context.systemPrompt).toContain("Current model identity: test-cli/test-model.");
     expect(context.systemPrompt).not.toContain("hook exploded");

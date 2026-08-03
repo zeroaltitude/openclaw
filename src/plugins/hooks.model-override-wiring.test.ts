@@ -186,7 +186,13 @@ describe("model override pipeline wiring", () => {
         );
         await vi.advanceTimersByTimeAsync(5);
 
-        await expect(resultPromise).resolves.toEqual({ prependContext: "fast" });
+        // The fast handler's context survives, and the timed-out handler's lost
+        // contribution is named in the prompt so the agent knows it is missing.
+        const result = await resultPromise;
+        expect(result?.prependContext).toContain(
+          'plugin "slow-plugin" (before_prompt_build): timed out',
+        );
+        expect(result?.prependContext).toContain("fast");
         expect(logger.error).toHaveBeenCalledWith(
           "[hooks] before_prompt_build handler from slow-plugin failed: timed out after 5ms",
         );
