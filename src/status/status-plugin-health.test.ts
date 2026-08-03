@@ -496,4 +496,39 @@ describe("plugin health status formatting", () => {
     expect(withEmpty).not.toContain("Configured memory provider not registered:");
     expect(withAbsent).not.toContain("Configured memory provider not registered:");
   });
+
+  // A plugin whose hook registration was refused stays "loaded" with no load error and
+  // no dependency issue, so the coded diagnostic is the only evidence that part of it is
+  // dead. It gets its own chip and section instead of the generic diagnostics tail.
+  const blockedHookSnapshot: StatusPluginHealthSnapshot = {
+    plugins: [{ id: "beads", status: "loaded", enabled: true }],
+    diagnostics: [
+      {
+        level: "error",
+        code: "hook-registration-blocked",
+        pluginId: "beads",
+        message:
+          'typed hook "before_prompt_build" blocked because non-bundled plugins must set plugins.entries.beads.hooks.allowConversationAccess=true; the handler is not registered and will never run',
+      },
+    ],
+    contextEngineQuarantines: [],
+  };
+
+  it("chips blocked hook registrations in the compact line", () => {
+    expect(formatCompactPluginHealthLine(blockedHookSnapshot)).toBe(
+      "⚠️ Plugins: 1 blocked hook registration",
+    );
+  });
+
+  it("lists blocked hook registrations in their own detailed section", () => {
+    const text = formatDetailedPluginHealth(blockedHookSnapshot);
+
+    expect(text).toContain("Blocked hook registrations: 1");
+    expect(text).toContain(
+      '- beads: typed hook "before_prompt_build" blocked because non-bundled plugins must set',
+    );
+    // Counted once: the blocked entry must not also inflate the generic diagnostics tail.
+    expect(text).not.toContain("Diagnostics:");
+    expect(text).not.toContain("- ERROR beads:");
+  });
 });

@@ -202,8 +202,20 @@ function shouldSuppressChannelPluginDiagnostic(
 function getReportableDiagnostics(snapshot: StatusPluginHealthSnapshot): PluginDiagnosticRecord[] {
   const channelPluginFailures = snapshot.channelPluginFailures ?? [];
   return snapshot.diagnostics.filter(
-    (entry) => !shouldSuppressChannelPluginDiagnostic(entry, channelPluginFailures),
+    (entry) =>
+      !isBlockedHookRegistrationDiagnostic(entry) &&
+      !shouldSuppressChannelPluginDiagnostic(entry, channelPluginFailures),
   );
+}
+
+// Blocked typed-hook registrations get their own chip and section: the plugin looks
+// healthy from every other angle (loaded, no load error, no dependency issue) while
+// one of its handlers silently never runs, so folding them into the generic
+// diagnostics tail is how the state stayed invisible for days at a time.
+function getBlockedHookRegistrations(
+  snapshot: StatusPluginHealthSnapshot,
+): PluginDiagnosticRecord[] {
+  return snapshot.diagnostics.filter(isBlockedHookRegistrationDiagnostic);
 }
 
 function countProblemDiagnostics(diagnostics: readonly PluginDiagnosticRecord[]): {
@@ -220,6 +232,10 @@ export function isChannelPluginFailureDiagnostic(diagnostic: PluginDiagnosticRec
   return diagnostic.level === "error" && diagnostic.code === "channel-setup-failure";
 }
 
+export function isBlockedHookRegistrationDiagnostic(diagnostic: PluginDiagnosticRecord): boolean {
+  return diagnostic.code === "hook-registration-blocked";
+}
+
 function formatCount(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -230,12 +246,16 @@ export function formatCompactPluginHealthLine(
   const loadErrors = snapshot.plugins.filter((plugin) => plugin.status === "error").length;
   const dependencyIssues = snapshot.plugins.filter(hasDependencyIssue).length;
   const diagnosticErrors = countProblemDiagnostics(getReportableDiagnostics(snapshot)).errors;
+  const blockedHookRegistrations = getBlockedHookRegistrations(snapshot).length;
   const quarantines = snapshot.contextEngineQuarantines.length;
   const runtimeToolQuarantines = snapshot.runtimeToolQuarantines?.length ?? 0;
   const channelPluginFailures = snapshot.channelPluginFailures?.length ?? 0;
 
   const parts = [
     loadErrors > 0 ? formatCount(loadErrors, "plugin error") : null,
+    blockedHookRegistrations > 0
+      ? formatCount(blockedHookRegistrations, "blocked hook registration")
+      : null,
     quarantines > 0 ? formatCount(quarantines, "context engine quarantine") : null,
     runtimeToolQuarantines > 0
       ? formatCount(runtimeToolQuarantines, "runtime tool quarantine")
@@ -306,6 +326,9 @@ export function formatDetailedPluginHealth(snapshot: StatusPluginHealthSnapshot)
     .toSorted((left, right) => byLocale(left.id, right.id));
   const diagnostics = getReportableDiagnostics(snapshot);
   const diagnosticCounts = countProblemDiagnostics(diagnostics);
+  const blockedHookRegistrations = getBlockedHookRegistrations(snapshot).toSorted((left, right) =>
+    byLocale(left.pluginId ?? "", right.pluginId ?? ""),
+  );
   const contextEngineQuarantines = snapshot.contextEngineQuarantines.toSorted((left, right) =>
     byLocale(left.engineId, right.engineId),
   );
@@ -397,6 +420,16 @@ export function formatDetailedPluginHealth(snapshot: StatusPluginHealthSnapshot)
       ...errors.slice(0, 8).map((plugin) => {
         const phase = plugin.failurePhase ? ` [${plugin.failurePhase}]` : "";
         return `- ${plugin.id}${phase}: ${plugin.error ?? "failed to load"}`;
+      }),
+    );
+  }
+
+  if (blockedHookRegistrations.length > 0) {
+    lines.push(
+      `Blocked hook registrations: ${blockedHookRegistrations.length}`,
+      ...blockedHookRegistrations.slice(0, 8).map((entry) => {
+        const target = entry.pluginId ? `${entry.pluginId}: ` : "";
+        return `- ${target}${entry.message}`;
       }),
     );
   }

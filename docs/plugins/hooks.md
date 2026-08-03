@@ -723,6 +723,15 @@ so they require conversation access and remain subject to
 durable next-turn injections can be disabled per plugin by setting that option
 to `false`.
 
+When one of those policies refuses a registration, the handler is never added to
+the registry and never runs, while the plugin itself still reports as loaded —
+`api.on(...)` cannot observe the refusal. OpenClaw records each refusal as a
+plugin diagnostic at error level, logs one `[plugins] hook registrations
+blocked for N plugin(s)` summary at Gateway startup, and lists the blocked hooks
+under `Blocked hook registrations` in `/status plugins`. Check there first when a
+plugin appears healthy but one of its hooks never fires; the diagnostic names the
+exact config key that unblocks it.
+
 ### Session extensions and next-turn injections
 
 Workflow plugins can persist small JSON-compatible session state with

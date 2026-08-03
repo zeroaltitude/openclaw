@@ -49,7 +49,7 @@ function readPluginId(pluginPath: string): string {
   return manifest.id;
 }
 
-async function loadPlugins(pluginPaths: string[], warnings?: string[]) {
+async function loadPlugins(pluginPaths: string[], warnings?: string[], errors?: string[]) {
   clearPluginLoaderCache();
   const allow = pluginPaths.map((pluginPath) => readPluginId(pluginPath));
   return loadOpenClawPlugins({
@@ -65,7 +65,7 @@ async function loadPlugins(pluginPaths: string[], warnings?: string[]) {
     logger: {
       info: () => {},
       debug: () => {},
-      error: () => {},
+      error: (message: string) => errors?.push(message),
       warn: (message: string) => warnings?.push(message),
     },
     onlyPluginIds: allow,
@@ -84,12 +84,12 @@ function requirePluginEntry(registry: LoadedPluginRegistry, pluginId: string): L
   return entry;
 }
 
-function requireWarning(warnings: string[], text: string): string {
-  const warning = warnings.find((candidate) => candidate.includes(text));
-  if (!warning) {
-    throw new Error(`expected warning containing ${text}`);
+function requireLogLine(lines: string[], text: string): string {
+  const line = lines.find((candidate) => candidate.includes(text));
+  if (!line) {
+    throw new Error(`expected log line containing ${text}`);
   }
-  return warning;
+  return line;
 }
 
 describe("graceful plugin initialization failure", () => {
@@ -198,10 +198,31 @@ describe("graceful plugin initialization failure", () => {
     const warnings: string[] = [];
     await loadPlugins([registerFailure.file, validationFailure.file], warnings);
 
-    const summary = requireWarning(warnings, "failed to initialize");
+    const summary = requireLogLine(warnings, "failed to initialize");
     expect(summary).toContain("register: warn-register");
     expect(summary).toContain("validation: warn-validation");
     expect(summary).toContain("openclaw plugins inspect <id> --runtime --json");
     expect(summary).toContain("openclaw plugins list");
+  });
+
+  // A hook-policy refusal leaves the plugin "loaded" and out of the failure summary, so
+  // without its own startup line the only record is a diagnostic nobody reads.
+  it("logs a startup summary for plugins whose hook registrations were blocked", async () => {
+    const blocked = writePlugin({
+      id: "blocked-hooks",
+      body: `module.exports = { id: "blocked-hooks", register(api) {
+        api.on("before_prompt_build", () => undefined);
+      } };`,
+    });
+
+    const errors: string[] = [];
+    const registry = await loadPlugins([blocked.file], undefined, errors);
+
+    expect(requirePluginEntry(registry, "blocked-hooks").status).toBe("loaded");
+    expect(registry.typedHooks).toStrictEqual([]);
+    const summary = requireLogLine(errors, "hook registrations blocked");
+    expect(summary).toContain("1 plugin(s) (blocked-hooks)");
+    expect(summary).toContain("those handlers will never run");
+    expect(summary).toContain("/status plugins");
   });
 });

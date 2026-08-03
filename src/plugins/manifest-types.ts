@@ -29,6 +29,7 @@ export type PluginBundleFormat = "codex" | "claude" | "cursor";
 export type PluginDiagnosticCode =
   | "channel-setup-failure"
   | "dashboard-declaration-invalid"
+  | "hook-registration-blocked"
   | "plugin-verification";
 
 /** Diagnostic emitted while discovering or validating plugins. */

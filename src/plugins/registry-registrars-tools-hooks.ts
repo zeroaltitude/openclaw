@@ -99,6 +99,21 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
   const { registry, registryParams, pluginsWithChannelRegistrationConflict, pushDiagnostic } =
     state;
 
+  // A refused typed hook leaves the plugin permanently degraded for the life of the
+  // process: `api.on()` resolves to no registration, the plugin cannot observe the
+  // refusal, and the handler never runs. That is an error, not a warning, and the
+  // shared code is what lets status surfaces list these separately from generic
+  // diagnostics once the startup scroll is gone.
+  const blockTypedHookRegistration = (record: PluginRecord, message: string) => {
+    pushDiagnostic({
+      level: "error",
+      code: "hook-registration-blocked",
+      pluginId: record.id,
+      source: record.source,
+      message: `${message}; the handler is not registered and will never run (see '/status plugins')`,
+    });
+  };
+
   const registerCodexAppServerExtensionFactory = (
     record: PluginRecord,
     factory: Parameters<OpenClawPluginApi["registerCodexAppServerExtensionFactory"]>[0],
@@ -430,34 +445,27 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
     }
     const effectiveHandler = handler;
     if (policy?.allowPromptInjection === false && isPromptInjectionHookName(effectiveHookName)) {
-      pushDiagnostic({
-        level: "warn",
-        pluginId: record.id,
-        source: record.source,
-        message: `typed hook "${effectiveHookName}" blocked by plugins.entries.${record.id}.hooks.allowPromptInjection=false`,
-      });
+      blockTypedHookRegistration(
+        record,
+        `typed hook "${effectiveHookName}" blocked by plugins.entries.${record.id}.hooks.allowPromptInjection=false`,
+      );
       return;
     }
     if (isConversationHookName(effectiveHookName)) {
       const explicitConversationAccess = policy?.allowConversationAccess;
       if (record.origin !== "bundled" && explicitConversationAccess !== true) {
-        pushDiagnostic({
-          level: "warn",
-          pluginId: record.id,
-          source: record.source,
-          message:
-            `typed hook "${effectiveHookName}" blocked because non-bundled plugins must set ` +
+        blockTypedHookRegistration(
+          record,
+          `typed hook "${effectiveHookName}" blocked because non-bundled plugins must set ` +
             `plugins.entries.${record.id}.hooks.allowConversationAccess=true`,
-        });
+        );
         return;
       }
       if (record.origin === "bundled" && explicitConversationAccess === false) {
-        pushDiagnostic({
-          level: "warn",
-          pluginId: record.id,
-          source: record.source,
-          message: `typed hook "${effectiveHookName}" blocked by plugins.entries.${record.id}.hooks.allowConversationAccess=false`,
-        });
+        blockTypedHookRegistration(
+          record,
+          `typed hook "${effectiveHookName}" blocked by plugins.entries.${record.id}.hooks.allowConversationAccess=false`,
+        );
         return;
       }
     }

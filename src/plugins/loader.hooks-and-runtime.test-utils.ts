@@ -1075,6 +1075,10 @@ ${channelPluginSource({
       ),
     );
     expect(blockedDiagnostics).toHaveLength(1);
+    expect(blockedDiagnostics[0]).toMatchObject({
+      level: "error",
+      code: "hook-registration-blocked",
+    });
   });
 
   it("blocks next-turn injections when prompt injection is disabled", () => {
@@ -1363,6 +1367,11 @@ ${channelPluginSource({
       ),
     );
     expect(blockedDiagnostics).toHaveLength(9);
+    expect(
+      blockedDiagnostics.every(
+        (diag) => diag.level === "error" && diag.code === "hook-registration-blocked",
+      ),
+    ).toBe(true);
   });
 
   it("allows conversation typed hooks for non-bundled plugins when explicitly enabled", () => {
