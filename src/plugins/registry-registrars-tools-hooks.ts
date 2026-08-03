@@ -101,12 +101,20 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
 
   // A refused typed hook leaves the plugin permanently degraded for the life of the
   // process: `api.on()` resolves to no registration, the plugin cannot observe the
-  // refusal, and the handler never runs. That is an error, not a warning, and the
-  // shared code is what lets status surfaces list these separately from generic
-  // diagnostics once the startup scroll is gone.
-  const blockTypedHookRegistration = (record: PluginRecord, message: string) => {
+  // refusal, and the handler never runs. The shared code is what lets status surfaces
+  // list these separately from generic diagnostics once the startup scroll is gone.
+  //
+  // Severity follows who chose the outcome. An operator who wrote `false` decided this,
+  // so it stays a warning; an implicit deny — a non-bundled plugin whose grant was never
+  // written, the branch that blinded every agent for four days — is nobody's decision and
+  // is an error.
+  const blockTypedHookRegistration = (
+    record: PluginRecord,
+    level: "error" | "warn",
+    message: string,
+  ) => {
     pushDiagnostic({
-      level: "error",
+      level,
       code: "hook-registration-blocked",
       pluginId: record.id,
       source: record.source,
@@ -447,6 +455,7 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
     if (policy?.allowPromptInjection === false && isPromptInjectionHookName(effectiveHookName)) {
       blockTypedHookRegistration(
         record,
+        "warn",
         `typed hook "${effectiveHookName}" blocked by plugins.entries.${record.id}.hooks.allowPromptInjection=false`,
       );
       return;
@@ -456,6 +465,7 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
       if (record.origin !== "bundled" && explicitConversationAccess !== true) {
         blockTypedHookRegistration(
           record,
+          "error",
           `typed hook "${effectiveHookName}" blocked because non-bundled plugins must set ` +
             `plugins.entries.${record.id}.hooks.allowConversationAccess=true`,
         );
@@ -464,6 +474,7 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
       if (record.origin === "bundled" && explicitConversationAccess === false) {
         blockTypedHookRegistration(
           record,
+          "warn",
           `typed hook "${effectiveHookName}" blocked by plugins.entries.${record.id}.hooks.allowConversationAccess=false`,
         );
         return;

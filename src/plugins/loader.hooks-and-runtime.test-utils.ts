@@ -1075,8 +1075,10 @@ ${channelPluginSource({
       ),
     );
     expect(blockedDiagnostics).toHaveLength(1);
+    // Deliberate operator denial: coded so status can list it, but a warning rather than
+    // an error because the operator chose this.
     expect(blockedDiagnostics[0]).toMatchObject({
-      level: "error",
+      level: "warn",
       code: "hook-registration-blocked",
     });
   });
@@ -1367,6 +1369,8 @@ ${channelPluginSource({
       ),
     );
     expect(blockedDiagnostics).toHaveLength(9);
+    // Implicit deny — the grant was never written, so nobody chose this outcome. This is
+    // the branch that blinded every agent for four days; it must be an error.
     expect(
       blockedDiagnostics.every(
         (diag) => diag.level === "error" && diag.code === "hook-registration-blocked",

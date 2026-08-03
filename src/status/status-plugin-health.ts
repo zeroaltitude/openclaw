@@ -208,10 +208,13 @@ function getReportableDiagnostics(snapshot: StatusPluginHealthSnapshot): PluginD
   );
 }
 
-// Blocked typed-hook registrations get their own chip and section: the plugin looks
-// healthy from every other angle (loaded, no load error, no dependency issue) while
-// one of its handlers silently never runs, so folding them into the generic
-// diagnostics tail is how the state stayed invisible for days at a time.
+// Blocked typed-hook registrations get their own section: the plugin looks healthy from
+// every other angle (loaded, no load error, no dependency issue) while one of its handlers
+// silently never runs, so folding them into the generic diagnostics tail is how the state
+// stayed invisible for days at a time. All of them are listed, so a plugin author can find
+// out why a hook never fires; only the error-level ones (an implicit deny nobody chose)
+// chip the compact line, so an operator who deliberately set the flag to `false` is not
+// nagged about their own decision on every status read.
 function getBlockedHookRegistrations(
   snapshot: StatusPluginHealthSnapshot,
 ): PluginDiagnosticRecord[] {
@@ -246,7 +249,9 @@ export function formatCompactPluginHealthLine(
   const loadErrors = snapshot.plugins.filter((plugin) => plugin.status === "error").length;
   const dependencyIssues = snapshot.plugins.filter(hasDependencyIssue).length;
   const diagnosticErrors = countProblemDiagnostics(getReportableDiagnostics(snapshot)).errors;
-  const blockedHookRegistrations = getBlockedHookRegistrations(snapshot).length;
+  const blockedHookRegistrations = getBlockedHookRegistrations(snapshot).filter(
+    (entry) => entry.level === "error",
+  ).length;
   const quarantines = snapshot.contextEngineQuarantines.length;
   const runtimeToolQuarantines = snapshot.runtimeToolQuarantines?.length ?? 0;
   const channelPluginFailures = snapshot.channelPluginFailures?.length ?? 0;
@@ -429,7 +434,7 @@ export function formatDetailedPluginHealth(snapshot: StatusPluginHealthSnapshot)
       `Blocked hook registrations: ${blockedHookRegistrations.length}`,
       ...blockedHookRegistrations.slice(0, 8).map((entry) => {
         const target = entry.pluginId ? `${entry.pluginId}: ` : "";
-        return `- ${target}${entry.message}`;
+        return `- ${entry.level.toUpperCase()} ${target}${entry.message}`;
       }),
     );
   }

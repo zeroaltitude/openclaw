@@ -725,12 +725,21 @@ to `false`.
 
 When one of those policies refuses a registration, the handler is never added to
 the registry and never runs, while the plugin itself still reports as loaded —
-`api.on(...)` cannot observe the refusal. OpenClaw records each refusal as a
-plugin diagnostic at error level, logs one `[plugins] hook registrations
-blocked for N plugin(s)` summary at Gateway startup, and lists the blocked hooks
-under `Blocked hook registrations` in `/status plugins`. Check there first when a
-plugin appears healthy but one of its hooks never fires; the diagnostic names the
-exact config key that unblocks it.
+`api.on(...)` cannot observe the refusal. OpenClaw records every refusal as a
+plugin diagnostic and lists them under `Blocked hook registrations` in
+`/status plugins` and in `openclaw plugins inspect <id> --runtime`. Check there
+first when a plugin appears healthy but one of its hooks never fires; the
+diagnostic names the exact config key that unblocks it.
+
+Severity depends on who chose the outcome:
+
+- A conversation hook from a non-bundled plugin whose `allowConversationAccess`
+  grant was **never written** is an implicit deny that nobody chose. It is
+  recorded at **error** level and summarized in one
+  `[plugins] hook registrations blocked for N plugin(s)` line at Gateway startup.
+- An explicit `allowConversationAccess: false` or `allowPromptInjection: false`
+  is a deliberate operator decision. It is recorded at **warn** level and still
+  listed in `/status plugins`, but it is not counted as a plugin health problem.
 
 ### Session extensions and next-turn injections
 

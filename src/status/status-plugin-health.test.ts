@@ -514,21 +514,45 @@ describe("plugin health status formatting", () => {
     contextEngineQuarantines: [],
   };
 
-  it("chips blocked hook registrations in the compact line", () => {
+  // A deliberate operator denial. Recorded and listed, but not a problem chip: the
+  // operator wrote `false` themselves and should not be nagged on every status read.
+  const deliberateDenialSnapshot: StatusPluginHealthSnapshot = {
+    plugins: [{ id: "chatty", status: "loaded", enabled: true }],
+    diagnostics: [
+      {
+        level: "warn",
+        code: "hook-registration-blocked",
+        pluginId: "chatty",
+        message:
+          'typed hook "llm_input" blocked by plugins.entries.chatty.hooks.allowConversationAccess=false; the handler is not registered and will never run',
+      },
+    ],
+    contextEngineQuarantines: [],
+  };
+
+  it("chips only error-level blocked hook registrations in the compact line", () => {
     expect(formatCompactPluginHealthLine(blockedHookSnapshot)).toBe(
       "⚠️ Plugins: 1 blocked hook registration",
     );
+    expect(formatCompactPluginHealthLine(deliberateDenialSnapshot)).toBeUndefined();
   });
 
-  it("lists blocked hook registrations in their own detailed section", () => {
+  it("lists blocked hook registrations in their own detailed section at either level", () => {
     const text = formatDetailedPluginHealth(blockedHookSnapshot);
 
     expect(text).toContain("Blocked hook registrations: 1");
     expect(text).toContain(
-      '- beads: typed hook "before_prompt_build" blocked because non-bundled plugins must set',
+      '- ERROR beads: typed hook "before_prompt_build" blocked because non-bundled plugins must set',
     );
     // Counted once: the blocked entry must not also inflate the generic diagnostics tail.
     expect(text).not.toContain("Diagnostics:");
-    expect(text).not.toContain("- ERROR beads:");
+
+    // A deliberate denial still gets listed — a plugin author debugging "why does my hook
+    // never fire" has to be able to find it — while the header stays OK.
+    const denial = formatDetailedPluginHealth(deliberateDenialSnapshot);
+    expect(denial.split("\n")[0]).toBe("🔌 Plugins: OK");
+    expect(denial).toContain("Blocked hook registrations: 1");
+    expect(denial).toContain('- WARN chatty: typed hook "llm_input" blocked by');
+    expect(denial).not.toContain("Diagnostics:");
   });
 });

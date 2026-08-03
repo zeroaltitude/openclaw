@@ -56,7 +56,7 @@ function installGatewayPluginRuntimeEnvironment(cfg: OpenClawConfig) {
 // plugin ids/source hints without exposing internal diagnostic objects.
 function logGatewayPluginDiagnostics(params: {
   diagnostics: PluginRegistry["diagnostics"];
-  log: Pick<GatewayPluginBootstrapLog, "error" | "info">;
+  log: Pick<GatewayPluginBootstrapLog, "error" | "info" | "warn">;
 }) {
   for (const diag of params.diagnostics) {
     const degradedPlugin = diag.pluginId ? findActiveDegradedPlugin(diag.pluginId) : undefined;
@@ -78,10 +78,14 @@ function logGatewayPluginDiagnostics(params: {
     const message = details
       ? `[plugins] ${diag.message} (${details})`
       : `[plugins] ${diag.message}`;
+    // `warn` diagnostics used to print through `log.info`, which collapsed a whole
+    // severity level into routine startup chatter — the blocked-hook refusal sat in the
+    // journal 41 times across four days without anyone reading it. Route each level to
+    // its own sink so a degraded plugin surface is greppable at the level it was recorded.
     if (diag.level === "error") {
       params.log.error(message);
     } else {
-      params.log.info(message);
+      params.log.warn(message);
     }
   }
 }

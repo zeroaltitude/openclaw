@@ -32,20 +32,24 @@ function registerConversationHook(params: {
 }
 
 describe("registerTypedHook policy blocks", () => {
-  // Each of these paths drops the handler for the life of the process while the
-  // plugin still reports as loaded. They must be errors carrying the shared code so
-  // status surfaces can list them after the startup scroll is gone.
+  // Each of these paths drops the handler for the life of the process while the plugin
+  // still reports as loaded, so all three carry the shared code and status surfaces can
+  // list them after the startup scroll is gone. Severity splits on who chose the outcome:
+  // an operator who wrote `false` gets a warning about their own decision, an implicit
+  // deny (grant never written) is an error because nobody chose it.
   it.each([
     {
       name: "prompt-injection hook with allowPromptInjection=false",
       origin: "bundled" as const,
       policy: { allowPromptInjection: false, allowConversationAccess: true },
+      level: "warn",
       expected: "blocked by plugins.entries.beads.hooks.allowPromptInjection=false",
     },
     {
       name: "non-bundled conversation hook without allowConversationAccess",
       origin: "config" as const,
       policy: undefined,
+      level: "error",
       expected:
         "blocked because non-bundled plugins must set plugins.entries.beads.hooks.allowConversationAccess=true",
     },
@@ -53,24 +57,28 @@ describe("registerTypedHook policy blocks", () => {
       name: "bundled conversation hook with allowConversationAccess=false",
       origin: "bundled" as const,
       policy: { allowConversationAccess: false },
+      level: "warn",
       expected: "blocked by plugins.entries.beads.hooks.allowConversationAccess=false",
     },
-  ])("reports $name as a coded error and registers nothing", ({ origin, policy, expected }) => {
-    const { registry, record } = registerConversationHook({ origin, policy });
+  ])(
+    "reports $name at $level with the shared code and registers nothing",
+    ({ origin, policy, level, expected }) => {
+      const { registry, record } = registerConversationHook({ origin, policy });
 
-    expect(registry.typedHooks).toStrictEqual([]);
-    expect(record.hookCount).toBe(0);
-    expect(registry.diagnostics).toHaveLength(1);
-    expect(registry.diagnostics[0]).toMatchObject({
-      level: "error",
-      code: "hook-registration-blocked",
-      pluginId: "beads",
-    });
-    expect(registry.diagnostics[0]?.message).toContain(expected);
-    // The consequence, not just the policy, must be stated: an operator reading one
-    // line has to learn the handler is dead and where to look for it later.
-    expect(registry.diagnostics[0]?.message).toContain("the handler is not registered");
-  });
+      expect(registry.typedHooks).toStrictEqual([]);
+      expect(record.hookCount).toBe(0);
+      expect(registry.diagnostics).toHaveLength(1);
+      expect(registry.diagnostics[0]).toMatchObject({
+        level,
+        code: "hook-registration-blocked",
+        pluginId: "beads",
+      });
+      expect(registry.diagnostics[0]?.message).toContain(expected);
+      // The consequence, not just the policy, must be stated: an operator reading one
+      // line has to learn the handler is dead and where to look for it later.
+      expect(registry.diagnostics[0]?.message).toContain("the handler is not registered");
+    },
+  );
 
   it("registers the hook and emits no diagnostic when the policy allows it", () => {
     const { registry } = registerConversationHook({

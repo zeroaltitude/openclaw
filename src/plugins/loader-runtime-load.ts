@@ -269,10 +269,15 @@ function loadOpenClawPluginsInternal(
       // A plugin whose hook policy refused a registration still reports as loaded, so
       // the per-hook diagnostics are the only record that part of it is dead. Summarize
       // them next to the failure summary so a degraded surface is stated at startup
-      // rather than left to be inferred from an unread diagnostic.
+      // rather than left to be inferred from an unread diagnostic. Error level only:
+      // the warn-level refusals are denials the operator wrote themselves, and they
+      // already print at their own level.
       const blockedHookPluginIds = uniqueValues(
         registry.diagnostics
-          .filter((diagnostic) => diagnostic.code === "hook-registration-blocked")
+          .filter(
+            (diagnostic) =>
+              diagnostic.code === "hook-registration-blocked" && diagnostic.level === "error",
+          )
           .map((diagnostic) => diagnostic.pluginId ?? "<unknown>"),
       );
       if (blockedHookPluginIds.length > 0) {
