@@ -388,6 +388,18 @@ export function tryResolveConfiguredAgentWorkspaceDir(
   return configured ? stripNullBytes(resolveUserPath(configured, env)) : undefined;
 }
 
+/** Resolves every configured agent's workspace directory, deduplicated. */
+export function resolveConfiguredAgentWorkspaceDirs(
+  cfg: OpenClawConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const dirs = new Set<string>();
+  for (const agentId of listAgentIds(cfg)) {
+    dirs.add(resolveAgentWorkspaceDir(cfg, agentId, env));
+  }
+  return Array.from(dirs);
+}
+
 export function resolveAgentDir(
   cfg: OpenClawConfig,
   agentId: string,
