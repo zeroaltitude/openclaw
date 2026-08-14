@@ -4,8 +4,11 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 /**
  * Detects message-tool-only sends that delivered a visible source reply.
  */
-import { isDeliveredMessageToolOnlySourceReplyResult } from "../../embedded-agent-message-tool-source-reply.js";
-import { messagingToolSendResolvesToCurrentSource } from "../../embedded-agent-subscribe.tools.js";
+import {
+  isDeliveredMessageToolOnlySourceReplyResult,
+  resolveMessageToolSourceReplyFinal,
+} from "../../embedded-agent-message-tool-source-reply.js";
+import { messagingToolSendResolvesToCurrentSource } from "../../embedded-agent-messaging-extraction.js";
 import type { AfterToolCallContext, AfterToolCallResult, Agent } from "../../runtime/index.js";
 
 function argsRecordForToolCall(context: AfterToolCallContext): Record<string, unknown> {
@@ -95,7 +98,9 @@ export function installMessageToolOnlyTerminalHook(
       })
     ) {
       params.onDeliveredSourceReply?.();
-      return hookResult;
+      if (resolveMessageToolSourceReplyFinal(argsRecordForToolCall(context))) {
+        return { ...hookResult, terminate: true };
+      }
     }
     return hookResult;
   };

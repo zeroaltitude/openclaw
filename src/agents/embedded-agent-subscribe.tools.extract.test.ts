@@ -6,7 +6,7 @@ import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/c
 import {
   extractMessagingToolSend,
   messagingToolSendResolvesToCurrentSource,
-} from "./embedded-agent-subscribe.tools.js";
+} from "./embedded-agent-messaging-extraction.js";
 
 function normalizeTelegramMessagingTargetForTest(raw: string): string | undefined {
   // Test normalizer mirrors channel plugins that canonicalize human targets

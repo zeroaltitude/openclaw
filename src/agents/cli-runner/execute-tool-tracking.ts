@@ -7,11 +7,16 @@ import {
   waitForMcpLoopbackToolCallCaptureIdle,
 } from "../../gateway/mcp-http.loopback-runtime.js";
 import { shouldUseInternalSourceReplySink } from "../../infra/outbound/internal-source-reply.js";
-import type { CliOutput, CliToolUseStartDelta } from "../cli-output.js";
+import type { CliOutput, CliToolUseStartDelta } from "../cli-output-contracts.js";
 import {
   isDeliveredMessageToolOnlySourceReplyResult,
   isDeliveredMessagingToolResult,
+  resolveMessageToolSourceReplyFinal,
 } from "../embedded-agent-message-tool-source-reply.js";
+import {
+  extractMessagingToolSendResult,
+  extractMessagingToolSourceReplyPayload,
+} from "../embedded-agent-messaging-extraction.js";
 import {
   isMessagingTool,
   isMessagingToolDeliveryAction,
@@ -21,11 +26,7 @@ import type {
   MessagingToolSend,
   MessagingToolSourceReplyPayload,
 } from "../embedded-agent-messaging.types.js";
-import {
-  extractMessagingToolSendResult,
-  extractMessagingToolSourceReplyPayload,
-} from "../embedded-agent-subscribe.tools.js";
-import { rotateClaudeLiveMcpCaptureKeyForContext } from "./claude-live-session.js";
+import { closeClaudeSession } from "./claude-live-registry.js";
 import { attachCliMessagingDeliveryEvidence } from "./delivery-evidence.js";
 import {
   appendUniqueCliMessagingEvidence,
@@ -227,6 +228,28 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
     const toolArgs = params.args ?? {};
     const isMessagingSend = isMessagingToolSendAction(params.toolName, toolArgs);
     const content = isMessagingSend ? extractCliMessagingContent(toolArgs, params.result) : {};
+    const deliveredCurrentSourceReply =
+      isMessagingSend &&
+      isDeliveredMessageToolOnlySourceReplyResult({
+        sourceReplyDeliveryMode: context.params.sourceReplyDeliveryMode,
+        toolName: params.toolName,
+        args: params.args,
+        result: params.result,
+        isError: params.isError,
+        // Loopback sends never carry the gateway's trusted current-source route
+        // tag: the turn capability that mints it is not threaded into the CLI
+        // subprocess MCP server. Verify the route here so an explicit-route
+        // reply to the current source still counts as delivered and does not
+        // trip stranded-reply recovery (openclaw-kg9).
+        allowExplicitSourceRoute: cliSendResolvesToCurrentSource(
+          context,
+          params.toolName,
+          toolArgs,
+        ),
+      });
+    const sourceReplyFinal = deliveredCurrentSourceReply
+      ? resolveMessageToolSourceReplyFinal(toolArgs)
+      : undefined;
     if (isMessagingSend) {
       appendUniqueCliMessagingEvidence(
         messagingToolSentTexts,
@@ -238,26 +261,7 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
         messagingToolSentMediaUrlKeys,
         content.mediaUrls ?? [],
       );
-      if (
-        isDeliveredMessageToolOnlySourceReplyResult({
-          sourceReplyDeliveryMode: context.params.sourceReplyDeliveryMode,
-          toolName: params.toolName,
-          args: params.args,
-          result: params.result,
-          isError: params.isError,
-          // Loopback sends never carry the gateway's trusted current-source
-          // route tag (the turn capability that mints it is not threaded
-          // into the CLI subprocess MCP server). The runner verifies the
-          // route itself so an explicit-route reply to the current source
-          // still counts as delivered and does not trip stranded-reply
-          // recovery (openclaw-kg9).
-          allowExplicitSourceRoute: cliSendResolvesToCurrentSource(
-            context,
-            params.toolName,
-            toolArgs,
-          ),
-        })
-      ) {
+      if (deliveredCurrentSourceReply) {
         didDeliverSourceReplyViaMessageTool = true;
         const payload = extractMessagingToolSourceReplyPayload(params.result);
         if (payload) {
@@ -266,7 +270,10 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
           }
           // Each internal source-reply send is a distinct delivery, even when
           // two intentional sends have identical text or media.
-          messagingToolSourceReplyPayloads.push(payload);
+          messagingToolSourceReplyPayloads.push({
+            ...payload,
+            ...(sourceReplyFinal !== undefined ? { sourceReplyFinal } : {}),
+          });
         }
       }
     }
@@ -276,6 +283,7 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
     const targetWithContent = {
       ...extractMessagingToolSendResult(params.target, params.result),
       ...content,
+      ...(sourceReplyFinal !== undefined ? { sourceReplyFinal } : {}),
     };
     const evidenceKey = buildMessagingToolSendEvidenceKey(targetWithContent);
     if (messagingToolSentTargetKeys.has(evidenceKey)) {
@@ -544,7 +552,7 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
         return;
       }
       if (params.useManagedClaudeLiveSession) {
-        await rotateClaudeLiveMcpCaptureKeyForContext(context);
+        await closeClaudeSession(context, "mcp-capture-rotation");
       }
       const internalStates = await Promise.all(
         Array.from(inFlightPreparedMessagingCalls).map(isPreparedInternalSourceReply),
