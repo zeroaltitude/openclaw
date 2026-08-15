@@ -335,7 +335,9 @@ function resolveCompatiblePluginMetadataSnapshot(
   }
   const requestedWorkspaceDir =
     params.workspaceDir ??
-    (params.allowWorkspaceScopedSnapshot === true ? snapshot.workspaceDir : undefined);
+    (params.allowWorkspaceScopedSnapshot === true || options.scopedOwnerContext === true
+      ? snapshot.workspaceDir
+      : undefined);
   if (snapshot.workspaceDir !== undefined && requestedWorkspaceDir === undefined) {
     return undefined;
   }
