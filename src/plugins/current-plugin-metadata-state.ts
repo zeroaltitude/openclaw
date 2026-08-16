@@ -14,6 +14,8 @@ type CurrentPluginMetadataMutableState = {
   compatiblePolicyHashes: readonly string[] | undefined;
   compatibleConfigFingerprints: readonly string[] | undefined;
   manifestModelIdNormalizationRecords: readonly ManifestModelIdNormalizationRecord[] | undefined;
+  /** Workspace dirs whose agents may reuse this snapshot without re-discovery. */
+  compatibleWorkspaceDirs: readonly string[] | undefined;
   // Temporary snapshot owners compare this publication token before restoring;
   // lifecycle clears and newer publications must always win.
   revision: CurrentPluginMetadataSnapshotRevision;
@@ -31,6 +33,7 @@ const state = resolveGlobalSingleton<CurrentPluginMetadataMutableState>(
     compatiblePolicyHashes: undefined,
     compatibleConfigFingerprints: undefined,
     manifestModelIdNormalizationRecords: undefined,
+    compatibleWorkspaceDirs: undefined,
     revision: Symbol("plugin-metadata-snapshot"),
     configIdentities: new WeakSet<OpenClawConfig>(),
   }),
@@ -62,6 +65,7 @@ export function setCurrentPluginMetadataSnapshotState(
   compatiblePolicyHashes?: readonly string[],
   compatibleConfigFingerprints?: readonly string[],
   manifestModelIdNormalizationRecords?: readonly ManifestModelIdNormalizationRecord[],
+  compatibleWorkspaceDirs?: readonly string[],
 ): CurrentPluginMetadataSnapshotRevision {
   state.snapshot = snapshot;
   state.configFingerprint = snapshot ? configFingerprint : undefined;
@@ -70,6 +74,7 @@ export function setCurrentPluginMetadataSnapshotState(
   state.manifestModelIdNormalizationRecords = snapshot
     ? manifestModelIdNormalizationRecords
     : undefined;
+  state.compatibleWorkspaceDirs = snapshot ? compatibleWorkspaceDirs : undefined;
   setCurrentManifestModelIdNormalizationRecords(state.manifestModelIdNormalizationRecords);
   state.revision = Symbol("plugin-metadata-snapshot");
   return state.revision;
@@ -82,6 +87,7 @@ function clearCurrentPluginMetadataSnapshotState(): CurrentPluginMetadataSnapsho
   state.compatiblePolicyHashes = undefined;
   state.compatibleConfigFingerprints = undefined;
   state.manifestModelIdNormalizationRecords = undefined;
+  state.compatibleWorkspaceDirs = undefined;
   setCurrentManifestModelIdNormalizationRecords(undefined);
   state.revision = Symbol("plugin-metadata-snapshot");
   return state.revision;
@@ -100,6 +106,7 @@ export function getCurrentPluginMetadataSnapshotState(): {
   compatiblePolicyHashes: readonly string[] | undefined;
   compatibleConfigFingerprints: readonly string[] | undefined;
   manifestModelIdNormalizationRecords: readonly ManifestModelIdNormalizationRecord[] | undefined;
+  compatibleWorkspaceDirs: readonly string[] | undefined;
   revision: CurrentPluginMetadataSnapshotRevision;
 } {
   return {
@@ -108,6 +115,7 @@ export function getCurrentPluginMetadataSnapshotState(): {
     compatiblePolicyHashes: state.compatiblePolicyHashes,
     compatibleConfigFingerprints: state.compatibleConfigFingerprints,
     manifestModelIdNormalizationRecords: state.manifestModelIdNormalizationRecords,
+    compatibleWorkspaceDirs: state.compatibleWorkspaceDirs,
     revision: state.revision,
   };
 }
