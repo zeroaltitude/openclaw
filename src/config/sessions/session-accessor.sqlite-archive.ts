@@ -35,6 +35,13 @@ export type SessionStateDeletePlan = {
 
 export type MaterializedSessionStateDeletePlan = SessionStateDeletePlan & {
   archivedTranscript: SessionLifecycleArchivedTranscript | null;
+  /**
+   * Set only when this materialization *created* the archive file, so a caller
+   * that later abandons the delete can remove exactly what it wrote. A reused
+   * archive (an identical one already existed) is somebody else's durable
+   * artifact and must survive our rollback.
+   */
+  createdArchivePath: string | null;
 };
 
 export type TranscriptArchiveWorkerPlan = Pick<
@@ -44,6 +51,8 @@ export type TranscriptArchiveWorkerPlan = Pick<
 
 export type TranscriptArchiveWorkerResult = {
   archivedPath: string | null;
+  /** True when the worker wrote this archive rather than reusing a match. */
+  created: boolean;
   sessionId: string;
 };
 
@@ -121,16 +130,31 @@ function findMatchingSqliteTranscriptArchive(params: {
 }
 
 /** Writes or reuses a transcript archive and returns its durable path. */
+/** Writes or reuses a transcript archive and returns its durable path. */
 export function writeTranscriptArchive(params: {
   archiveDirectory: string;
   content: string;
   reason: SessionArchiveReason;
   sessionId: string;
 }): string {
+  return writeTranscriptArchiveWithStatus(params).path;
+}
+
+/**
+ * Same as {@link writeTranscriptArchive}, but reports whether this call wrote
+ * the file. Only a caller that created an archive may delete it on rollback;
+ * reusing a pre-existing match must never license removing it.
+ */
+export function writeTranscriptArchiveWithStatus(params: {
+  archiveDirectory: string;
+  content: string;
+  reason: SessionArchiveReason;
+  sessionId: string;
+}): { path: string; created: boolean } {
   fs.mkdirSync(params.archiveDirectory, { recursive: true });
   const existing = findMatchingSqliteTranscriptArchive(params);
   if (existing) {
-    return existing;
+    return { path: existing, created: false };
   }
   // Archives are the long-lived cold tier; compress when the runtime can so
   // keep-forever retention stays cheap. Plain JSONL is the Bun/older fallback.
@@ -157,7 +181,7 @@ export function writeTranscriptArchive(params: {
         fs.rmSync(archivePath, { force: true });
         throw new Error(`SQLite transcript archive verification failed for ${params.sessionId}`);
       }
-      return archivePath;
+      return { path: archivePath, created: true };
     } catch (error) {
       fs.rmSync(tempPath, { force: true });
       if ((error as { code?: unknown })?.code === "EEXIST") {
@@ -282,7 +306,7 @@ export async function materializeSessionStateDeletePlans(
 
   return deduped.map((plan) => {
     if (!plan.archiveTranscript) {
-      return Object.assign({}, plan, { archivedTranscript: null });
+      return Object.assign({}, plan, { archivedTranscript: null, createdArchivePath: null });
     }
     const result = resultBySessionId.get(plan.sessionId);
     if (!result) {
@@ -294,8 +318,37 @@ export async function materializeSessionStateDeletePlans(
           sourcePath: path.join(plan.archiveDirectory, `${plan.sessionId}.jsonl`),
         }
       : null;
-    return Object.assign({}, plan, { archivedTranscript });
+    return Object.assign({}, plan, {
+      archivedTranscript,
+      createdArchivePath: result.created ? result.archivedPath : null,
+    });
   });
+}
+
+/**
+ * Removes archives this materialization created, for a caller that decided not
+ * to proceed with the delete after all.
+ *
+ * Materialization writes archives *before* the write transaction, so an
+ * abandoned delete would otherwise strand a durable file describing a session
+ * that still exists. Only `createdArchivePath` entries are removed: a reused
+ * archive predates this call and is not ours to discard. Best-effort by design
+ * — a failed unlink leaves a harmless orphan, whereas throwing here would mask
+ * the original reason the caller was rolling back.
+ */
+export function discardCreatedSessionStateArchives(
+  plans: readonly MaterializedSessionStateDeletePlan[],
+): void {
+  for (const plan of plans) {
+    if (!plan.createdArchivePath) {
+      continue;
+    }
+    try {
+      fs.rmSync(plan.createdArchivePath, { force: true });
+    } catch {
+      // Intentionally ignored; see the note above.
+    }
+  }
 }
 
 // Multiple removed entries can point at one transcript session. If any owner

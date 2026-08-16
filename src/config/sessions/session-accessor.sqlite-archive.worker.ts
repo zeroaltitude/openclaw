@@ -9,7 +9,7 @@ import {
   type TranscriptArchiveWorkerMessage,
   type TranscriptArchiveWorkerPlan,
   type TranscriptArchiveWorkerResult,
-  writeTranscriptArchive,
+  writeTranscriptArchiveWithStatus,
 } from "./session-accessor.sqlite-archive.js";
 import { readSessionStateDeleteSnapshot } from "./session-accessor.sqlite-delete-snapshot.js";
 import { serializeJsonlLines } from "./transcript-jsonl.js";
@@ -138,16 +138,20 @@ export function materializeTranscriptArchiveInWorker(
     );
   }
   const { content } = opened.value;
-  const archivedPath =
+  const written =
     content.length > 0
-      ? writeTranscriptArchive({
+      ? writeTranscriptArchiveWithStatus({
           archiveDirectory: plan.archiveDirectory,
           content,
           reason: plan.reason,
           sessionId: plan.sessionId,
         })
       : null;
-  return { archivedPath, sessionId: plan.sessionId };
+  return {
+    archivedPath: written?.path ?? null,
+    created: written?.created ?? false,
+    sessionId: plan.sessionId,
+  };
 }
 
 function runWorkerPort(
