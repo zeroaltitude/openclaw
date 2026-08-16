@@ -1,4 +1,4 @@
-import { listAgentIds } from "../agents/agent-scope-config.js";
+import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { scheduleGatewayIdleTask, type GatewayIdleTaskHandle } from "./server-idle-task.js";
@@ -83,6 +83,30 @@ function dashboardDataPrewarmItems(
         await prewarmGatewaySessionListData(cfg, agentId);
       },
     })),
+    // Dispatch resolves the runtime plugin registry under a per-agent-workspace
+    // cache key; a cold key pays a multi-second synchronous load that freezes
+    // the whole event loop on that agent's FIRST message. Warm every
+    // configured workspace's key here instead, while nobody is waiting.
+    ...resolveConfiguredAgentWorkspaceDirsForPrewarm(cfg).map((workspaceDir, index) => ({
+      name: `runtime-plugins.${index}`,
+      load: async () => {
+        const { loadAgentRuntimePluginRegistryHandle } =
+          await import("../agents/runtime-plugins.js");
+        loadAgentRuntimePluginRegistryHandle({ config: cfg, workspaceDir });
+      },
+    })),
+    // getReply resolves the published model-catalog owner per agent before its
+    // first traced phase; a cold catalog runs live provider discovery (5s
+    // timeout per provider) plus a manifest-model scan — measured 16s on an
+    // agent's first message. Warm each agent's catalog after the registries.
+    ...agentIds.map((agentId) => ({
+      name: `model-catalog.${agentId}`,
+      load: async () => {
+        const { loadResolvedPublishedModelCatalogOwner } =
+          await import("../agents/prepared-model-catalog.js");
+        await loadResolvedPublishedModelCatalogOwner({ agentId });
+      },
+    })),
     {
       name: "plugins",
       load: async () => {
@@ -91,6 +115,19 @@ function dashboardDataPrewarmItems(
       },
     },
   ];
+}
+
+/**
+ * Every configured agent's workspace dir, deduplicated. Kept local so this
+ * branch builds standalone against origin/main; a sibling branch introduces the
+ * same helper in agent-scope-config, and whichever lands first wins on merge.
+ */
+function resolveConfiguredAgentWorkspaceDirsForPrewarm(cfg: OpenClawConfig): string[] {
+  const dirs = new Set<string>();
+  for (const agentId of listAgentIds(cfg)) {
+    dirs.add(resolveAgentWorkspaceDir(cfg, agentId));
+  }
+  return Array.from(dirs);
 }
 
 export function scheduleGatewayHandlerPrewarm(params: {

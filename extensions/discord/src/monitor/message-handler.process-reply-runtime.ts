@@ -3,6 +3,7 @@ import {
   createChannelMessageReplyPipeline,
   resolveChannelStreamingBlockEnabled,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { logInfo } from "openclaw/plugin-sdk/logging-core";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import { resolveChunkMode } from "openclaw/plugin-sdk/reply-chunking";
 import { createChannelHistoryWindow } from "openclaw/plugin-sdk/reply-history";
@@ -14,6 +15,7 @@ import { readLatestAssistantTextByIdentity } from "openclaw/plugin-sdk/session-t
 import { resolveDiscordMaxLinesPerMessage } from "../accounts.js";
 import { discordInboundEventDelivery } from "../inbound-event-delivery.js";
 import type { RequestClient } from "../internal/discord.js";
+import { resolveTimestampMs } from "./format.js";
 import { buildDiscordMessageProcessContext } from "./message-handler.context.js";
 import { createDiscordDraftPreviewController } from "./message-handler.draft-preview.js";
 import type { DiscordMessagePreflightContext } from "./message-handler.preflight.js";
@@ -93,6 +95,7 @@ export function createDiscordMessageReplyRuntime(params: {
     guildHistories,
     historyLimit,
     textLimit,
+    message,
     messageChannelId,
     isDirectMessage,
     route,
@@ -101,6 +104,7 @@ export function createDiscordMessageReplyRuntime(params: {
   const typingChannelId = deliverTarget.startsWith("channel:")
     ? deliverTarget.slice("channel:".length)
     : messageChannelId;
+  let typingLatencyLogged = false;
   let typingFeedback: ReturnType<typeof createDiscordReplyTypingFeedback> | undefined;
   const getTypingFeedback = () =>
     (typingFeedback ??= createDiscordReplyTypingFeedback({
@@ -121,7 +125,42 @@ export function createDiscordMessageReplyRuntime(params: {
     // The core lifecycle reaches this callback only after reply admission.
     // Silent pre-dispatch outcomes therefore never allocate or emit feedback.
     typingCallbacks: {
-      onReplyStart: () => getTypingFeedback().onReplyStart(),
+      onReplyStart: () => {
+        // Inbound→typing latency, recorded where it happens: sinceMessageMs is
+        // the user-perceived gap (Discord message creation → first typing
+        // call, network + ingress + preflight included); sinceDispatchMs
+        // isolates the post-dispatch share. Their difference is the
+        // pre-dispatch (ingress/prune/preflight) share — the segment invisible
+        // to gateway-internal prompt_build→first_llm timing.
+        if (!typingLatencyLogged) {
+          typingLatencyLogged = true;
+          const now = Date.now();
+          const messageTimestampMs = resolveTimestampMs(message.timestamp) ?? 0;
+          // logInfo is the always-on console emitter (journald-visible). NOT the
+          // runtime-env `info`, which is a theme FORMATTER that discards its
+          // output — that identifier mixup silenced this metric once already.
+          // Discord stamps the message on its own clock, we read ours, and the
+          // two are not synchronised. A raw negative therefore means "typing
+          // fired before the message existed", which is impossible: the true
+          // gap was smaller than the local/remote clock drift. Clamp to 0 and
+          // say so, so a reader treats it as sub-drift rather than as a real
+          // measurement or a bug. Unclamped this also silently under-reports
+          // every sample by the drift amount.
+          const rawSinceMessageMs = messageTimestampMs > 0 ? now - messageTimestampMs : undefined;
+          const sinceMessage =
+            rawSinceMessageMs === undefined
+              ? ""
+              : rawSinceMessageMs < 0
+                ? ` sinceMessageMs=0 sinceMessageClamped=true rawSinceMessageMs=${rawSinceMessageMs}` +
+                  ` (negative: gap within local/remote clock drift)`
+                : ` sinceMessageMs=${rawSinceMessageMs}`;
+          logInfo(
+            `[discord] inbound→typing latency channel=${typingChannelId}${sinceMessage} ` +
+              `sinceDispatchMs=${now - params.dispatchStartedAt}`,
+          );
+        }
+        return getTypingFeedback().onReplyStart();
+      },
       onIdle: () => typingFeedback?.onIdle?.(),
       onCleanup: () => typingFeedback?.onCleanup?.(),
     },
