@@ -308,6 +308,54 @@ export function extractMessagingToolSend(
     : undefined;
 }
 
+/**
+ * Whether a `message` tool send with an explicit route (channel/to/target)
+ * resolves to the same destination an implicit (routeless) send would resolve
+ * to right now, and so is a source reply rather than an unrelated outbound
+ * side effect.
+ *
+ * The gateway's trusted `sourceReplyRoute: "current-source"` result tag is only
+ * applied when a signed message-action turn capability accompanies the call,
+ * and not every embedded call site threads that capability through. Where it is
+ * missing, the caller can verify the route itself by resolving the explicit
+ * target and the routeless reference through the same extraction path and
+ * comparing the results.
+ */
+export function messagingToolSendResolvesToCurrentSource(
+  toolName: string,
+  args: Record<string, unknown>,
+  currentProvider: string | undefined,
+  options: Parameters<typeof extractMessagingToolSend>[2],
+): boolean {
+  const hasExplicitProvider =
+    Boolean(normalizeOptionalString(args.provider)) ||
+    Boolean(normalizeOptionalString(args.channel));
+  const targetArgs =
+    !hasExplicitProvider && currentProvider ? { ...args, provider: currentProvider } : args;
+  const target = extractMessagingToolSend(toolName, targetArgs, options);
+  const targetTo = normalizeOptionalString(target?.to);
+  if (!targetTo) {
+    return false;
+  }
+  // The same action with no explicit route resolves to the current source.
+  const referenceArgs: Record<string, unknown> = {
+    action: normalizeOptionalString(args.action) ?? "send",
+  };
+  if (currentProvider) {
+    referenceArgs.provider = currentProvider;
+  }
+  const reference = extractMessagingToolSend(toolName, referenceArgs, options);
+  const referenceTo = normalizeOptionalString(reference?.to);
+  if (!referenceTo) {
+    return false;
+  }
+  return (
+    targetTo === referenceTo &&
+    normalizeOptionalLowercaseString(target?.provider) ===
+      normalizeOptionalLowercaseString(reference?.provider)
+  );
+}
+
 /** Reconciles pending send evidence with the provider's successful action result. */
 export function extractMessagingToolSendResult(
   pending: MessagingToolSend,
