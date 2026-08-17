@@ -285,6 +285,7 @@ type AgentRuntimeReplyPayload = {
   isFallbackNotice?: boolean;
   isStatusNotice?: boolean;
   channelData?: Record<string, unknown>;
+  preserveDraftPreview?: boolean;
 };
 
 /** Stable section IDs for provider system prompt overrides. */

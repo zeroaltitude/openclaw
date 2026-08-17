@@ -14,6 +14,7 @@
   "runtime-doctor",
   "runtime-doctor-migrations",
   "runtime-env",
+  "host-env-security",
   "proxy-capture",
   "setup",
   "setup-runtime",
