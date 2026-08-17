@@ -26,6 +26,10 @@ import type {
   MessagingToolSend,
   MessagingToolSourceReplyPayload,
 } from "../embedded-agent-messaging.types.js";
+import {
+  extractToolResultMediaArtifact,
+  filterToolResultMediaUrls,
+} from "../embedded-agent-tool-media.js";
 import { closeClaudeSession } from "./claude-live-registry.js";
 import { attachCliMessagingDeliveryEvidence } from "./delivery-evidence.js";
 import {
@@ -67,6 +71,7 @@ type ActiveCliTool = {
 export function createCliToolTracking(context: PreparedCliRunContext) {
   let gatewayCaptureKey: string | undefined;
   let yielded = false;
+  let yieldAcknowledgment: string | undefined;
   let didSendViaMessagingTool = false;
   let didDeliverSourceReplyViaMessageTool = false;
   let inFlightUnclassifiedMcpRequests = 0;
@@ -86,6 +91,10 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
   const messagingToolSentTargets: MessagingToolSend[] = [];
   const messagingToolSentTargetKeys = new Set<string>();
   const messagingToolSourceReplyPayloads: MessagingToolSourceReplyPayload[] = [];
+  const toolMediaUrls: string[] = [];
+  const toolMediaUrlKeys = new Set<string>();
+  let toolAudioAsVoice = false;
+  let toolTrustedLocalMedia = false;
   const matchesCliLoopbackCall = (
     toolName: string,
     toolArgs: Record<string, unknown>,
@@ -318,6 +327,7 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
           currentChannelId: context.params.currentChannelId,
           currentThreadTs: context.params.currentThreadTs,
           currentMessageId: context.params.currentMessageId,
+          replyToMode: context.params.replyToMode,
         },
       },
       call.args,
@@ -339,8 +349,9 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
       isMessagingToolDeliveryAction(normalizeCliMessagingToolName(toolName), toolArgs);
     beginMcpLoopbackToolCallCapture({
       captureKey,
-      onYield: () => {
+      onYield: (_message, acknowledgment) => {
         yielded = true;
+        yieldAcknowledgment = acknowledgment;
       },
       onRequestStart: () => {
         inFlightUnclassifiedMcpRequests += 1;
@@ -433,6 +444,16 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
             result: "result" in call ? call.result : undefined,
             isError: call.outcome !== "completed",
           });
+        } else if (call.outcome === "completed" && "result" in call) {
+          const artifact = extractToolResultMediaArtifact(call.result);
+          const mediaUrls = artifact
+            ? filterToolResultMediaUrls(toolName, artifact.mediaUrls, call.result)
+            : [];
+          appendUniqueCliMessagingEvidence(toolMediaUrls, toolMediaUrlKeys, mediaUrls);
+          if (mediaUrls.length > 0) {
+            toolAudioAsVoice ||= artifact?.audioAsVoice === true;
+            toolTrustedLocalMedia ||= artifact?.trustedLocalMedia === true;
+          }
         }
       },
     });
@@ -602,6 +623,9 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
     messagingToolSentMediaUrls,
     messagingToolSentTargets,
     messagingToolSourceReplyPayloads,
+    toolMediaUrls,
+    toolAudioAsVoice,
+    toolTrustedLocalMedia,
   });
   return {
     beginGatewayCapture,
@@ -615,6 +639,7 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
       return {
         ...output,
         ...(yielded ? { yielded: true as const } : {}),
+        ...(yieldAcknowledgment ? { yieldAcknowledgment } : {}),
         ...(current.didSendViaMessagingTool ? { didSendViaMessagingTool: true } : {}),
         ...(current.didDeliverSourceReplyViaMessageTool
           ? { didDeliverSourceReplyViaMessageTool: true }
@@ -631,6 +656,11 @@ export function createCliToolTracking(context: PreparedCliRunContext) {
         ...(current.messagingToolSourceReplyPayloads.length > 0
           ? { messagingToolSourceReplyPayloads: current.messagingToolSourceReplyPayloads.slice() }
           : {}),
+        ...(current.toolMediaUrls.length > 0
+          ? { toolMediaUrls: current.toolMediaUrls.slice() }
+          : {}),
+        ...(current.toolAudioAsVoice ? { toolAudioAsVoice: true } : {}),
+        ...(current.toolTrustedLocalMedia ? { toolTrustedLocalMedia: true } : {}),
       };
     },
     attachDeliveryEvidence(error: unknown) {
