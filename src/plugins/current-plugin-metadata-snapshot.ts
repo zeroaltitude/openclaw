@@ -32,6 +32,8 @@ type CurrentPluginMetadataSnapshotOptions = {
   /** Workspace dirs whose agents may reuse this snapshot without re-discovery. */
   compatibleWorkspaceDirs?: readonly string[];
   env?: NodeJS.ProcessEnv;
+  /** Only immutable runtime generations may trust identity across policy drift. */
+  trustConfigIdentity?: boolean;
   workspaceDir?: string;
 };
 
@@ -286,7 +288,11 @@ export function withPluginMetadataSnapshotScope<T>(
   const configIdentities = new WeakSet<OpenClawConfig>();
   if (options.config) {
     const policyHash = resolveInstalledPluginIndexPolicyHash(options.config);
-    if (policyHash === snapshot.policyHash || compatiblePolicyHashes?.includes(policyHash)) {
+    if (
+      options.trustConfigIdentity === true ||
+      policyHash === snapshot.policyHash ||
+      compatiblePolicyHashes?.includes(policyHash)
+    ) {
       configIdentities.add(options.config);
     }
   }
