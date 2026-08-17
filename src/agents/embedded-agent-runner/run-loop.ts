@@ -308,11 +308,18 @@ export async function runPreparedEmbeddedLoop(
       hookContext: hookCtx,
       sessionPromptState,
     });
+    startupStages.mark("compaction-runtime");
     let authRetryPending = false;
     let accumulatedReplayState = createEmbeddedRunReplayState();
     const mcpAttemptCarryover = createMcpAttemptCarryover();
     while (true) {
       refreshPreparedRuntimeSnapshot();
+      // First-attempt diagnostics only; later iterations reuse the tracker
+      // whose summary has already been emitted. Main replaced the raw
+      // iteration counter with the retry budget, so key off attemptsDispatched.
+      if (runRetryBudget.attemptsDispatched === 0) {
+        startupStages.mark("runtime-snapshot");
+      }
       if (isRunRetryBudgetExhausted(runRetryBudget)) {
         const message =
           `Exceeded retry limit after ${runRetryBudget.attemptsDispatched} attempts ` +
