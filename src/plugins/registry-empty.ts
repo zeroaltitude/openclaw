@@ -68,5 +68,6 @@ export function createEmptyPluginRegistry(): PluginRegistry {
     sessionActions: [],
     conversationBindingResolvedHandlers: [],
     diagnostics: [],
+    blockedHooks: [],
   };
 }
