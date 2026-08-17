@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { resolveCronSessionRetentionMs } from "../../cron/session-retention.js";
 import { getLogger } from "../../logging/logger.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.js";
@@ -13,6 +14,10 @@ import {
   type SessionDiskBudgetSweepResult,
   type SessionUnreferencedArtifactSweepResult,
 } from "./disk-budget.js";
+import {
+  sweepTombstonedCronRunRemnantsForStore,
+  type SessionTombstoneSweepResult,
+} from "./cleanup-tombstones.js";
 import { resolveSessionStorePathCore } from "./paths.js";
 import {
   applySessionEntryLifecycleMutation,
@@ -51,6 +56,11 @@ export type SessionsCleanupOptions = SessionStoreSelectionOptions & {
   json?: boolean;
   fixMissing?: boolean;
   fixDmScope?: boolean;
+  /**
+   * Also reap aged cron-run rows whose entry_json is not a parseable canonical
+   * placeholder. Unsafe by default-off: see sweepTombstonedCronRunRemnants.
+   */
+  sweepUnidentifiedCronRemnants?: boolean;
 };
 
 type SessionCleanupAction =
@@ -74,6 +84,7 @@ export type SessionCleanupSummary = {
   pruned: number;
   capped: number;
   unreferencedArtifacts: SessionUnreferencedArtifactSweepResult;
+  tombstoneRemnants: SessionTombstoneSweepResult | null;
   diskBudget: SessionDiskBudgetSweepResult | null;
   wouldMutate: boolean;
   applied?: true;
@@ -359,6 +370,7 @@ async function previewStoreCleanup(params: {
   activeKey?: string;
   fixMissing?: boolean;
   fixDmScope?: boolean;
+  sweepUnidentifiedCronRemnants?: boolean;
 }) {
   const beforeStore = loadCleanupSessionStore(params.target, {
     createIfMissing: !params.dryRun,
@@ -455,6 +467,14 @@ async function previewStoreCleanup(params: {
     storePath: params.target.storePath,
     keys: dmScopeRetiredKeys,
   });
+  const tombstoneRemnants = await sweepTombstonedCronRunRemnantsForStore({
+    agentId: params.target.agentId,
+    storePath: params.target.storePath,
+    sqlitePath: resolveCleanupSqlitePath(params.target),
+    retentionMs: resolveCronSessionRetentionMs(params.cfg.cron),
+    dryRun: true,
+    includeUnidentifiedPlaceholders: params.sweepUnidentifiedCronRemnants,
+  });
   const diskBudgetPreview = fs.existsSync(resolveCleanupSqlitePath(params.target))
     ? await inspectSqliteSessionHistoryDiskBudget({
         agentId: params.target.agentId,
@@ -480,6 +500,7 @@ async function previewStoreCleanup(params: {
     pruned > 0 ||
     capped > 0 ||
     unreferencedArtifacts.removedFiles > 0 ||
+    (tombstoneRemnants?.candidates ?? 0) > 0 ||
     (diskBudget?.removedEntries ?? 0) > 0 ||
     (diskBudget?.removedFiles ?? 0) > 0 ||
     diskBudgetPreview.wouldMutate;
@@ -497,6 +518,7 @@ async function previewStoreCleanup(params: {
     pruned,
     capped,
     unreferencedArtifacts,
+    tombstoneRemnants,
     diskBudget,
     wouldMutate,
   };
@@ -631,6 +653,17 @@ export async function runSessionsCleanup(params: {
       ).length;
       const maintenanceRemovedEntries =
         lifecycleResult.modelRunPruned + lifecycleResult.pruned + lifecycleResult.capped;
+      const appliedTombstoneRemnants =
+        mode === "warn"
+          ? null
+          : await sweepTombstonedCronRunRemnantsForStore({
+              agentId: target.agentId,
+              storePath: target.storePath,
+              sqlitePath: resolveCleanupSqlitePath(target),
+              retentionMs: resolveCronSessionRetentionMs(cfg.cron),
+              dryRun: false,
+              includeUnidentifiedPlaceholders: opts.sweepUnidentifiedCronRemnants,
+            });
       const summary: SessionCleanupSummary = {
         agentId: target.agentId,
         storePath: target.storePath,
@@ -644,6 +677,7 @@ export async function runSessionsCleanup(params: {
         pruned: lifecycleResult.pruned,
         capped: lifecycleResult.capped,
         unreferencedArtifacts,
+        tombstoneRemnants: appliedTombstoneRemnants,
         diskBudget: appliedDiskBudget,
         wouldMutate:
           lifecycleResult.removedEntries > 0 ||
