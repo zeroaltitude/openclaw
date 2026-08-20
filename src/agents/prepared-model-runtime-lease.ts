@@ -29,6 +29,40 @@ type PreparedModelRuntimeLeaseContext = {
   prepareSnapshot(input: PreparedModelRuntimeInput): Promise<PreparedModelRuntimeSnapshot>;
 };
 
+/**
+ * Whether an existing owner already carries the generation a run was pinned to.
+ *
+ * A pinned caller passes the generation its run was ADMITTED against, and the
+ * admitting caller then re-checks the lease by REFERENCE identity —
+ * run-orchestrator.ts compares
+ * `snapshot.metadataSnapshot !== pluginGeneration.pluginMetadataSnapshot` and
+ * throws "prepared model runtime replaced the admitted plugin generation".
+ * Structurally identical snapshots from two different generations are not `===`,
+ * so reusing an owner built by a different generation fails that check and kills
+ * the run — roughly 10ms in, with no error surfaced to the spawner.
+ *
+ * Returning false routes the caller to the publish path, which threads the
+ * pinned `PluginMetadataSnapshot` object through unchanged
+ * (prepared-model-runtime.build.ts:149) and so satisfies the identity check by
+ * construction.
+ *
+ * Fails toward publishing: an owner with no snapshot yet cannot be shown to hold
+ * the pinned generation, and reusing it on a guess is what produced the
+ * outage. Unpinned callers are always satisfied, leaving their behaviour
+ * untouched.
+ */
+export function preparedGenerationPinSatisfied(params: {
+  existing: Pick<PreparedModelRuntimeOwner, "snapshot"> | undefined;
+  pluginGeneration?: { pluginMetadataSnapshot: PluginMetadataSnapshot };
+}): boolean {
+  if (params.pluginGeneration === undefined) {
+    return true;
+  }
+  return (
+    params.existing?.snapshot?.metadataSnapshot === params.pluginGeneration.pluginMetadataSnapshot
+  );
+}
+
 export async function acquirePreparedModelRuntimeLeaseFromOwners(
   rawInput: PreparedModelRuntimeInput,
   provenance: "run" | "ephemeral",
@@ -113,13 +147,37 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
         // has an owner to rebind. Keep ordinary agent runs fail-closed at this ownership boundary.
       }
     }
+    // A pinned generation has to be honoured on BOTH branches below.
+    // `prepareSnapshot()` takes no generation argument, so reusing an existing
+    // owner returns whatever generation currently lives at this key. When that
+    // is not the generation the run was ADMITTED against, the caller rejects the
+    // lease by reference identity — run-orchestrator.ts compares
+    // `snapshot.metadataSnapshot !== pluginGeneration.pluginMetadataSnapshot`
+    // and throws "prepared model runtime replaced the admitted plugin
+    // generation", killing the run ~10ms in with no error reaching the spawner.
+    //
+    // That made every sessions_spawn fail on a warm gateway: a warm gateway
+    // nearly always has an owner at the key, and a boot that publishes several
+    // generations leaves the pinned one no longer current. Publishing re-honours
+    // the pin instead — a pinned publish threads the same PluginMetadataSnapshot
+    // object through (prepared-model-runtime.build.ts:149), so the caller's
+    // identity check passes by construction rather than by luck.
+    //
+    // Unpinned callers are unaffected: with no pin this is vacuously true and
+    // the reuse path stays exactly as before.
+    const pinnedGenerationSatisfied = preparedGenerationPinSatisfied({
+      existing,
+      ...(options.pluginGeneration ? { pluginGeneration: options.pluginGeneration } : {}),
+    });
     try {
-      if (existing && !staleDynamicOwner) {
+      if (existing && !staleDynamicOwner && pinnedGenerationSatisfied) {
         snapshot = await context.prepareSnapshot(input);
       } else {
-        // Fresh keys publish a first generation; stale dynamic owners publish a distinct
-        // replacement owner because existing leases retain their immutable snapshot, so
-        // their release cannot delete the generation admitted for new work at this key.
+        // Fresh keys publish a first generation; stale dynamic owners — and runs
+        // whose pinned generation is no longer the one at this key — publish a
+        // distinct replacement owner because existing leases retain their
+        // immutable snapshot, so their release cannot delete the generation
+        // admitted for new work at this key.
         snapshot = await publishModelRuntimeSnapshot(
           input,
           context.owners,
