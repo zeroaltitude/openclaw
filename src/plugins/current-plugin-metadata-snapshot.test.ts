@@ -457,6 +457,51 @@ describe("current plugin metadata snapshot", () => {
     ).toBe(snapshot);
   });
 
+  it("serves every configured agent workspace listed as compatible", () => {
+    const config = { plugins: { allow: ["demo"] } };
+    const snapshot = createSnapshot({ config, workspaceDir: "/workspace/gateway" });
+    setCurrentPluginMetadataSnapshot(snapshot, {
+      config,
+      compatibleWorkspaceDirs: ["/workspace/agent-a", "/workspace/agent-b"],
+    });
+
+    expect(getCurrentPluginMetadataSnapshot({ config, workspaceDir: "/workspace/gateway" })).toBe(
+      snapshot,
+    );
+    expect(getCurrentPluginMetadataSnapshot({ config, workspaceDir: "/workspace/agent-a" })).toBe(
+      snapshot,
+    );
+    expect(getCurrentPluginMetadataSnapshot({ config, workspaceDir: "/workspace/agent-b" })).toBe(
+      snapshot,
+    );
+    expect(
+      getCurrentPluginMetadataSnapshot({ config, workspaceDir: "/workspace/unconfigured" }),
+    ).toBeUndefined();
+  });
+
+  it("keeps compatible workspace dirs across a capture/restore round trip", () => {
+    const config = { plugins: { allow: ["demo"] } };
+    const snapshot = createSnapshot({ config, workspaceDir: "/workspace/gateway" });
+    setCurrentPluginMetadataSnapshot(snapshot, {
+      config,
+      compatibleWorkspaceDirs: ["/workspace/agent-a"],
+    });
+
+    // Capture/restore is no longer a public surface; a temporary-snapshot lease
+    // is the supported way to displace and restore the published snapshot, and
+    // it exercises the same capture path.
+    const other = createSnapshot({ config, workspaceDir: "/workspace/other" });
+    const lease = installTemporaryCurrentPluginMetadataSnapshot(other, { config });
+    expect(
+      getCurrentPluginMetadataSnapshot({ config, workspaceDir: "/workspace/agent-a" }),
+    ).toBeUndefined();
+
+    lease.release();
+    expect(getCurrentPluginMetadataSnapshot({ config, workspaceDir: "/workspace/agent-a" })).toBe(
+      snapshot,
+    );
+  });
+
   it("rejects a current snapshot when plugin load paths change", () => {
     const config = { plugins: { load: { paths: ["/plugins/one"] } } };
     const snapshot = createSnapshot({ config });

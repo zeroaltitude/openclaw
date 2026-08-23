@@ -29,6 +29,8 @@ type CurrentPluginMetadataSnapshotState = ReturnType<
 type CurrentPluginMetadataSnapshotOptions = {
   config?: OpenClawConfig;
   compatibleConfigs?: readonly OpenClawConfig[];
+  /** Workspace dirs whose agents may reuse this snapshot without re-discovery. */
+  compatibleWorkspaceDirs?: readonly string[];
   env?: NodeJS.ProcessEnv;
   /** Only immutable runtime generations may trust identity across policy drift. */
   trustConfigIdentity?: boolean;
@@ -62,6 +64,7 @@ type PluginMetadataSnapshotCandidate = {
   configFingerprint: string | undefined;
   compatiblePolicyHashes?: readonly string[];
   compatibleConfigFingerprints?: readonly string[];
+  compatibleWorkspaceDirs?: readonly string[];
   hasConfigIdentity?: (config: OpenClawConfig) => boolean;
   immutableRuntimeGeneration?: boolean;
 };
@@ -115,6 +118,7 @@ function publishCurrentPluginMetadataSnapshot(
         }),
       )
     : undefined;
+  const compatibleWorkspaceDirs = snapshot ? options.compatibleWorkspaceDirs : undefined;
   const configFingerprint = snapshot
     ? resolvePluginMetadataControlPlaneFingerprint(options.config, {
         env: options.env,
@@ -146,6 +150,7 @@ function publishCurrentPluginMetadataSnapshot(
     compatiblePolicyHashes,
     compatibleConfigFingerprints,
     defaultDiscoveryCompatible ? snapshot.plugins : undefined,
+    compatibleWorkspaceDirs,
   );
   if (!snapshot) {
     return revision;
@@ -192,6 +197,7 @@ function restoreCapturedCurrentPluginMetadataSnapshotState(
     state.compatiblePolicyHashes,
     state.compatibleConfigFingerprints,
     state.manifestModelIdNormalizationRecords,
+    state.compatibleWorkspaceDirs,
   );
 }
 
@@ -350,7 +356,8 @@ function resolveCompatiblePluginMetadataSnapshot(
   }
   if (
     requestedWorkspaceDir !== undefined &&
-    (snapshot.workspaceDir ?? "") !== (requestedWorkspaceDir ?? "")
+    (snapshot.workspaceDir ?? "") !== (requestedWorkspaceDir ?? "") &&
+    !candidate.compatibleWorkspaceDirs?.includes(requestedWorkspaceDir)
   ) {
     return undefined;
   }
@@ -430,14 +437,20 @@ export function getCurrentPluginMetadataSnapshot(
     }
   }
 
-  const { snapshot, configFingerprint, compatiblePolicyHashes, compatibleConfigFingerprints } =
-    getCurrentPluginMetadataSnapshotState();
+  const {
+    snapshot,
+    configFingerprint,
+    compatiblePolicyHashes,
+    compatibleConfigFingerprints,
+    compatibleWorkspaceDirs,
+  } = getCurrentPluginMetadataSnapshotState();
   return resolveCompatiblePluginMetadataSnapshot(
     {
       snapshot: snapshot as PluginMetadataSnapshot | undefined,
       configFingerprint,
       compatiblePolicyHashes,
       compatibleConfigFingerprints,
+      compatibleWorkspaceDirs,
       hasConfigIdentity: (config) => currentPluginMetadataConfigIdentityCache.has(config),
     },
     params,
