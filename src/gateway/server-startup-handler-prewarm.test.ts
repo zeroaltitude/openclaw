@@ -26,6 +26,17 @@ const mocks = vi.hoisted(() => ({
     mocks.events.push("plugins");
     return { plugins: [] };
   }),
+  prewarmSessionCatalogList: vi.fn(async (params: { agentId: string }) => {
+    mocks.events.push(`catalog.${params.agentId}`);
+  }),
+  loadAgentRuntimePluginRegistryHandle: vi.fn((params: { workspaceDir?: string }) => {
+    mocks.events.push(`runtime-plugins.${params.workspaceDir ?? ""}`);
+    return undefined;
+  }),
+  loadResolvedPublishedModelCatalogOwner: vi.fn(async (params: { agentId: string }) => {
+    mocks.events.push(`model-catalog.${params.agentId}`);
+    return {};
+  }),
 }));
 
 vi.mock("../config/sessions/combined-store-gateway.js", () => ({
@@ -41,6 +52,29 @@ vi.mock("../plugins/management-service.js", () => ({
   listManagedPlugins: mocks.listManagedPlugins,
 }));
 
+vi.mock("./server-methods/session-catalog.js", () => ({
+  prewarmSessionCatalogList: mocks.prewarmSessionCatalogList,
+}));
+
+vi.mock("../agents/runtime-plugins.js", () => ({
+  loadAgentRuntimePluginRegistryHandle: mocks.loadAgentRuntimePluginRegistryHandle,
+}));
+
+vi.mock("../agents/prepared-model-catalog.js", () => ({
+  loadResolvedPublishedModelCatalogOwner: mocks.loadResolvedPublishedModelCatalogOwner,
+}));
+
+vi.mock("../agents/agent-scope-config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agents/agent-scope-config.js")>();
+  return {
+    ...actual,
+    // Keep workspace-dir derivation deterministic for order assertions. The
+    // prewarm derives dirs per agent id, so stub at that level rather than at
+    // the aggregate helper.
+    resolveAgentWorkspaceDir: (_cfg: unknown, agentId: string) => `/ws/${agentId}`,
+  };
+});
+
 const { scheduleGatewayHandlerPrewarm } = await import("./server-startup-handler-prewarm.js");
 
 beforeEach(() => {
@@ -53,6 +87,9 @@ beforeEach(() => {
   mocks.loadCombinedSessionStoreForGatewayCore.mockClear();
   mocks.listSessionsFromStoreAsync.mockClear();
   mocks.listManagedPlugins.mockClear();
+  mocks.prewarmSessionCatalogList.mockClear();
+  mocks.loadAgentRuntimePluginRegistryHandle.mockClear();
+  mocks.loadResolvedPublishedModelCatalogOwner.mockClear();
 });
 
 afterEach(() => {
@@ -81,6 +118,10 @@ describe("scheduleGatewayHandlerPrewarm", () => {
       "sessions.rows.main",
       "sessions.load.research",
       "sessions.rows.research",
+      "runtime-plugins./ws/main",
+      "runtime-plugins./ws/research",
+      "model-catalog.main",
+      "model-catalog.research",
       "plugins",
     ]);
     expect(mocks.loadCombinedSessionStoreForGatewayCore).toHaveBeenNthCalledWith(1, cfg, {
@@ -232,7 +273,15 @@ describe("scheduleGatewayHandlerPrewarm", () => {
     });
     await vi.runAllTimersAsync();
 
-    expect(mocks.events).toEqual(["sessions.count", "plugins"]);
+    expect(mocks.events).toEqual([
+      "sessions.count",
+      "runtime-plugins./ws/main",
+      "runtime-plugins./ws/research",
+      "model-catalog.main",
+      "model-catalog.research",
+      "plugins",
+    ]);
+    expect(mocks.prewarmSessionCatalogList).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledWith(
       "skipping optional dashboard session prewarm: combined stores exceed 2000 rows",
     );
