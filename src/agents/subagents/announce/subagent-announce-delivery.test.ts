@@ -1092,8 +1092,12 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
         debounceMs: 500,
         waitForTranscriptCommit: true,
         deliveryTimeoutMs: 120_000,
+        allowReplyRunInjection: true,
       },
     );
+    // The best-effort retry drops only waitForTranscriptCommit; the reply-run
+    // opt-in must survive it, because that retry is the only attempt a
+    // reply-backed-only requester can ever be served on.
     expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenNthCalledWith(
       2,
       "paperclip-session",
@@ -1102,7 +1106,37 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
         steeringMode: "all",
         debounceMs: 500,
         deliveryTimeoutMs: 120_000,
+        allowReplyRunInjection: true,
       },
+    );
+  });
+
+  // resolveRequesterSessionActivity reports a reply-backed run as active, so the
+  // steer fallback must ask the injector to cover that same union. Without the
+  // opt-in the injector refuses a reply-backed-only requester as no_active_run
+  // and the announce is told an emphatically busy parent is idle.
+  it("opts the steer fallback into reply-backed injection", async () => {
+    const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
+    testing.setDepsForTest({
+      getRequesterSessionActivity: () => ({ sessionId: "reply-backed-session", isActive: true }),
+      queueEmbeddedAgentMessageWithOutcome,
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:ops:main",
+      targetRequesterSessionKey: "agent:ops:main",
+      triggerMessage: "child done",
+      steerMessage: "child done",
+      requesterIsSubagent: false,
+      expectsCompletionMessage: false,
+      directIdempotencyKey: "announce-steer-fallback-reply-run",
+    });
+
+    expectDeliveryPath(result, "steered");
+    expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledWith(
+      "reply-backed-session",
+      "child done",
+      expect.objectContaining({ steeringMode: "all", allowReplyRunInjection: true }),
     );
   });
 
@@ -1341,6 +1375,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         debounceMs: 500,
         waitForTranscriptCommit: true,
         deliveryTimeoutMs: 120_000,
+        allowReplyRunInjection: true,
       },
     );
     expect(callGateway).not.toHaveBeenCalled();
@@ -2439,6 +2474,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         deliveryTimeoutMs: 120_000,
         steeringMode: "all",
         waitForTranscriptCommit: true,
+        allowReplyRunInjection: true,
       },
     );
     expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenNthCalledWith(
@@ -2449,6 +2485,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         debounceMs: 500,
         deliveryTimeoutMs: 120_000,
         steeringMode: "all",
+        allowReplyRunInjection: true,
       },
     );
     expect(sendMessage).not.toHaveBeenCalled();
@@ -2596,6 +2633,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         debounceMs: 500,
         waitForTranscriptCommit: true,
         deliveryTimeoutMs: 10,
+        allowReplyRunInjection: true,
       },
     );
     expect(callGateway).toHaveBeenCalledTimes(1);
