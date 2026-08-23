@@ -26,6 +26,7 @@ import { normalizeToolPolicyName } from "../../tool-policy.js";
 import type { ToolSearchCatalogEntry, ToolSearchCatalogRef } from "../../tool-search.js";
 import { log } from "../logger.js";
 import { summarizeSessionContext } from "./attempt-context-summary.js";
+import { cloneHookMessages } from "./attempt-hook-messages.js";
 import { resolvePromptSubmissionSkipReason } from "./attempt-prompt-submit.js";
 import type { ResolvedToolPromptFinalizer } from "./params.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
@@ -305,10 +306,7 @@ export function observeEmbeddedAttemptPrompt(input: {
           model: attempt.modelId,
           systemPrompt: input.systemPromptForHook,
           prompt: input.llmBoundaryPromptForPrecheck,
-          /** Gives hooks an isolated message snapshot they cannot mutate in-session. */
-          historyMessages: input.hookMessagesForCurrentPrompt.map((message) =>
-            structuredClone(message),
-          ),
+          historyMessages: cloneHookMessages(input.hookMessagesForCurrentPrompt),
           imagesCount: input.imageCount,
           tools: input.tools,
         },
