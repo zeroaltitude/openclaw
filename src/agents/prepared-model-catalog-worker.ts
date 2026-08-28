@@ -2,6 +2,7 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import type { PreparedAgentCredentialModes } from "./agent-auth-credential-modes.js";
@@ -146,6 +147,26 @@ function resolvePreparedModelCatalogWorkerUrl(currentModuleUrl = import.meta.url
   return new URL(`./prepared-model-catalog.worker${extension}`, currentModuleUrl);
 }
 
+const log = createSubsystemLogger("agents/prepared-model-catalog-worker");
+
+/** Which of stop()'s five entry paths fired, for the openclaw-crb2 WARN. */
+function classifyStopReason(error: Error): string {
+  if (error instanceof PreparedModelRuntimePublicationSupersededError) {
+    return "superseded";
+  }
+  const message = error.message;
+  if (message.includes("stale generation")) {
+    return "stale-generation-fingerprint";
+  }
+  if (message.includes("exited with code")) {
+    return "worker-exit";
+  }
+  if (message.includes("timed out")) {
+    return "request-timeout";
+  }
+  return "worker-error";
+}
+
 type PreparedModelCatalogWorker = Readonly<{
   loadAuth: (scope: PreparedModelRuntimeAuthScope) => Promise<PreparedModelRuntimeAuth>;
   loadCatalog: () => Promise<ModelCatalogSnapshot>;
@@ -163,6 +184,15 @@ export function createPreparedModelCatalogWorker(params: {
   let generationPoll: NodeJS.Timeout | undefined;
   let terminalError: Error | undefined;
   let nextRequestId = 1;
+  // openclaw-crb2 instrumentation. Terminating this worker while it is still
+  // inside ESM module work is the suspected trigger for V8
+  // `Check failed: node->IsInUse()`, which aborts the ENTIRE gateway process —
+  // taking every in-flight agent run with it. That abort leaves no
+  // application-level trace, so we cannot reconstruct afterwards which of the
+  // five stop() paths fired, nor how far the worker had got. These two fields
+  // exist purely to make the WARN below answerable.
+  let workerStartedAt: number | undefined;
+  let sawWorkerMessage = false;
   const pending = new Map<
     number,
     {
@@ -188,8 +218,17 @@ export function createPreparedModelCatalogWorker(params: {
     const active = worker;
     worker = undefined;
     active?.removeAllListeners();
+    const pendingRejected = pending.size;
     rejectPending(error);
     if (active) {
+      // Logged BEFORE terminate(), deliberately: if terminate() trips the V8
+      // abort, anything logged after it never reaches the journal.
+      log.warn(
+        `terminating prepared-model-catalog worker (openclaw-crb2): reason=${classifyStopReason(error)} ` +
+          `aliveMs=${workerStartedAt === undefined ? "unknown" : Date.now() - workerStartedAt} ` +
+          `sawWorkerMessage=${sawWorkerMessage} pendingRejected=${pendingRejected} ` +
+          `agentDir=${params.input.input.agentDir}`,
+      );
       void active.terminate();
     }
   };
@@ -213,7 +252,12 @@ export function createPreparedModelCatalogWorker(params: {
       env: { ...process.env, ...params.input.input.env },
     });
     active.unref();
+    workerStartedAt = Date.now();
+    sawWorkerMessage = false;
     active.on("message", (message: PreparedModelWorkerResult) => {
+      // First message means the worker got past its module-load phase — the
+      // 44.6s registry import — which is exactly the window we suspect.
+      sawWorkerMessage = true;
       const request = pending.get(message.requestId);
       if (!request) {
         return;
