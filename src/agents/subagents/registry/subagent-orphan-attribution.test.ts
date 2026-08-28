@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { GatewayBootLifecycleSegment } from "../../../infra/gateway-boot-lifecycle.js";
-import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import {
   countRecordedSubagentAssistantMessages,
   formatSubagentOrphanErrorMessage,
@@ -8,6 +7,7 @@ import {
   resolveSubagentOrphanAttribution,
   resolveSubagentRunLastActivityMs,
 } from "./subagent-orphan-attribution.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const KERNEL_BOOT_A = "kernel:11111111-1111-4111-8111-111111111111";
 const KERNEL_BOOT_B = "kernel:22222222-2222-4222-8222-222222222222";
@@ -43,13 +43,13 @@ describe("isAbruptGatewayBootEnd", () => {
   });
 
   it("treats any recorded stop as deliberate", () => {
-    expect(
-      isAbruptGatewayBootEnd(bootSegment({ completedAtMs: 10, outcome: "clean_stop" })),
-    ).toBe(false);
-    expect(isAbruptGatewayBootEnd(bootSegment({ completedAtMs: 10, outcome: null }))).toBe(false);
-    expect(isAbruptGatewayBootEnd(bootSegment({ completedAtMs: null, outcome: "forced_stop" }))).toBe(
+    expect(isAbruptGatewayBootEnd(bootSegment({ completedAtMs: 10, outcome: "clean_stop" }))).toBe(
       false,
     );
+    expect(isAbruptGatewayBootEnd(bootSegment({ completedAtMs: 10, outcome: null }))).toBe(false);
+    expect(
+      isAbruptGatewayBootEnd(bootSegment({ completedAtMs: null, outcome: "forced_stop" })),
+    ).toBe(false);
   });
 });
 
@@ -249,9 +249,7 @@ describe("resolveSubagentOrphanAttribution", () => {
         boots: [bootSegment({ bootId: "boot-later", startedAtMs: RUN_STARTED_AT + 60_000 })],
       }),
     ).toBeNull();
-    expect(
-      resolveSubagentOrphanAttribution({ runStartedAtMs: Number.NaN, boots: [] }),
-    ).toBeNull();
+    expect(resolveSubagentOrphanAttribution({ runStartedAtMs: Number.NaN, boots: [] })).toBeNull();
   });
 });
 
@@ -326,7 +324,9 @@ describe("formatSubagentOrphanErrorMessage", () => {
         bootSegment({ bootId: "boot-b", startedAtMs: GATEWAY_RESTARTED_AT }),
       ],
     });
-    expect(formatSubagentOrphanErrorMessage(attribution!)).toContain("1 assistant message recorded");
+    expect(formatSubagentOrphanErrorMessage(attribution!)).toContain(
+      "1 assistant message recorded",
+    );
   });
 });
 

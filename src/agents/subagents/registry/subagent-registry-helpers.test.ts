@@ -76,6 +76,42 @@ describe("updateSubagentArchiveAtMs", () => {
     }
   });
 
+  it("keeps archiveAfterMinutes: 0 disabling auto-archive for an unconfirmed child", () => {
+    // Regression (openclaw-odqn round 2, finding 2): zero is the documented
+    // no-auto-archive opt-out. Round 1 substituted the default 60-minute window
+    // for a `child-unconfirmed` row so the deferred deletion would have an
+    // owner, which turned that opt-out into a blind deletion timer for a child
+    // nothing had observed stop. Observed stop evidence owns the deletion now,
+    // so zero must survive untouched — including for this disposition.
+    const disabled = { agents: { defaults: { subagents: { archiveAfterMinutes: 0 } } } };
+    const unconfirmed = createRunEntry({
+      cleanup: "delete",
+      execution: {
+        status: "terminal",
+        startedAt: 1_000,
+        endedAt: 602_000,
+        outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+      },
+    });
+
+    expect(updateSubagentArchiveAtMs(unconfirmed, disabled)).toBe(false);
+    expect(unconfirmed.archiveAtMs).toBeUndefined();
+
+    // A configured window still applies normally to the same row: the fix
+    // restores the contract, it does not disable retention.
+    const configured = createRunEntry({
+      cleanup: "delete",
+      execution: {
+        status: "terminal",
+        startedAt: 1_000,
+        endedAt: 602_000,
+        outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+      },
+    });
+    expect(updateSubagentArchiveAtMs(configured, cfg)).toBe(true);
+    expect(configured.archiveAtMs).toBe(902_000);
+  });
+
   it("starts ordinary delete-mode retention at execution completion", () => {
     const entry = createRunEntry({
       cleanup: "delete",
@@ -275,6 +311,62 @@ describe("safeRemoveAttachmentsDir", () => {
         }),
       ),
     ).resolves.toBe(false);
+
+    realpathSpy.mockRestore();
+  });
+
+  it("refuses to remove attachments while the child stop is unconfirmed", async () => {
+    // The backstop lives inside the destructive call, not only in each caller's
+    // policy check: attachment removal is the one terminal effect a later
+    // observed promotion can never undo, and a caller that forgets the guard
+    // would silently destroy a possibly-live child's output.
+    const realpathSpy = vi.spyOn(fs, "realpath");
+
+    await expect(
+      safeRemoveAttachmentsDir(
+        createRunEntry({
+          cleanup: "delete",
+          attachmentsDir: "/tmp/openclaw-child-attachments",
+          attachmentsRootDir: "/tmp/openclaw-attachments",
+          execution: {
+            status: "terminal",
+            startedAt: 1_000,
+            endedAt: 2_000,
+            outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+          },
+        }),
+      ),
+    ).resolves.toBe(false);
+    // Not even a realpath probe: the decision is made before touching the disk.
+    expect(realpathSpy).not.toHaveBeenCalled();
+
+    realpathSpy.mockRestore();
+  });
+
+  it("removes attachments once an observed stop promotes the run", async () => {
+    // Anti-vacuity control for the case above: the same delete-mode row with an
+    // observed disposition does reach the removal, so the refusal is the guard
+    // and not an unrelated early return.
+    const realpathSpy = vi
+      .spyOn(fs, "realpath")
+      .mockRejectedValue(Object.assign(new Error("probe reached"), { code: "EACCES" }));
+
+    await expect(
+      safeRemoveAttachmentsDir(
+        createRunEntry({
+          cleanup: "delete",
+          attachmentsDir: "/tmp/openclaw-child-attachments",
+          attachmentsRootDir: "/tmp/openclaw-attachments",
+          execution: {
+            status: "terminal",
+            startedAt: 1_000,
+            endedAt: 2_000,
+            outcome: { status: "timeout", timeoutDisposition: "child-stopped" },
+          },
+        }),
+      ),
+    ).resolves.toBe(false);
+    expect(realpathSpy).toHaveBeenCalled();
 
     realpathSpy.mockRestore();
   });

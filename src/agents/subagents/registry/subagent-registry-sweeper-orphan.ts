@@ -15,10 +15,7 @@ import {
   resolveSubagentRunLastActivityMs,
 } from "./subagent-orphan-attribution.js";
 import { reconcileOrphanedRun } from "./subagent-registry-helpers.js";
-import type {
-  SubagentCompletionRequest,
-  SubagentRunRecord,
-} from "./subagent-registry.types.js";
+import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 import {
   loadSubagentSessionEntry,
   resolveCompletionFromSessionEntry,

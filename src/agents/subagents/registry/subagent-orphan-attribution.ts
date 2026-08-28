@@ -1,3 +1,4 @@
+import { formatDurationCompact } from "../../../infra/format-time/format-duration.js";
 /**
  * Causal attribution for subagent runs orphaned by a gateway death.
  *
@@ -18,7 +19,6 @@ import {
   isInferredHostBootId,
   readGatewayBootLifecycleSegments,
 } from "../../../infra/gateway-boot-lifecycle.js";
-import { formatDurationCompact } from "../../../infra/format-time/format-duration.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 export type SubagentOrphanCause =
@@ -74,7 +74,8 @@ function resolveHostContinuity(
   if (!prior.hostBootId || !successor.hostBootId) {
     return { cause: "gateway_restart", inferred: false };
   }
-  const inferred = isInferredHostBootId(prior.hostBootId) || isInferredHostBootId(successor.hostBootId);
+  const inferred =
+    isInferredHostBootId(prior.hostBootId) || isInferredHostBootId(successor.hostBootId);
   return {
     cause: prior.hostBootId === successor.hostBootId ? "gateway_process_death" : "host_reboot",
     inferred,

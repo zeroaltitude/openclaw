@@ -6,8 +6,9 @@ import { runWithGatewayIndependentRootWorkAdmission } from "../../../process/gat
 import { emitSessionLifecycleEvent } from "../../../sessions/session-lifecycle-events.js";
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
+import { shouldDeferTerminalCleanupForUnconfirmedChild } from "./subagent-registry-cleanup.js";
 import type { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
-import { safeRemoveAttachmentsDir } from "./subagent-registry-helpers.js";
+import { reconcileOrphanedRun, safeRemoveAttachmentsDir } from "./subagent-registry-helpers.js";
 import type {
   SubagentLifecycleController,
   SubagentLifecycleOptions,
@@ -36,6 +37,8 @@ import { isStaleUnendedSubagentRun } from "./subagent-run-liveness.js";
 import { deleteSubagentSessionForCleanup } from "./subagent-session-cleanup.js";
 import {
   loadSubagentSessionEntry,
+  resolveSubagentRunOrphanReason,
+  settleSubagentRunFromSessionStore,
   type SubagentSessionStoreCache,
 } from "./subagent-session-reconciliation.js";
 export { retireSupersededSubagentRun } from "./subagent-registry-sweeper-retire.js";
@@ -366,6 +369,9 @@ export function createSubagentRegistrySweeper(params: {
           const notStale = entry.execution.status === "queued" || getAgentRunContext(runId);
           const activeAgeMs = now - (entry.execution.startedAt ?? entry.createdAt);
           if (!notStale && activeAgeMs >= STALE_ACTIVE_SUBAGENT_GRACE_MS) {
+            // vaon's attribution owns the row first. Only what it declines falls through to
+            // the session-store "pull" promotion, which settles an unconfirmed child by
+            // re-reading the child's own persisted session entry.
             if (
               await reconcileStaleActiveSubagentRun({
                 runId,
@@ -381,6 +387,14 @@ export function createSubagentRegistrySweeper(params: {
               mutatedRunIds.add(runId);
             }
             continue;
+
+            const settled = await settleSubagentRunFromSessionStore(
+              params.completeSubagentRunWithRecovery,
+              { runId, entry, now, storeCache, source: "sweeper-session-completion" },
+            );
+            if (settled === "settled") {
+              continue;
+            }
           }
           // Retention starts after completion; a live run must never fall
           // through to archival because an older persisted deadline expired.
@@ -460,6 +474,28 @@ export function createSubagentRegistrySweeper(params: {
               entry.delivery.disposition === "session_queued"))
         ) {
           // Queued or leased completion delivery owns this row until it settles.
+          continue;
+        }
+        if (shouldDeferTerminalCleanupForUnconfirmedChild(entry)) {
+          // A retention clock is not stop evidence. Only the child's own
+          // terminal session record promotes this row out of the unconfirmed
+          // state; while that record still says running, nothing here may
+          // retire the row, its attachments, or its session.
+          await settleSubagentRunFromSessionStore(params.completeSubagentRunWithRecovery, {
+            runId,
+            entry,
+            now,
+            storeCache,
+            source: "sweeper-unconfirmed-child",
+          });
+          // Fail closed on every result. `settled` already promoted the row
+          // through the ordinary lifecycle path, so the next sweep retires it
+          // with the observed outcome. `live` is positive evidence the child is
+          // still running. `absent` is not evidence of a stop at all — the entry
+          // is best-effort and also reads absent when the store is unreadable or
+          // simply not written yet, so treating it as death would delete a live
+          // child's session and attachments. Retain and retry instead; only
+          // observed stop evidence may retire this row.
           continue;
         }
         if (!entry.archiveAtMs && entry.cleanup === "keep" && entry.spawnMode !== "session") {
