@@ -2,6 +2,11 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
+import {
+  getConfigResolutionFacts,
+  serializeConfigResolutionFacts,
+} from "../config/resolution-facts.js";
+import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
@@ -24,6 +29,9 @@ export type PreparedModelCatalogWorkerInput = Readonly<{
   kind: "catalog";
   generationFingerprint: string;
   input: PreparedModelRuntimeInput;
+  sourceConfigForSecrets: PreparedModelRuntimeInput["config"];
+  configResolutionFacts: ReturnType<typeof serializeConfigResolutionFacts>;
+  sourceConfigResolutionFacts: ReturnType<typeof serializeConfigResolutionFacts>;
   authStore: AuthProfileStore;
   providerIds: readonly string[];
   pluginMetadataSnapshot: Omit<PluginMetadataSnapshot, "normalizePluginId">;
@@ -82,12 +90,18 @@ function fingerprintPreparedModelCatalogPlugins(snapshot: PluginMetadataSnapshot
 
 export function fingerprintPreparedModelCatalogGeneration(params: {
   input: PreparedModelRuntimeInput;
+  sourceConfigForSecrets: PreparedModelRuntimeInput["config"];
+  configResolutionFacts: ReturnType<typeof serializeConfigResolutionFacts>;
+  sourceConfigResolutionFacts: ReturnType<typeof serializeConfigResolutionFacts>;
   authStore: AuthProfileStore;
   providerIds: readonly string[];
   pluginMetadataSnapshot: PluginMetadataSnapshot;
 }): string {
   return fingerprintPreparedRuntimeFacts({
     input: params.input,
+    sourceConfigForSecrets: params.sourceConfigForSecrets,
+    configResolutionFacts: params.configResolutionFacts,
+    sourceConfigResolutionFacts: params.sourceConfigResolutionFacts,
     authStore: params.authStore,
     providerIds: params.providerIds,
     pluginFingerprint: fingerprintPreparedModelCatalogPlugins(params.pluginMetadataSnapshot),
@@ -115,6 +129,13 @@ export function createPreparedModelCatalogWorkerInput(params: {
       : {}),
     config: source.config,
   };
+  // Capture the authored pair now; structured cloning cannot carry process-local Ref provenance.
+  const sourceConfigForSecrets = projectConfigOntoRuntimeSourceSnapshot(source.config);
+  const configResolutionFacts = serializeConfigResolutionFacts(source.config);
+  const sourceConfigResolutionFacts =
+    getConfigResolutionFacts(source.config) === getConfigResolutionFacts(sourceConfigForSecrets)
+      ? configResolutionFacts
+      : serializeConfigResolutionFacts(sourceConfigForSecrets);
   const authStore = cloneAuthProfileStore(params.agentFacts.authStore);
   const providerIds = [...params.agentFacts.providerIds];
   const { normalizePluginId: _normalizePluginId, ...pluginMetadataSnapshot } =
@@ -123,11 +144,17 @@ export function createPreparedModelCatalogWorkerInput(params: {
     kind: "catalog",
     generationFingerprint: fingerprintPreparedModelCatalogGeneration({
       input,
+      sourceConfigForSecrets,
+      configResolutionFacts,
+      sourceConfigResolutionFacts,
       authStore,
       providerIds,
       pluginMetadataSnapshot: params.pluginMetadataSnapshot,
     }),
     input,
+    sourceConfigForSecrets,
+    configResolutionFacts,
+    sourceConfigResolutionFacts,
     authStore,
     providerIds,
     pluginMetadataSnapshot,
