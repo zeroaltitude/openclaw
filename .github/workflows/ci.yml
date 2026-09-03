@@ -1257,7 +1257,9 @@ jobs:
           const pluginContractShards = runPluginContractShards ? createPluginContractTestShards() : [];
           const channelContractShards = runNodeFull ? createChannelContractTestShards() : [];
           const runMacos =
-            parseBoolean(process.env.OPENCLAW_CI_RUN_MACOS) && !docsOnly && isCanonicalRepository;
+            parseBoolean(process.env.OPENCLAW_CI_RUN_MACOS) &&
+            !docsOnly &&
+            (isCanonicalRepository || eventName === "workflow_dispatch");
           // Older selected checkouts report only run_macos; retain their native Node coverage.
           const runMacosNode = runMacos ||
             (parseBoolean(process.env.OPENCLAW_CI_RUN_MACOS_NODE) && !docsOnly && isCanonicalRepository);
