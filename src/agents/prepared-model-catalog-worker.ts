@@ -6,6 +6,7 @@ import {
 import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { WorkerTaskError, WorkerTaskPool } from "../infra/worker-task-pool.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { captureProviderSyntheticAuthFacts } from "../plugins/provider-runtime.js";
@@ -91,6 +92,22 @@ class PreparedModelCatalogGenerationMismatchError extends Error {
     );
     this.name = "PreparedModelCatalogGenerationMismatchError";
   }
+}
+
+const log = createSubsystemLogger("agents/prepared-model-catalog-worker");
+
+function classifyStopReason(error: Error): string {
+  if (error instanceof PreparedModelRuntimePublicationSupersededError) {
+    return "superseded";
+  }
+  if (error instanceof WorkerTaskError) {
+    return error.code === "timeout" ? "request-timeout" : `worker-${error.code}`;
+  }
+  const message = error.message;
+  if (message.includes("stale generation")) {
+    return "stale-generation-fingerprint";
+  }
+  return "worker-error";
 }
 
 export function fingerprintPreparedModelWorkerRequest(
@@ -209,6 +226,9 @@ export function createPreparedModelCatalogWorker(
   let generationPoll: NodeJS.Timeout | undefined;
   let stoppedError: Error | undefined;
   let expectedFingerprint: string | undefined;
+  let poolStartedAt: number | undefined;
+  let sawWorkerResult = false;
+  let activePoolRequests = 0;
   const captures = new Map<AbortController, Promise<PreparedSyntheticAuthFacts>>();
   const assertCurrent = () => {
     if (stoppedError) {
@@ -227,8 +247,10 @@ export function createPreparedModelCatalogWorker(
       message.generationFingerprint,
       message.reconstructedFingerprint,
     );
-  const createPool = () =>
-    new WorkerTaskPool<PreparedModelWorkerRequest, PreparedModelWorkerResult>({
+  const createPool = () => {
+    poolStartedAt = Date.now();
+    sawWorkerResult = false;
+    return new WorkerTaskPool<PreparedModelWorkerRequest, PreparedModelWorkerResult>({
       workerUrl: resolveRuntimeWorkerUrl({
         currentModuleUrl: import.meta.url,
         sourceWorkerName: "prepared-model-catalog.worker",
@@ -257,6 +279,7 @@ export function createPreparedModelCatalogWorker(
         }
       },
     });
+  };
   const stop = async (error: Error) => {
     stoppedError ??= error;
     clearInterval(generationPoll);
@@ -266,7 +289,17 @@ export function createPreparedModelCatalogWorker(
     }
     // Native probes live in the parent; drain them before retiring the compute worker.
     await Promise.allSettled(captures.values());
-    await pool?.close(stoppedError);
+    if (pool) {
+      // Log before close(): worker termination can abort the process before any
+      // post-close diagnostic reaches the journal.
+      log.warn(
+        `terminating prepared-model-catalog worker (openclaw-crb2): reason=${classifyStopReason(stoppedError)} ` +
+          `aliveMs=${poolStartedAt === undefined ? "unknown" : Date.now() - poolStartedAt} ` +
+          `sawWorkerResult=${sawWorkerResult} activeRequests=${activePoolRequests} ` +
+          `agentDir=${workerInput.input.agentDir}`,
+      );
+      await pool.close(stoppedError);
+    }
   };
   const request = async (
     command: PreparedModelWorkerCommand,
@@ -314,14 +347,20 @@ export function createPreparedModelCatalogWorker(
       controller.signal.throwIfAborted();
       const value = { ...command, syntheticAuth };
       requestPool = pool ??= createPool();
-      message = await requestPool.run(
-        () => {
-          assertCurrent();
-          expectedFingerprint = fingerprintPreparedModelWorkerRequest(workerInput, value);
-          return value;
-        },
-        { timeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS, signal: controller.signal },
-      );
+      activePoolRequests += 1;
+      try {
+        message = await requestPool.run(
+          () => {
+            assertCurrent();
+            expectedFingerprint = fingerprintPreparedModelWorkerRequest(workerInput, value);
+            return value;
+          },
+          { timeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS, signal: controller.signal },
+        );
+        sawWorkerResult = true;
+      } finally {
+        activePoolRequests -= 1;
+      }
       assertCurrent();
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
