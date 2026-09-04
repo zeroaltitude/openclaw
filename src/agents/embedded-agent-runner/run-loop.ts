@@ -30,7 +30,6 @@ import { normalizeEmbeddedRunAttempt } from "./run/attempt-normalization.js";
 import { recoverEmbeddedRunAttempt } from "./run/attempt-recovery.js";
 import { createAttemptCarryover } from "./run/attempt-result.js";
 import { EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE } from "./run/attempt-stage-timing.js";
-import { advanceCodeModeRecovery } from "./run/code-mode-reconciliation.js";
 import { hasCodexAppServerRecoveryRetryBudget } from "./run/codex-app-server-recovery.js";
 import { createEmbeddedRunCompactionRuntime } from "./run/compaction-runtime.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
@@ -92,6 +91,7 @@ export async function runPreparedEmbeddedLoop(
     () =>
       prepareEmbeddedRunRuntime({
         runParams: params,
+        sessionAdmission: input.sessionAdmission,
         provider,
         modelId,
         agentDir,
@@ -197,7 +197,6 @@ export async function runPreparedEmbeddedLoop(
   let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
   let overloadProfileRotations = 0;
   const terminalRetryState = createEmbeddedRunTerminalRetryState();
-  let sameModelIdleTimeoutRetries = 0;
   // Cost-runaway breaker for #76293. State lives at the run-loop level
   // on purpose so it survives across attempt boundaries and across
   // profile/auth retries within this embedded run (a wrapper-local
@@ -425,6 +424,9 @@ export async function runPreparedEmbeddedLoop(
       }
       startupStagesEmitted = dispatch.startupStagesEmitted;
       const { dispatchedAttempt, runtimePlan } = dispatch;
+      failoverRetryController.setTransientRetryBudget(
+        dispatchedAttempt.rawAttempt.providerRetryMaxRetries,
+      );
       attemptCarryover.apply(dispatchedAttempt.rawAttempt);
       const normalizedAttempt = await normalizeEmbeddedRunAttempt({
         runInput: admittedRunInput,
@@ -476,7 +478,6 @@ export async function runPreparedEmbeddedLoop(
         attemptCompactionCount,
         activeErrorContext,
         resolveReplayInvalidForAttempt,
-        canRestartForLiveSwitch,
       } = normalizedAttempt;
       const recovery = await recoverEmbeddedRunAttempt({
         runInput: admittedRunInput,
@@ -526,7 +527,6 @@ export async function runPreparedEmbeddedLoop(
         attemptedThinking,
         fallbackConfigured,
         pluginHarnessOwnsTransport,
-        canRestartForLiveSwitch,
         authProfileId: lastProfileId,
         authProfileStore: attemptAuthProfileStore,
         runtimeAuthRetry,
@@ -535,12 +535,10 @@ export async function runPreparedEmbeddedLoop(
         emptyErrorRetries,
         overloadProfileRotations,
         overloadProfileRotationLimit: failoverRetryController.overloadProfileRotationLimit,
-        sameModelIdleTimeoutRetries,
         previousRetryFailoverReason: lastRetryFailoverReason,
         maybeMarkAuthProfileFailure: failoverRetryController.maybeMarkAuthProfileFailure,
-        maybeRetrySameModelRateLimit: failoverRetryController.maybeRetrySameModelRateLimit,
-        maybeBackoffBeforeOverloadFailover:
-          failoverRetryController.maybeBackoffBeforeOverloadFailover,
+        maybeRetryTransient: failoverRetryController.maybeRetryTransient,
+        getTransientRetryCount: () => failoverRetryController.transientRetryCount,
         advanceAuthProfile: failoverRetryController.advanceAuthProfile,
         advanceRateLimitAuthProfile: failoverRetryController.advanceRateLimitAuthProfile,
         traceAttempts,
@@ -554,22 +552,8 @@ export async function runPreparedEmbeddedLoop(
       authRetryPending = assistantFailureOutcome.authRetryPending;
       emptyErrorRetries = assistantFailureOutcome.emptyErrorRetries;
       overloadProfileRotations = assistantFailureOutcome.overloadProfileRotations;
-      sameModelIdleTimeoutRetries = assistantFailureOutcome.sameModelIdleTimeoutRetries;
       lastRetryFailoverReason = assistantFailureOutcome.lastRetryFailoverReason;
-      if (!assistantFailureOutcome.preserveSameModelRateLimitRetryCount) {
-        failoverRetryController.resetSameModelRateLimitRetries();
-      }
       if (assistantFailureOutcome.action === "retry") {
-        continue;
-      }
-      if (
-        advanceCodeModeRecovery({
-          attempt,
-          hostOwnsToolSurface: !pluginHarnessOwnsTransport,
-          retryState: terminalRetryState,
-          activateInternalPrompt: sessionPromptState.activateInternalPrompt,
-        })
-      ) {
         continue;
       }
       let assistantProfileFailureReason = assistantFailureOutcome.assistantProfileFailureReason;
@@ -606,7 +590,8 @@ export async function runPreparedEmbeddedLoop(
           modelApi: effectiveModel.api,
           executionContract,
           hasTerminalToolPresentation: Boolean(terminalToolPresentationText),
-          noteLaneTaskProgress: input.laneController.noteLaneTaskProgress,
+          createAttemptControls: input.laneController.createAttemptControls,
+          abortSignal: input.laneController.abortSignal,
         },
       });
       const {
@@ -639,7 +624,6 @@ export async function runPreparedEmbeddedLoop(
 
       const terminalTimeoutResult = resolveEmbeddedRunTerminalTimeout({
         terminalPrepared,
-        shouldSurfaceCodexCompletionTimeout: recovery.shouldSurfaceCodexCompletionTimeout,
         attempt: terminalAttempt,
         terminalState: resolvedTerminalState,
         resolveReplayInvalid: resolveReplayInvalidForAttempt,
@@ -714,6 +698,9 @@ export async function runPreparedEmbeddedLoop(
       return terminalResolution.result;
     }
   } finally {
+    // Successful registration already cleared the marker; every earlier exit
+    // must restore terminal suppression before asynchronous settlement begins.
+    contextRecoveryState.restoreTimeoutRecoveryAbandonment();
     permissionChanges.close();
     await settleEmbeddedRun({
       runInput: admittedRunInput,
