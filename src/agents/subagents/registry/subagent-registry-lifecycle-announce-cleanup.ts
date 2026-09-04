@@ -25,6 +25,10 @@ import {
   safeRemoveAttachmentsDir,
 } from "./subagent-registry-helpers.js";
 import {
+  hasParkedAnnounceOutlivedExpiry,
+  parkAnnounceForRequesterLane,
+} from "./subagent-registry-lane-park.js";
+import {
   beginSubagentCleanup,
   retireSupersededCleanupIfNeeded,
   retireSupersededCleanupInBackground,
@@ -73,6 +77,7 @@ export const finalizeResumedAnnounceGiveUp = async (
   const params = context.options;
   const { runId, entry, reason, cleanup, cleanupGeneration, retryCount, completedAt } =
     giveUpParams;
+  context.takeRequesterLaneReleaseWaiter(runId)?.();
   if (shouldSuspendPendingFinalDelivery(entry)) {
     suspendPendingFinalDelivery(context, {
       runId,
@@ -199,6 +204,9 @@ const finalizeSubagentCleanup = async (
   // Re-resolved against the committed outcome: an unconfirmed child must not
   // have its session or attachments destroyed by this attempt.
   const cleanup = resolveEffectiveCleanupMode(entry, requestedCleanup);
+  // Any outcome supersedes an earlier lane-busy park. The deferred branch below
+  // re-arms its own waiter, so releasing unconditionally here cannot strand one.
+  context.takeRequesterLaneReleaseWaiter(runId)?.();
   if (!context.isCleanupAttemptCurrent(runId, entry, cleanupGeneration)) {
     await retireSupersededCleanupIfNeeded(context, runId, entry, cleanupGeneration);
     return;
@@ -339,6 +347,27 @@ const finalizeSubagentCleanup = async (
   }
 
   const now = Date.now();
+
+  if (announceOutcome === "deferred_requester_busy") {
+    // No announce turn ever started, so there is nothing to classify as a
+    // failed attempt. Hold the row against the requester's turn boundary — but
+    // only inside the announce window, so a permanently busy requester still
+    // gives up loudly through the existing expiry path.
+    if (hasParkedAnnounceOutlivedExpiry(entry, now)) {
+      await finalizeResumedAnnounceGiveUp(context, {
+        runId,
+        entry,
+        reason: "expiry",
+        cleanup,
+        cleanupGeneration,
+        completedAt: now,
+      });
+      return;
+    }
+    parkAnnounceForRequesterLane(context, { runId, entry, now });
+    return;
+  }
+
   const deferredDecision = resolveDeferredCleanupDecision({
     entry,
     now,
