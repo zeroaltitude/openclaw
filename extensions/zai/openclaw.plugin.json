@@ -5,6 +5,7 @@
   },
   "enabledByDefault": true,
   "providers": ["zai"],
+  "cliBackends": ["zai-claude-agent-sdk"],
   "providerEndpoints": [
     {
       "endpointClass": "zai-native",
