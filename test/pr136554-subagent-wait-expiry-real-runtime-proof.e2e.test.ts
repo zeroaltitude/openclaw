@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveSubagentRunDisposition } from "../src/agents/subagents/announce/subagent-announce-output.js";
 import {
   getSubagentRunByRunId,
   registerSubagentRun,
@@ -9,7 +10,6 @@ import {
   testing,
 } from "../src/agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { AgentEventPayload } from "../src/infra/agent-events.js";
-import { resolveSubagentRunDisposition } from "../src/agents/subagents/announce/subagent-announce-output.js";
 
 describe("PR #136554 production registry lifecycle proof", () => {
   const proofRoots = new Set<string>();

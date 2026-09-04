@@ -510,10 +510,7 @@ export async function runSubagentAnnounceFlow(params: {
     // match the placeholder wording to recognize it.
     const childResultText = childCompletionFindings || reply;
     const findings =
-      childResultText ||
-      (stillRunning
-        ? "(no result yet; child still running)"
-        : "(no output)");
+      childResultText || (stillRunning ? "(no result yet; child still running)" : "(no output)");
 
     let requesterIsSubagent = requesterIsInternalSession();
     if (requesterIsSubagent) {
