@@ -5,7 +5,7 @@ import { RequestClient } from "../internal/discord.js";
 import { createDiscordReplyTypingFeedback } from "./reply-typing-feedback.js";
 
 function createFeedback(params: {
-  post: ReturnType<typeof vi.fn>;
+  post: RequestClient["post"];
   onStartSuccess: () => void;
   log: (message: string) => void;
 }) {
