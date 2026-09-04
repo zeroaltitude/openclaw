@@ -131,6 +131,7 @@ describe("queued completion handoff", () => {
         options?.onAccepted?.({ status: "accepted", runId: "completion-run" });
         accepted.resolve(options ?? {});
         const operation = parentSettled.promise.then(async () => {
+          options?.onWorkLaneAdmitted?.();
           options?.onExecutionStarted?.();
           executed = true;
           executionStarted.resolve();
@@ -146,7 +147,19 @@ describe("queued completion handoff", () => {
       };
       testing.setDepsForTest({
         dispatchGatewayMethodInProcess,
-        getRuntimeConfig: () => ({}),
+        getRuntimeConfig: () => ({
+          agents: {
+            defaults: {
+              subagents: {
+                // This main-branch lifecycle test exercises a deliberately long
+                // accepted queue wait; the split-timeout tests own the shorter
+                // default admission budget itself.
+                announceAdmissionTimeoutMs: 300_000,
+                announceRunTimeoutMs: 120_000,
+              },
+            },
+          },
+        }),
         getRequesterSessionActivity: () => ({ sessionId: "busy-parent", isActive: true }),
         queueEmbeddedAgentMessageWithOutcome: () => ({
           queued: false,
@@ -189,7 +202,7 @@ describe("queued completion handoff", () => {
           await vi.advanceTimersByTimeAsync(120_001);
           expect(await delivery).toMatchObject({
             delivered: false,
-            error: "gateway request timeout for agent",
+            error: expect.stringContaining("announce run exceeded budget"),
           });
           return;
         }
@@ -2367,6 +2380,9 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         targetSessionId: "requester-session-local",
         idempotencyKey: "announce-local-dispatch",
       },
+      // The dispatch backstop spans admission + run + release grace. The two
+      // phase-local timers still produce the distinguishable failure reasons.
+      timeoutMs: 960_000,
       resolveGatewayContext,
       signal: expect.any(AbortSignal),
     });

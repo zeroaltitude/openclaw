@@ -53,7 +53,10 @@ import {
   hasAnnounceSendEvidence,
   isIncompleteAnnounceAgentResultError,
   isPermanentAnnounceDeliveryError,
+  resolveSubagentAnnounceAdmissionTimeoutMs,
+  resolveSubagentAnnounceRunTimeoutMs,
   resolveSubagentAnnounceTimeoutMs,
+  resolveSubagentAnnounceWholeCallTimeoutMs,
   runAnnounceDeliveryWithRetry,
   SourceOwnerChangedError,
   sourceOwnerChangedResult,
@@ -73,6 +76,7 @@ import {
   resolveCompletionDeliveryOrigins,
   type DeliveryContext,
 } from "./subagent-announce-origin.js";
+import { runWithAnnounceSplitDeadlines } from "./subagent-announce-split-deadline.js";
 import { resolveRequesterStoreKey } from "./subagent-requester-store-key.js";
 
 async function runAnnounceAgentCall(params: {
@@ -82,6 +86,7 @@ async function runAnnounceAgentCall(params: {
   signal?: AbortSignal;
   timeoutMs?: number;
   isExecutionAllowed: () => boolean;
+  onWorkLaneAdmitted: () => void;
   resolveGatewayContext?: import("../../../gateway/server-methods/types.js").GatewayContextResolver;
 }): Promise<unknown> {
   const deadline = new AbortController();
@@ -111,6 +116,7 @@ async function runAnnounceAgentCall(params: {
       operatorRoleActor: { kind: "system" },
       delegatedToolPolicyHandoff: params.delegatedToolPolicyHandoff,
       signal,
+      timeoutMs: params.timeoutMs,
       // Accepted follow-ups belong to session admission. Waiting behind a busy
       // parent must not spend the completion's execution budget or retry quota.
       onAccepted: () => {
@@ -126,6 +132,7 @@ async function runAnnounceAgentCall(params: {
         executionStarted = true;
         armDeadline();
       },
+      onWorkLaneAdmitted: params.onWorkLaneAdmitted,
       resolveGatewayContext: params.resolveGatewayContext,
     });
   } finally {
@@ -164,6 +171,9 @@ export async function sendSubagentAnnounceDirectly(params: {
   }
   const cfg = getSubagentAnnounceRuntimeConfig();
   const announceTimeoutMs = resolveSubagentAnnounceTimeoutMs(cfg);
+  const announceAdmissionTimeoutMs = resolveSubagentAnnounceAdmissionTimeoutMs(cfg);
+  const announceRunTimeoutMs = resolveSubagentAnnounceRunTimeoutMs(cfg);
+  const announceWholeCallTimeoutMs = resolveSubagentAnnounceWholeCallTimeoutMs(cfg);
   const canonicalRequesterSessionKey = resolveRequesterStoreKey(
     cfg,
     params.targetRequesterSessionKey,
@@ -431,29 +441,39 @@ export async function sendSubagentAnnounceDirectly(params: {
           if (!isCompletionDeliveryAllowed()) {
             throw new SourceOwnerChangedError();
           }
-          return await runAnnounceAgentCall({
-            agentParams: directAgentParams,
-            delegatedToolPolicyHandoff:
-              isSubagentCompletion &&
-              trustedCompletionEvent &&
-              params.sourceSessionKey &&
-              requesterActivity.sessionId &&
-              params.isSourceSessionEffectsAllowed?.() !== false
-                ? {
-                    sourceSessionKey: params.sourceSessionKey,
-                    ...(trustedCompletionEvent.childSessionId
-                      ? { sourceSessionId: trustedCompletionEvent.childSessionId }
-                      : {}),
-                    targetSessionKey: canonicalRequesterSessionKey,
-                    targetSessionId: requesterActivity.sessionId,
-                    idempotencyKey: params.directIdempotencyKey,
-                  }
-                : undefined,
-            expectFinal: true,
+          const delegatedToolPolicyHandoff =
+            isSubagentCompletion &&
+            trustedCompletionEvent &&
+            params.sourceSessionKey &&
+            requesterActivity.sessionId &&
+            params.isSourceSessionEffectsAllowed?.() !== false
+              ? {
+                  sourceSessionKey: params.sourceSessionKey,
+                  ...(trustedCompletionEvent.childSessionId
+                    ? { sourceSessionId: trustedCompletionEvent.childSessionId }
+                    : {}),
+                  targetSessionKey: canonicalRequesterSessionKey,
+                  targetSessionId: requesterActivity.sessionId,
+                  idempotencyKey: params.directIdempotencyKey,
+                }
+              : undefined;
+          return await runWithAnnounceSplitDeadlines({
+            runId: params.directIdempotencyKey,
+            admissionTimeoutMs: announceAdmissionTimeoutMs,
+            runTimeoutMs: announceRunTimeoutMs,
+            wholeCallTimeoutMs: announceWholeCallTimeoutMs,
             signal: params.signal,
-            timeoutMs: announceTimeoutMs,
-            isExecutionAllowed: isCompletionDeliveryAllowed,
-            resolveGatewayContext: params.resolveGatewayContext,
+            run: async (dispatchTimeoutMs, signal, onWorkLaneAdmitted) =>
+              await runAnnounceAgentCall({
+                agentParams: directAgentParams,
+                delegatedToolPolicyHandoff,
+                expectFinal: true,
+                signal,
+                timeoutMs: dispatchTimeoutMs,
+                isExecutionAllowed: isCompletionDeliveryAllowed,
+                onWorkLaneAdmitted,
+                resolveGatewayContext: params.resolveGatewayContext,
+              }),
           });
         },
       });

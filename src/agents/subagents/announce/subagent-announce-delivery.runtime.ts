@@ -184,6 +184,8 @@ export function setSubagentAnnounceDeliveryDepsForTest(
             params: agentParams,
             expectFinal: options?.expectFinal,
             onAccepted: options?.onAccepted,
+            onSignalAbort: options?.onSignalAbort,
+            signal: options?.signal,
             timeoutMs: options?.timeoutMs,
           })) satisfies typeof dispatchGatewayMethodInProcess)
       : undefined);

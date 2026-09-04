@@ -149,6 +149,23 @@ describe("createInternalAgentTurnFacade", () => {
     expect(onExecutionStarted).toHaveBeenCalledOnce();
   });
 
+  it("passes the exact internal work-lane admission observer to the turn", async () => {
+    const onWorkLaneAdmitted = vi.fn();
+    startTurn.mockImplementation(async ({ io }) => {
+      expect(io.emitWorkLaneAdmitted).toBe(onWorkLaneAdmitted);
+      io.emitAcceptance([true, { runId: "run-admitted", status: "accepted" }, undefined]);
+      io.emitWorkLaneAdmitted?.();
+    });
+
+    await expect(
+      createFacade().dispatchRaw(
+        { message: "test", idempotencyKey: "run-admitted" },
+        { onWorkLaneAdmitted },
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    expect(onWorkLaneAdmitted).toHaveBeenCalledOnce();
+  });
+
   it("cancels only the accepted run when its opted-in dispatch deadline expires", async () => {
     vi.useFakeTimers();
     const context = createContext();

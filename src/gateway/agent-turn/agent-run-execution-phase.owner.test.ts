@@ -39,6 +39,7 @@ function createExecution(options: { aborted?: boolean; assertContextCurrent?: ()
         activeRunAbort: {
           cleanup: abortCleanup,
           controller,
+          markExecutionStarted: vi.fn(() => true),
           registered: false,
         },
         dispatchTaskTrackingMode: "none",
@@ -140,6 +141,43 @@ describe("startAgentRunExecution Gateway ownership", () => {
     resolveCleanupObserved();
     await expect(borrowedAfterCleanup).resolves.toBeUndefined();
     expect(execution.runtimeRelease).toHaveBeenCalledOnce();
+  });
+
+  it("publishes execution start only after the Gateway work lane admits the run", async () => {
+    const execution = createExecution();
+    let releaseAdmission!: () => void;
+    const admission = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    execution.params.prepared.activeGatewayWorkAdmission.run = async <T>(
+      run: () => Promise<T>,
+    ): Promise<T> => {
+      await admission;
+      return await run();
+    };
+    const executionStarted = vi.fn();
+    const workLaneAdmitted = vi.fn(() => {
+      expect(dispatchAgentRunFromGateway).not.toHaveBeenCalled();
+      expect(executionStarted).not.toHaveBeenCalled();
+    });
+    execution.params.io.emitExecutionStarted = executionStarted;
+    execution.params.io.emitWorkLaneAdmitted = workLaneAdmitted;
+    dispatchAgentRunFromGateway.mockImplementationOnce((dispatch) => {
+      dispatch.ingressOpts.onExecutionStarted?.();
+    });
+
+    startAgentRunExecution(execution.params);
+    await Promise.resolve();
+
+    expect(dispatchAgentRunFromGateway).not.toHaveBeenCalled();
+    expect(executionStarted).not.toHaveBeenCalled();
+    expect(workLaneAdmitted).not.toHaveBeenCalled();
+
+    releaseAdmission();
+    await vi.waitFor(() => expect(dispatchAgentRunFromGateway).toHaveBeenCalledOnce());
+
+    expect(workLaneAdmitted).toHaveBeenCalledOnce();
+    expect(executionStarted).toHaveBeenCalledOnce();
   });
 
   it("releases the admitted runtime once when aborted before dispatch", async () => {

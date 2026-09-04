@@ -14,6 +14,13 @@ import { isFailoverError } from "../../failover-error.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
 
 const DEFAULT_SUBAGENT_ANNOUNCE_TIMEOUT_MS = 120_000;
+// The synchronous announce dispatch waits for two unrelated things, so one
+// budget cannot fit both. Lane admission is short by nature: the requester
+// session lane is either free now or held for the rest of the requester's turn,
+// and waiting past that only stalls the caller. An admitted announce turn is a
+// whole agent turn, so it needs far more room than any admission wait.
+const DEFAULT_SUBAGENT_ANNOUNCE_ADMISSION_TIMEOUT_MS = 30_000;
+const DEFAULT_SUBAGENT_ANNOUNCE_RUN_TIMEOUT_MS = 900_000;
 
 export class SourceOwnerChangedError extends Error {
   constructor() {
@@ -36,6 +43,41 @@ export function sourceOwnerChangedResult(): SubagentAnnounceDeliveryResult {
 export function resolveSubagentAnnounceTimeoutMs(cfg: OpenClawConfig): number {
   const configured = cfg.agents?.defaults?.subagents?.announceTimeoutMs;
   return clampTimerTimeoutMs(configured) ?? DEFAULT_SUBAGENT_ANNOUNCE_TIMEOUT_MS;
+}
+
+export function resolveSubagentAnnounceWholeCallTimeoutMs(cfg: OpenClawConfig): number | undefined {
+  return clampTimerTimeoutMs(cfg.agents?.defaults?.subagents?.announceTimeoutMs);
+}
+
+function resolveAnnouncePhaseTimeoutMs(
+  cfg: OpenClawConfig,
+  phaseKey: "announceAdmissionTimeoutMs" | "announceRunTimeoutMs",
+  fallbackMs: number,
+): number {
+  const subagents = cfg.agents?.defaults?.subagents;
+  // The legacy timeout continues to provide a phase fallback, while the split
+  // deadline owner also retains it as the outer whole-call cap.
+  return (
+    clampTimerTimeoutMs(subagents?.[phaseKey]) ??
+    clampTimerTimeoutMs(subagents?.announceTimeoutMs) ??
+    fallbackMs
+  );
+}
+
+export function resolveSubagentAnnounceAdmissionTimeoutMs(cfg: OpenClawConfig): number {
+  return resolveAnnouncePhaseTimeoutMs(
+    cfg,
+    "announceAdmissionTimeoutMs",
+    DEFAULT_SUBAGENT_ANNOUNCE_ADMISSION_TIMEOUT_MS,
+  );
+}
+
+export function resolveSubagentAnnounceRunTimeoutMs(cfg: OpenClawConfig): number {
+  return resolveAnnouncePhaseTimeoutMs(
+    cfg,
+    "announceRunTimeoutMs",
+    DEFAULT_SUBAGENT_ANNOUNCE_RUN_TIMEOUT_MS,
+  );
 }
 
 export function summarizeDeliveryError(error: unknown): string {

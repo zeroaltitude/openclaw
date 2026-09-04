@@ -360,8 +360,12 @@ export type AgentDefaultsConfig = {
     thinking?: string;
     /** Default run timeout in seconds for spawned sub-agents (0 = no timeout). */
     runTimeoutSeconds?: number;
-    /** Gateway timeout in ms for sub-agent announce delivery calls (default: 120000). */
+    /** Legacy whole-call cap in ms for sub-agent announce delivery calls (default: 120000). */
     announceTimeoutMs?: number;
+    /** Wait in ms for the requester session lane to admit an announce turn (default: 30000). */
+    announceAdmissionTimeoutMs?: number;
+    /** Budget in ms for an admitted announce turn to finish (default: 900000). */
+    announceRunTimeoutMs?: number;
     /** Require explicit agentId in sessions_spawn (no default same-as-caller). Default: false. */
     requireAgentId?: boolean;
   };

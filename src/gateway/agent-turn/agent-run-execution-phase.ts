@@ -160,6 +160,7 @@ export function startAgentRunExecution(params: {
     return recorder?.withPendingInput ? recorder.withPendingInput(run) : run();
   };
   void prepared.activeGatewayWorkAdmission.run(async () => {
+    params.io.emitWorkLaneAdmitted?.();
     await yieldAfterAgentAcceptedAck();
     let dispatched = false;
     let pendingRecovery: MainSessionRecoveryPendingTarget | undefined;
