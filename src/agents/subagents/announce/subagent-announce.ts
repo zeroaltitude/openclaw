@@ -193,6 +193,8 @@ export async function runSubagentAnnounceFlow(params: {
   label?: string;
   outcome?: SubagentRunOutcome;
   announceType?: SubagentAnnounceType;
+  /** Distinguishes a provisional wake from the later terminal delivery. */
+  deliveryPhase?: "wait-expiry";
   expectsCompletionMessage?: boolean;
   spawnMode?: SpawnSubagentMode;
   wakeOnDescendantSettle?: boolean;

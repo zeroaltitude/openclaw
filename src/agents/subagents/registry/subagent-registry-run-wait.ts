@@ -187,6 +187,11 @@ export type SubagentManagerOptions = {
     provisionalKill?: boolean;
   }): void;
   completeSubagentRun(args: SubagentCompletionRequest): Promise<void>;
+  reportSubagentWaitExpiry(args: {
+    entry: SubagentRunRecord;
+    observedAt: number;
+    startedAt?: number;
+  }): Promise<void>;
   resolveSubagentTask(entry: SubagentRunRecord): DetachedTaskFindResult;
 };
 
