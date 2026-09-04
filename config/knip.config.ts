@@ -127,6 +127,7 @@ const repositoryScriptEntries = [
   "scripts/proof-126924-isolated-gateway.ts!",
   "scripts/proof-126924-subagent-wait-expiry-not-death.ts!",
   "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
+  "scripts/proof-136474-blocked-hook-registrations.ts!",
   "scripts/proof-app-server-runtime-chooser-bindings.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
