@@ -4,7 +4,6 @@ import { runWithGatewayIndependentRootWorkAdmission } from "../../../process/gat
 import { emitSessionLifecycleEvent } from "../../../sessions/session-lifecycle-events.js";
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
-import type { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
 import {
   blocksSwarmGroupArchival,
   clearUnconfirmedCollectorRetention,
@@ -12,10 +11,6 @@ import {
   shouldDeferTerminalCleanupForUnconfirmedChild,
 } from "./subagent-registry-cleanup.js";
 import { safeRemoveAttachmentsDir } from "./subagent-registry-helpers.js";
-import type {
-  SubagentLifecycleController,
-  SubagentLifecycleOptions,
-} from "./subagent-registry-lifecycle.js";
 import { createInterruptedRecoveryCoordinator } from "./subagent-registry-restart-recovery-coordinator.js";
 import { isRestoredQueuedFailureSettlementClaimed } from "./subagent-registry-restore.js";
 import {
@@ -31,11 +26,7 @@ import {
 } from "./subagent-registry-sweep-kill.js";
 import { reconcileStaleActiveSubagentRun } from "./subagent-registry-sweeper-orphan.js";
 import type { SubagentRegistrySweeperOptions } from "./subagent-registry-sweeper.types.js";
-import type {
-  ContextEngineSubagentEndedParams,
-  SubagentCompletionRequest,
-  SubagentRunRecord,
-} from "./subagent-registry.types.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isStaleUnendedSubagentRun } from "./subagent-run-liveness.js";
 import { deleteSubagentSessionForCleanup } from "./subagent-session-cleanup.js";
 import {
