@@ -17,6 +17,11 @@ type EmbeddedRunStageTracker = {
   snapshot: () => EmbeddedRunStageSummary;
 };
 
+export type EmbeddedAuthInitializeStageTracker = {
+  mark: (name: string) => void;
+  finish: (provider: string) => void;
+};
+
 /** Canonical stage names for dispatch-time embedded attempt diagnostics. */
 export const EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE = {
   compactionRuntime: "compaction-runtime",
@@ -61,6 +66,28 @@ export function createEmbeddedRunStageTracker(options?: {
         totalMs: toMs(now() - startedAt),
         stages: stages.slice(),
       };
+    },
+  };
+}
+
+/** Creates the trace-only auth initialization tracker used by the auth controller. */
+export function createEmbeddedAuthInitializeStageTracker(log: {
+  isEnabled: (level: "trace") => boolean;
+  trace: (message: string) => void;
+}): EmbeddedAuthInitializeStageTracker | undefined {
+  if (!log.isEnabled("trace")) {
+    return undefined;
+  }
+  const tracker = createEmbeddedRunStageTracker();
+  return {
+    mark: tracker.mark,
+    finish(provider) {
+      log.trace(
+        formatEmbeddedRunStageSummary(
+          `[trace:embedded-run] auth initialize stages: provider=${provider}`,
+          tracker.snapshot(),
+        ),
+      );
     },
   };
 }

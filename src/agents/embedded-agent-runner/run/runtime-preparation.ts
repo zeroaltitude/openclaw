@@ -24,10 +24,8 @@ import {
   createEmbeddedRunStageTracker,
   formatEmbeddedRunStageSummary,
 } from "./attempt-stage-timing.js";
-import {
-  createEmbeddedRunAuthController,
-  resolveEmbeddedAuthCooldownProbePolicy,
-} from "./auth-controller.js";
+import { createEmbeddedRunAuthController } from "./auth-controller.js";
+import { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-cooldown-probe-policy.js";
 import { prepareEmbeddedRunAuthPlan } from "./auth-plan.js";
 import { createScopedAuthProfileStore } from "./auth-store.js";
 import type { RuntimeAuthState } from "./helpers.js";

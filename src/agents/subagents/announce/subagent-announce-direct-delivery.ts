@@ -9,7 +9,6 @@ import { defaultRuntime } from "../../../runtime.js";
 import {
   INTERNAL_PROVENANCE_SOURCE_CHANNEL,
   isAgentMediatedCompletionSourceTool,
-  shouldPreserveUserFacingSessionStateForInputProvenance,
 } from "../../../sessions/input-provenance.js";
 import { isCronRunSessionKey } from "../../../sessions/session-key-utils.js";
 import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
@@ -31,7 +30,6 @@ import {
   hasVisibleAgentPayload,
 } from "../../embedded-agent-runner/message-visibility.js";
 import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
-import { readSessionLaneAvailability } from "../../embedded-agent-runner/session-lane-availability.js";
 import {
   AGENT_INTERNAL_EVENT_TYPE_TASK_COMPLETION,
   hasVisibleCompletionResult,
@@ -43,6 +41,7 @@ import {
   resolveActiveWakeWithRetries,
   resolveRequesterSessionActivity,
 } from "./subagent-announce-active-wake.js";
+import { runAnnounceAgentCall } from "./subagent-announce-agent-call.js";
 import {
   deliverCompletionDirect,
   hasFailedSubagentNoOutputCompletion,
@@ -64,7 +63,6 @@ import {
   summarizeDeliveryError,
 } from "./subagent-announce-delivery-retry.js";
 import {
-  dispatchSubagentAnnounceAgent,
   getSubagentAnnounceRuntimeConfig,
   resolveSubagentRequesterSessionAbandonment,
   loadRequesterSessionEntry,
@@ -72,74 +70,13 @@ import {
   resolveQueueSettings,
 } from "./subagent-announce-delivery.runtime.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
-import type { SubagentCompletionToolHandoffRegistration } from "./subagent-announce-handoff.js";
+import { resolveRequesterLaneBusyDeferral } from "./subagent-announce-lane-defer.js";
 import {
   resolveCompletionDeliveryOrigins,
   type DeliveryContext,
 } from "./subagent-announce-origin.js";
 import { runWithAnnounceSplitDeadlines } from "./subagent-announce-split-deadline.js";
 import { resolveRequesterStoreKey } from "./subagent-requester-store-key.js";
-
-async function runAnnounceAgentCall(params: {
-  agentParams: Record<string, unknown>;
-  delegatedToolPolicyHandoff?: SubagentCompletionToolHandoffRegistration;
-  expectFinal?: boolean;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-  isExecutionAllowed: () => boolean;
-  onWorkLaneAdmitted: () => void;
-  resolveGatewayContext?: import("../../../gateway/server-methods/types.js").GatewayContextResolver;
-}): Promise<unknown> {
-  const deadline = new AbortController();
-  const signal = params.signal
-    ? AbortSignal.any([params.signal, deadline.signal])
-    : deadline.signal;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let executionStarted = false;
-  const armDeadline = () => {
-    clearTimeout(timer);
-    if (params.timeoutMs !== undefined) {
-      timer = setTimeout(
-        () => deadline.abort(new Error("gateway request timeout for agent")),
-        params.timeoutMs,
-      );
-      timer.unref?.();
-    }
-  };
-  armDeadline();
-  try {
-    return await dispatchSubagentAnnounceAgent(params.agentParams, {
-      cancelOnDeadline: true,
-      expectFinal: params.expectFinal,
-      forceSyntheticClient: shouldPreserveUserFacingSessionStateForInputProvenance(
-        params.agentParams.inputProvenance,
-      ),
-      operatorRoleActor: { kind: "system" },
-      delegatedToolPolicyHandoff: params.delegatedToolPolicyHandoff,
-      signal,
-      timeoutMs: params.timeoutMs,
-      // Accepted follow-ups belong to session admission. Waiting behind a busy
-      // parent must not spend the completion's execution budget or retry quota.
-      onAccepted: () => {
-        if (!executionStarted) {
-          clearTimeout(timer);
-        }
-      },
-      onExecutionStarted: () => {
-        signal.throwIfAborted();
-        if (!params.isExecutionAllowed()) {
-          throw new SourceOwnerChangedError();
-        }
-        executionStarted = true;
-        armDeadline();
-      },
-      onWorkLaneAdmitted: params.onWorkLaneAdmitted,
-      resolveGatewayContext: params.resolveGatewayContext,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 export async function sendSubagentAnnounceDirectly(params: {
   requesterSessionKey: string;
@@ -159,13 +96,7 @@ export async function sendSubagentAnnounceDirectly(params: {
   isSourceSessionEffectsAllowed?: () => boolean;
   isCompletionOwnedByRequesterYield?: () => boolean;
   requesterIsSubagent: boolean;
-  /**
-   * Park instead of dispatching when the requester's session lane is occupied.
-   *
-   * Only callers that own a durable, re-drivable announce obligation may opt in:
-   * a deferral is a promise to come back, so a caller with no outbox behind it
-   * would simply lose the announcement.
-   */
+  /** Park a durable, re-drivable announcement while the requester lane is occupied. */
   deferOnRequesterLaneBusy?: boolean;
   createUserTurnTranscriptRecorder?: (sessionId: string) => UserTurnTranscriptRecorder;
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void;
@@ -189,8 +120,7 @@ export async function sendSubagentAnnounceDirectly(params: {
     params.requesterAgentId,
   );
   try {
-    // A partial completion origin must retain the target from the requester's
-    // recorded delivery context or the generated reply becomes undeliverable.
+    // Partial completion origins retain the requester's delivery target.
     const { directOrigin, requesterSessionOrigin, effectiveDirectOrigin } =
       resolveCompletionDeliveryOrigins(params);
     const sessionOnlyOrigin = effectiveDirectOrigin?.channel
@@ -293,8 +223,7 @@ export async function sendSubagentAnnounceDirectly(params: {
       params.isSourceSessionEffectsAllowed?.() !== false &&
       !(params.expectsCompletionMessage && params.isCompletionOwnedByRequesterYield?.());
     if (!isCompletionDeliveryAllowed()) {
-      // sessions_yield owns the post-turn synthesis. Starting or steering a
-      // requester turn here would replay the original fanout during handoff.
+      // sessions_yield owns synthesis; another requester turn would replay the fanout.
       return {
         delivered: false,
         path: "none",
@@ -404,27 +333,14 @@ export async function sendSubagentAnnounceDirectly(params: {
         path: "none",
       };
     }
-    // The dispatch below starts a NEW turn in the requester's session, so it
-    // serializes on that session's lane. A requester holding that lane cannot
-    // admit it until its own turn ends, which is unbounded — the old code spent
-    // the whole announce budget discovering that and then reported a delivery
-    // failure for a child that had succeeded. Lane occupancy is observable, so
-    // read it and park instead of paying for the discovery.
-    if (params.deferOnRequesterLaneBusy) {
-      const requesterLane = readSessionLaneAvailability(canonicalRequesterSessionKey);
-      if (requesterLane.busy) {
-        defaultRuntime.log(
-          `Subagent announce deferred (requester lane busy) run=${params.directIdempotencyKey} ` +
-            `lane=${requesterLane.lane} activeCount=${requesterLane.activeCount} ` +
-            `queuedCount=${requesterLane.queuedCount} blockedBy=${requesterLane.blockedBy ?? "lane"}`,
-        );
-        return {
-          delivered: false,
-          path: "none",
-          reason: "requester_lane_busy",
-          disposition: "deferred_requester_busy",
-        };
-      }
+    const laneBusyDeferral = resolveRequesterLaneBusyDeferral({
+      enabled: params.deferOnRequesterLaneBusy,
+      requesterSessionKey: canonicalRequesterSessionKey,
+      runId: params.directIdempotencyKey,
+      log: defaultRuntime.log,
+    });
+    if (laneBusyDeferral) {
+      return laneBusyDeferral;
     }
     const directAgentThreadId = shouldDeliverAgentFinal
       ? stringifyRouteThreadId(deliveryTarget.threadId)

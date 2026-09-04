@@ -21,7 +21,6 @@ import {
   type FailoverReason,
 } from "../../embedded-agent-helpers.js";
 import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
-import { shouldUseTransientCooldownProbeSlot } from "../../failover-policy.js";
 import { getFailoverErrorCode } from "../../failover/error.js";
 import { renderAuthProfileFailoverCopy } from "../../failover/user-copy.js";
 import {
@@ -41,10 +40,8 @@ import {
 } from "../../provider-secret-egress.js";
 import { clampRuntimeAuthRefreshDelayMs } from "../../runtime-auth-refresh.js";
 import { log as embeddedRunLog } from "../logger.js";
-import {
-  createEmbeddedRunStageTracker,
-  formatEmbeddedRunStageSummary,
-} from "./attempt-stage-timing.js";
+import { createEmbeddedAuthInitializeStageTracker } from "./attempt-stage-timing.js";
+import { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-cooldown-probe-policy.js";
 import { resolveAuthProfileFailureReason } from "./auth-profile-failure-policy.js";
 import type { AuthProfileFailurePolicy } from "./auth-profile-failure-policy.types.js";
 import {
@@ -66,49 +63,6 @@ type LogLike = {
   info(message: string): void;
   warn(message: string): void;
 };
-
-/** Decides whether one automatic profile may bypass its current cooldown. */
-export function resolveEmbeddedAuthCooldownProbePolicy(params: {
-  authStore: AuthProfileStore;
-  profileCandidates: Array<string | undefined>;
-  lockedProfileId?: string;
-  modelId: string;
-  allowTransientCooldownProbe: boolean;
-}): { probeProfileIds: ReadonlySet<string>; unavailableReason: FailoverReason | null } {
-  const autoProfileCandidates = params.profileCandidates.filter(
-    (candidate): candidate is string =>
-      typeof candidate === "string" && candidate.length > 0 && candidate !== params.lockedProfileId,
-  );
-  const allAutoProfilesInCooldown =
-    autoProfileCandidates.length > 0 &&
-    autoProfileCandidates.every((candidate) =>
-      isProfileInCooldown(params.authStore, candidate, undefined, params.modelId),
-    );
-  const unavailableReason = allAutoProfilesInCooldown
-    ? (resolveProfilesUnavailableReason({
-        store: params.authStore,
-        profileIds: autoProfileCandidates,
-      }) ?? "unknown")
-    : null;
-  const probeProfileIds = new Set<string>();
-  if (
-    params.allowTransientCooldownProbe &&
-    allAutoProfilesInCooldown &&
-    shouldUseTransientCooldownProbeSlot(unavailableReason)
-  ) {
-    for (const candidate of autoProfileCandidates) {
-      const candidateReason =
-        resolveProfilesUnavailableReason({
-          store: params.authStore,
-          profileIds: [candidate],
-        }) ?? "unknown";
-      if (shouldUseTransientCooldownProbeSlot(candidateReason)) {
-        probeProfileIds.add(candidate);
-      }
-    }
-  }
-  return { probeProfileIds, unavailableReason };
-}
 
 /**
  * Coordinates auth profile selection, runtime auth preparation/refresh, and
@@ -534,12 +488,8 @@ export function createEmbeddedRunAuthController(params: {
   };
 
   const applyApiKeyInfo = async (candidate?: string, attemptIndex?: number): Promise<void> => {
-    // Trace-gated timing: the auth "initialize" stage measured ~443ms/turn but
-    // its interior (prepare vs credential resolve vs runtime-auth hook) was
-    // unattributed. Keep marks here so the next trace capture names the cost.
-    const initStages = embeddedRunLog.isEnabled("trace")
-      ? createEmbeddedRunStageTracker()
-      : undefined;
+    // Trace the previously unattributed interior of auth initialization.
+    const initStages = createEmbeddedAuthInitializeStageTracker(embeddedRunLog);
     const preparedModel = await params.prepareModelForAuthProfile?.(candidate, attemptIndex);
     initStages?.mark("prepare-model");
     const apiKeyInfo = await resolveApiKeyForCandidate(
@@ -625,14 +575,7 @@ export function createEmbeddedRunAuthController(params: {
       profileId: apiKeyInfo.profileId,
     });
     initStages?.mark("prepare-runtime-auth");
-    if (initStages) {
-      embeddedRunLog.trace(
-        formatEmbeddedRunStageSummary(
-          `[trace:embedded-run] auth initialize stages: provider=${runtimeModel.provider}`,
-          initStages.snapshot(),
-        ),
-      );
-    }
+    initStages?.finish(runtimeModel.provider);
     applyPreparedRuntimeRequestOverrides({ runtimeModel, preparedAuth: preparedAuth ?? {} });
     if (preparedAuth?.apiKey) {
       clearRuntimeAuthRefreshTimer();
