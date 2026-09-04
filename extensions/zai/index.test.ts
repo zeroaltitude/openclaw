@@ -11,13 +11,12 @@ import {
 import { buildManifestModelProviderConfig } from "openclaw/plugin-sdk/provider-catalog-shared";
 import { buildOpenAICompletionsParams } from "openclaw/plugin-sdk/provider-transport-runtime";
 import { describe, expect, it } from "vitest";
-import {
-  buildZaiClaudeAgentSdkBackend,
-  ZAI_ANTHROPIC_BASE_URL,
-  ZAI_CLAUDE_AGENT_SDK_BACKEND_ID,
-} from "./cli-backend.js";
+import { buildZaiClaudeAgentSdkBackend } from "./cli-backend.js";
 import plugin from "./index.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
+
+const ZAI_CLAUDE_AGENT_SDK_BACKEND_ID = "zai-claude-agent-sdk";
+const ZAI_ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic";
 
 function createGlm47Template() {
   return {
