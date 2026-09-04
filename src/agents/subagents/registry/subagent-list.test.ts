@@ -544,6 +544,8 @@ describe("buildSubagentList", () => {
 
     expect(observedList.active).toStrictEqual([]);
     expect(observedList.recent[0]?.status).toBe("timeout");
+  });
+
   // The shared-cwd advisory warns when a caller deliberately aimed two live
   // children at one directory. Each directory is emitted once in a bounded
   // summary; individual rows carry only a small group id.
