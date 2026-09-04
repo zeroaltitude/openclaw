@@ -65,6 +65,7 @@ import {
   readLatestSubagentOutputWithRetry,
   readSubagentOutput,
   readSubagentTimeoutProgress,
+  resolveSubagentRunDisposition,
   type SubagentRunOutcome,
   waitForSubagentRunOutcome,
 } from "./subagent-announce-output.js";
@@ -112,8 +113,7 @@ function buildAnnounceReplyInstruction(params: {
   requesterIsSubagent: boolean;
   announceType: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
-  /** The wait ended without observing the child stop; it may still be running. */
-  childStopUnconfirmed?: boolean;
+  stillRunning?: boolean;
   modelRouteChange?: string;
   preserveModelRouteNotice: boolean;
 }): string {
@@ -122,8 +122,8 @@ function buildAnnounceReplyInstruction(params: {
     : params.preserveModelRouteNotice
       ? " Preserve any runtime-authored model-route change notice in your update."
       : " Keep runtime-authored model-route change notices internal on this shared surface.";
-  if (params.childStopUnconfirmed) {
-    return `This ${params.announceType} is NOT known to have finished: the wait for it expired without observing it stop, so it may still be running. Do not treat this as a completed result, and do not start a replacement or successor for it — a second worker on the same files or working directory can corrupt what the first one is mid-edit on. Re-check whether it is still live before acting, and keep waiting or harvest its own output when it lands.${modelRouteInstruction} Keep this internal context private (don't mention system/log/stats/session details or announce type). Reply ONLY: ${SILENT_REPLY_TOKEN} if there is nothing to say to the user about this yet.`;
+  if (params.stillRunning) {
+    return `This ${params.announceType} has NOT finished — the wait above expired, the child did not. It is still running and still owns its session, working directory, and any branch or file it was given. Do not treat this as a result, do not report it as done or failed, and do not start a replacement or duplicate for the same work. Anything above is partial. Continue with other work; a further completion event will arrive when the child actually ends.${modelRouteInstruction} Keep this internal context private (don't mention system/log/stats/session details or announce type). If there is nothing for the user right now, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
   }
   if (params.requesterIsSubagent) {
     return `Convert this completion into a concise internal orchestration update for your parent agent in your own words.${modelRouteInstruction} Keep this internal context private (don't mention system/log/stats/session details or announce type). If this result is duplicate or no update is needed, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
@@ -319,10 +319,13 @@ export async function runSubagentAnnounceFlow(params: {
       // Best-effort only.
     }
 
-    const announceId = buildAnnounceIdFromChildRun({
+    const baseAnnounceId = buildAnnounceIdFromChildRun({
       childSessionKey: params.childSessionKey,
       childRunId: params.childRunId,
     });
+    const announceId = params.deliveryPhase
+      ? `${baseAnnounceId}:${params.deliveryPhase}`
+      : baseAnnounceId;
 
     if (
       params.wakeOnDescendantSettle === true &&
@@ -475,8 +478,16 @@ export async function runSubagentAnnounceFlow(params: {
     // into state the still-live child is mid-edit on.
     const childStopUnconfirmed =
       outcome.status === "timeout" && outcome.timeoutDisposition === "child-unconfirmed";
-    const statusLabel =
-      outcome.status === "ok"
+    const disposition = resolveSubagentRunDisposition(outcome);
+    const stillRunning = disposition === "still-running";
+    if (stillRunning) {
+      shouldDeleteChildSession = false;
+    }
+    const statusLabel = stillRunning
+      ? outcome.error
+        ? `still running; last error while retrying: ${outcome.error}`
+        : "still running; the wait for it expired, it did not"
+      : outcome.status === "ok"
         ? "completed; ready for parent review"
         : outcome.status === "timeout"
           ? childStopUnconfirmed
@@ -500,8 +511,8 @@ export async function runSubagentAnnounceFlow(params: {
     const childResultText = childCompletionFindings || reply;
     const findings =
       childResultText ||
-      (childStopUnconfirmed
-        ? "(no output observed before this wait expired; the child may still be working — re-check before acting on this)"
+      (stillRunning
+        ? "(no result yet; child still running)"
         : "(no output)");
 
     let requesterIsSubagent = requesterIsInternalSession();
@@ -538,6 +549,7 @@ export async function runSubagentAnnounceFlow(params: {
           sessionKey: params.childSessionKey,
           startedAt: params.startedAt,
           endedAt: params.endedAt,
+          disposition,
         });
     const statsLine = childSessionEffectsAllowed() ? candidateStatsLine : undefined;
     // Send to the requester session. For nested subagents this is an internal
@@ -575,7 +587,7 @@ export async function runSubagentAnnounceFlow(params: {
       requesterIsSubagent,
       announceType,
       expectsCompletionMessage,
-      childStopUnconfirmed,
+      stillRunning,
       modelRouteChange,
       // Nested and local operator parents may report the route fact. External
       // channel parents receive it only as private orchestration context.
@@ -594,6 +606,7 @@ export async function runSubagentAnnounceFlow(params: {
         taskLabel,
         status: outcome.status,
         statusLabel,
+        disposition,
         result: findings,
         ...(childResultText ? {} : { noVisibleResult: true }),
         modelRouteChange,

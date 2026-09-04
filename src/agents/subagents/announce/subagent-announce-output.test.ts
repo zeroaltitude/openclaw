@@ -979,6 +979,7 @@ describe("applySubagentWaitOutcome", () => {
       expect(applied.outcome).toEqual({
         status: "error",
         error: "subagent run terminated",
+        disposition: "killed",
         startedAt: 100,
         endedAt: 150,
         elapsedMs: 50,
@@ -1032,6 +1033,7 @@ describe("applySubagentWaitOutcome", () => {
     expect(applied.outcome).toEqual({
       status: "error",
       error: "subagent run terminated",
+      disposition: "killed",
       startedAt: 100,
       endedAt: 150,
       elapsedMs: 50,
@@ -1059,6 +1061,7 @@ describe("applySubagentWaitOutcome", () => {
       expect(applied.outcome).toEqual({
         status: "error",
         error: "subagent run terminated",
+        disposition: "killed",
         startedAt: 100,
         endedAt: 150,
         elapsedMs: 50,

@@ -341,6 +341,11 @@ export async function completeSubagentRunAttempt(
       // were withheld while the child might still have been running can run now.
       entry.cleanupHandled = false;
       entry.cleanupCompletedAt = undefined;
+      // The earlier delivery described the wait expiry, not the child ending.
+      // Re-open requester delivery so the authoritative completion supersedes
+      // the provisional "still running" wake instead of leaving it as the
+      // parent's final view of a child that has now stopped.
+      clearDeliveryState(entry);
       // The provisional completion capture goes with it. `freezeRunResultAtCompletion`
       // is first-write-wins on `resultText`, so whatever partial text (or `null`)
       // was captured when the WAIT expired would survive this promotion and be

@@ -11,6 +11,7 @@ import { resolveFreshSessionTotalTokens } from "../../../config/sessions/types.j
 import { isFastTestRuntimeEnv } from "../../../infra/env.js";
 import { formatDurationCompact } from "../../../infra/format-time/format-duration.js";
 import { buildAgentRunTerminalOutcomeFromWaitResult } from "../../agent-run-terminal-outcome.js";
+import type { AgentRunDisposition } from "../../internal-event-contract.js";
 import { wrapPromptDataBlock } from "../../sanitize-for-prompt.js";
 import { extractStoredAssistantText } from "../../tools/chat-history-text.js";
 import { isAnnounceSkip } from "../../tools/sessions-send-tokens.js";
@@ -100,6 +101,8 @@ export type SubagentTimeoutDisposition = "child-stopped" | "child-unconfirmed";
 
 export type SubagentRunOutcome = {
   status: "ok" | "error" | "timeout" | "unknown";
+  /** Explicit terminal cause when the run was killed rather than exiting. */
+  disposition?: AgentRunDisposition;
   error?: string;
   /** Only meaningful when `status` is `timeout`. */
   timeoutDisposition?: SubagentTimeoutDisposition;
@@ -122,6 +125,16 @@ export function waitObservedRunStop(
     typeof wait?.stopReason === "string" ||
     typeof wait?.livenessState === "string"
   );
+}
+
+/** Project the stored timeout evidence into the generic parent-visible liveness contract. */
+export function resolveSubagentRunDisposition(
+  outcome: SubagentRunOutcome | undefined,
+): AgentRunDisposition {
+  if (outcome?.timeoutDisposition === "child-unconfirmed") {
+    return "still-running";
+  }
+  return outcome?.disposition ?? "exited";
 }
 
 export function withSubagentOutcomeTiming(
@@ -406,7 +419,11 @@ export function applySubagentWaitOutcome(params: {
           params.outcome?.status === "timeout" &&
           params.outcome.timeoutDisposition === "child-unconfirmed"
             ? { ...params.outcome, timeoutDisposition: "child-stopped" as const }
-            : { status: "error", error: "subagent run terminated" };
+            : {
+                status: "error",
+                error: "subagent run terminated",
+                disposition: "killed",
+              };
         break;
       }
       case "failure":
@@ -672,7 +689,9 @@ export async function buildCompactAnnounceStatsLine(params: {
   sessionKey: string;
   startedAt?: number;
   endedAt?: number;
+  disposition?: AgentRunDisposition;
 }) {
+  const stillRunning = params.disposition === "still-running";
   const cfg = subagentAnnounceOutputDeps.getRuntimeConfig();
   const agentId = subagentAnnounceOutputDeps.resolveAgentIdFromSessionKey(params.sessionKey);
   const storePath = subagentAnnounceOutputDeps.resolveSessionStorePathCore(cfg.session?.store, {
@@ -706,14 +725,21 @@ export async function buildCompactAnnounceStatsLine(params: {
       ? Math.max(0, params.endedAt - params.startedAt)
       : undefined;
 
-  const parts = [
-    `runtime ${formatDurationCompact(runtimeMs) ?? "n/a"}`,
-    hasDirectionalUsage
-      ? `tokens ${formatTokenCount(ioTotal)} (in ${formatTokenCount(input)} / out ${formatTokenCount(output)})`
-      : promptCache === undefined
-        ? "tokens unknown"
-        : `tokens ${formatTokenCount(promptCache)} prompt/cache`,
-  ];
+  const parts = stillRunning
+    ? [
+        `waited ${formatDurationCompact(runtimeMs) ?? "n/a"}`,
+        hasDirectionalUsage && ioTotal > 0
+          ? `tokens so far ${formatTokenCount(ioTotal)} (in ${formatTokenCount(input)} / out ${formatTokenCount(output)})`
+          : "child tokens not yet reported",
+      ]
+    : [
+        `runtime ${formatDurationCompact(runtimeMs) ?? "n/a"}`,
+        hasDirectionalUsage
+          ? `tokens ${formatTokenCount(ioTotal)} (in ${formatTokenCount(input)} / out ${formatTokenCount(output)})`
+          : promptCache === undefined
+            ? "tokens unknown"
+            : `tokens ${formatTokenCount(promptCache)} prompt/cache`,
+      ];
   if (hasDirectionalUsage && typeof promptCache === "number" && promptCache > ioTotal) {
     parts.push(`prompt/cache ${formatTokenCount(promptCache)}`);
   }
