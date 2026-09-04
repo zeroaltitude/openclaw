@@ -19,6 +19,9 @@ type EmbeddedRunStageTracker = {
 
 /** Canonical stage names for dispatch-time embedded attempt diagnostics. */
 export const EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE = {
+  compactionRuntime: "compaction-runtime",
+  runtimeSnapshot: "runtime-snapshot",
+  attemptEntry: "attempt-entry",
   workspace: "attempt-workspace",
   prompt: "attempt-prompt",
   runtimePlan: "attempt-runtime-plan",

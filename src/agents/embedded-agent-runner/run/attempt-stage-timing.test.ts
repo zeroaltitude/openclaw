@@ -97,16 +97,22 @@ describe("embedded run stage timing", () => {
     const tracker = createEmbeddedRunStageTracker({ now: () => clock });
 
     clock = 10;
+    tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.compactionRuntime);
+    clock = 20;
+    tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.runtimeSnapshot);
+    clock = 25;
+    tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.attemptEntry);
+    clock = 30;
     tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.workspace);
-    clock = 40;
+    clock = 60;
     tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
-    clock = 90;
+    clock = 110;
     tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.runtimePlan);
-    clock = 91;
+    clock = 111;
     tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.dispatch);
 
     expect(formatEmbeddedRunStageSummary("startup", tracker.snapshot())).toBe(
-      "startup totalMs=91 stages=attempt-workspace:10ms@10ms,attempt-prompt:30ms@40ms,attempt-runtime-plan:50ms@90ms,attempt-dispatch:1ms@91ms",
+      "startup totalMs=111 stages=compaction-runtime:10ms@10ms,runtime-snapshot:10ms@20ms,attempt-entry:5ms@25ms,attempt-workspace:5ms@30ms,attempt-prompt:30ms@60ms,attempt-runtime-plan:50ms@110ms,attempt-dispatch:1ms@111ms",
     );
   });
 });

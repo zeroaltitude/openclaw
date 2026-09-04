@@ -92,6 +92,9 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     resolveRunAttemptAuthProfileStore,
   } = preparedRuntime;
   const runtime = preparedRuntime.snapshot();
+  if (!input.startupStagesEmitted) {
+    startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.attemptEntry);
+  }
   const effectiveModel = attachModelProviderRuntimePluginHandle(
     runtime.effectiveModel,
     runtime.providerRuntimeHandle,

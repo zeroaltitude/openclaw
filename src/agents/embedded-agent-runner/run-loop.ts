@@ -29,6 +29,7 @@ import { prepareAndDispatchEmbeddedRunAttempt } from "./run/attempt-dispatch-pre
 import { normalizeEmbeddedRunAttempt } from "./run/attempt-normalization.js";
 import { recoverEmbeddedRunAttempt } from "./run/attempt-recovery.js";
 import { createAttemptCarryover } from "./run/attempt-result.js";
+import { EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE } from "./run/attempt-stage-timing.js";
 import { hasCodexAppServerRecoveryRetryBudget } from "./run/codex-app-server-recovery.js";
 import { createEmbeddedRunCompactionRuntime } from "./run/compaction-runtime.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
@@ -312,6 +313,7 @@ export async function runPreparedEmbeddedLoop(
       hookContext: hookCtx,
       sessionPromptState,
     });
+    startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.compactionRuntime);
     let authRetryPending = false;
     let accumulatedReplayState = createEmbeddedRunReplayState();
     const attemptCarryover = createAttemptCarryover();
@@ -323,6 +325,9 @@ export async function runPreparedEmbeddedLoop(
       }
       assertAdmittedActive();
       refreshPreparedRuntimeSnapshot();
+      if (runRetryBudget.attemptsDispatched === 0) {
+        startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.runtimeSnapshot);
+      }
       if (isRunRetryBudgetExhausted(runRetryBudget)) {
         const message =
           `Exceeded retry limit after ${runRetryBudget.attemptsDispatched} attempts ` +
