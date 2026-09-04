@@ -58,6 +58,10 @@ function expectModelFields(
 }
 
 describe("zai provider plugin", () => {
+  it("declares lazy activation ownership for its Agent SDK backend", () => {
+    expect(manifest.activation.onAgentHarnesses).toEqual([ZAI_CLAUDE_AGENT_SDK_BACKEND_ID]);
+  });
+
   it("registers an explicit Agent SDK backend without changing native Claude routing", () => {
     const captured = capturePluginRegistration({ register: plugin.register });
     expect(captured.cliBackends.map((entry) => entry.id)).toContain(
@@ -76,10 +80,10 @@ describe("zai provider plugin", () => {
       subscriptionAuthDispatch: false,
       config: {
         command: "claude",
+        liveSession: "claude-stdio",
         clearEnv: expect.arrayContaining(["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]),
       },
     });
-
     const prepared = backend.prepareExecution?.({
       provider: "zai",
       modelId: "glm-4.7",
@@ -89,12 +93,22 @@ describe("zai provider plugin", () => {
     } as never);
     expect(prepared).toBeDefined();
     return Promise.resolve(prepared).then((execution) => {
+      // The credential descriptor is provider-private and intentionally absent
+      // from the public prepared-execution contract.
+      const privateExecution = execution as
+        | (NonNullable<typeof execution> & {
+            secretInput?: { createData: () => Buffer };
+          })
+        | undefined;
       expect(execution).toMatchObject({
         env: {
           ANTHROPIC_BASE_URL: ZAI_ANTHROPIC_BASE_URL,
-          CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: "3",
+        },
+        secretInput: {
+          envName: "ANTHROPIC_AUTH_TOKEN",
         },
       });
+      expect(privateExecution?.secretInput?.createData().toString("utf8")).toBe("zai-test-key");
       expect(execution?.execute).toBeTypeOf("function");
       return execution?.cleanup?.();
     });
