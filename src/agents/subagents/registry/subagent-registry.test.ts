@@ -2464,6 +2464,7 @@ describe("subagent registry seam flow", () => {
       notifyContextEngineSubagentEnded: async () => {},
       completeCleanupBookkeeping: noop,
       completeSubagentRun: async () => {},
+      reportSubagentWaitExpiry: async () => {},
       resolveSubagentTask: () => ({ lookup: "unavailable" }),
     });
     const idempotencyKey = "subagent-recovery:lifecycle-fence";
@@ -2721,9 +2722,15 @@ describe("subagent registry seam flow", () => {
     // The child's session entry gets its real terminal timing only now, from an
     // observed stop rather than from our own deadline guess.
     expect(mocks.patchSessionEntryCore).toHaveBeenCalled();
-    // Still exactly one announce: promotion settles cleanup, it does not
-    // re-notify the parent.
-    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
+    // The provisional wait-expiry wake has its own delivery identity. Once the
+    // stop is observed, the terminal announce must supersede it so the parent
+    // does not keep treating the completed child as still running.
+    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(2);
+    expect(mocks.runSubagentAnnounceFlow).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        outcome: expect.objectContaining({ timeoutDisposition: "child-stopped" }),
+      }),
+    );
   });
 
   it("runs no terminal cleanup tails for an unconfirmed child until an observed stop promotes it", async () => {
@@ -3660,8 +3667,14 @@ describe("subagent registry seam flow", () => {
         { kind: "run_failed", summary: "child run timed out", outcome: "timeout" },
       ]);
     });
-    // Promotion settles cleanup; it does not re-notify the parent.
-    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
+    // Promotion supersedes the provisional wait-expiry wake with an
+    // authoritative terminal delivery.
+    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(2);
+    expect(mocks.runSubagentAnnounceFlow).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        outcome: expect.objectContaining({ timeoutDisposition: "child-stopped" }),
+      }),
+    );
   });
 
   it("treats boundary agent.wait timeouts as explicit run timeouts before child abort errors win", async () => {
