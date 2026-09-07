@@ -3,6 +3,7 @@ import {
   createChannelMessageReplyPipeline,
   resolveChannelStreamingBlockEnabled,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { logInfo } from "openclaw/plugin-sdk/logging-core";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import { resolveChunkMode } from "openclaw/plugin-sdk/reply-chunking";
 import { createChannelHistoryWindow } from "openclaw/plugin-sdk/reply-history";
@@ -14,6 +15,7 @@ import { readLatestAssistantTextByIdentity } from "openclaw/plugin-sdk/session-t
 import { resolveDiscordMaxLinesPerMessage } from "../accounts.js";
 import { discordInboundEventDelivery } from "../inbound-event-delivery.js";
 import type { RequestClient } from "../internal/discord.js";
+import { resolveTimestampMs } from "./format.js";
 import { buildDiscordMessageProcessContext } from "./message-handler.context.js";
 import { createDiscordDraftPreviewController } from "./message-handler.draft-preview.js";
 import type { DiscordMessagePreflightContext } from "./message-handler.preflight.js";
@@ -93,6 +95,7 @@ export function createDiscordMessageReplyRuntime(params: {
     guildHistories,
     historyLimit,
     textLimit,
+    message,
     messageChannelId,
     isDirectMessage,
     route,
@@ -101,6 +104,27 @@ export function createDiscordMessageReplyRuntime(params: {
   const typingChannelId = deliverTarget.startsWith("channel:")
     ? deliverTarget.slice("channel:".length)
     : messageChannelId;
+  let typingLatencyLogged = false;
+  const logSuccessfulTypingLatency = () => {
+    if (typingLatencyLogged) {
+      return;
+    }
+    typingLatencyLogged = true;
+    const now = Date.now();
+    const messageTimestampMs = resolveTimestampMs(message.timestamp);
+    const rawSinceMessageMs =
+      messageTimestampMs === undefined ? undefined : now - messageTimestampMs;
+    const sinceMessage =
+      rawSinceMessageMs === undefined
+        ? ""
+        : rawSinceMessageMs < 0
+          ? ` sinceMessageMs=0 sinceMessageClamped=true rawSinceMessageMs=${rawSinceMessageMs}`
+          : ` sinceMessageMs=${rawSinceMessageMs}`;
+    logInfo(
+      `[discord] inbound→typing accepted target=${isDirectMessage ? "dm" : "channel"}` +
+        `${sinceMessage} sinceDispatchMs=${Math.max(0, now - params.dispatchStartedAt)}`,
+    );
+  };
   let typingFeedback: ReturnType<typeof createDiscordReplyTypingFeedback> | undefined;
   const getTypingFeedback = () =>
     (typingFeedback ??= createDiscordReplyTypingFeedback({
@@ -110,6 +134,7 @@ export function createDiscordMessageReplyRuntime(params: {
       channelId: typingChannelId,
       rest: params.feedbackRest,
       log: logVerbose,
+      onStartSuccess: logSuccessfulTypingLatency,
       keepaliveIntervalMs: params.shouldDisableCoreTypingKeepalive ? undefined : 0,
     }));
 

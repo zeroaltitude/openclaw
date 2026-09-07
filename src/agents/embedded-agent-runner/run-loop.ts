@@ -313,6 +313,10 @@ export async function runPreparedEmbeddedLoop(
       hookContext: hookCtx,
       sessionPromptState,
     });
+    // Stage names are the literals in EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE (run/attempt-stage-timing.ts),
+    // spelled out here because this file sits one line under its oxlint max-lines cap and an extra
+    // import would push it over. attempt-stage-timing.test.ts pins the two spellings against the constant.
+    startupStages.mark("compaction-runtime");
     let authRetryPending = false;
     let accumulatedReplayState = createEmbeddedRunReplayState();
     const attemptCarryover = createAttemptCarryover();
@@ -324,6 +328,7 @@ export async function runPreparedEmbeddedLoop(
       }
       assertAdmittedActive();
       refreshPreparedRuntimeSnapshot();
+      startupStages.markOnce("runtime-snapshot");
       if (isRunRetryBudgetExhausted(runRetryBudget)) {
         const message =
           `Exceeded retry limit after ${runRetryBudget.attemptsDispatched} attempts ` +

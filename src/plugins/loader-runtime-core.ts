@@ -20,6 +20,11 @@ import {
   type PluginLoadLoopState,
 } from "./loader-runtime-candidate.js";
 import {
+  formatSlowPluginDiscoveryWarning,
+  formatSlowPluginRegistryWarning,
+  type PluginLoadTiming,
+} from "./loader-runtime-diagnostics.js";
+import {
   activatePluginRegistry,
   createPluginLoaderLogger,
   maybeThrowOnPluginLoadError,
@@ -164,6 +169,7 @@ export function loadOpenClawPluginsCore(
       activateGlobalSideEffects: context.shouldActivate,
     });
     const { registry } = registryBuilder;
+    const discoveryStartMs = performance.now();
     const { manifestRegistry, orderedCandidates, manifestBySource, provenance } =
       resolvePluginLoadDiscovery({
         options,
@@ -174,6 +180,14 @@ export function loadOpenClawPluginsCore(
         emitWarning: context.shouldActivate,
         warningCacheKey: context.cacheKey,
       });
+    const discoveryElapsedMs = performance.now() - discoveryStartMs;
+    const discoveryWarning = formatSlowPluginDiscoveryWarning({
+      elapsedMs: discoveryElapsedMs,
+      candidateCount: orderedCandidates.length,
+    });
+    if (discoveryWarning) {
+      logger.warn(discoveryWarning);
+    }
     const selectedMiddlewareOwnerManifests = new Map<
       string,
       (typeof manifestRegistry.plugins)[number]
@@ -223,11 +237,13 @@ export function loadOpenClawPluginsCore(
       memorySlot,
     });
     const pluginLoadStartMs = performance.now();
+    const perPluginLoadMs: PluginLoadTiming[] = [];
     for (const candidate of orderedCandidates) {
       const manifestRecord = manifestBySource.get(candidate.source);
       if (!manifestRecord) {
         continue;
       }
+      const candidateStartMs = performance.now();
       loadRuntimePluginCandidate({
         candidate,
         manifestRecord,
@@ -241,12 +257,23 @@ export function loadOpenClawPluginsCore(
         logger,
         state,
       });
+      perPluginLoadMs.push([manifestRecord.id, performance.now() - candidateStartMs]);
     }
     const pluginLoadElapsedMs = performance.now() - pluginLoadStartMs;
     if (state.pluginLoadAttemptCount > 0) {
       logger.debug?.(
         `[plugins] loaded ${registry.plugins.length} plugin(s) (${state.pluginLoadAttemptCount} attempted) in ${pluginLoadElapsedMs.toFixed(1)}ms`,
       );
+    }
+    const registryWarning = formatSlowPluginRegistryWarning({
+      elapsedMs: pluginLoadElapsedMs,
+      pluginCount: registry.plugins.length,
+      attemptedCount: state.pluginLoadAttemptCount,
+      runtimeSubagentMode: context.runtimeSubagentMode,
+      timings: perPluginLoadMs,
+    });
+    if (registryWarning) {
+      logger.warn(registryWarning);
     }
     // Scoped snapshots may omit the configured memory plugin intentionally.
     if (!onlyPluginIdSet && typeof memorySlot === "string" && !state.memorySlotMatched) {
