@@ -29,12 +29,14 @@ import {
   runSubagentAnnounceDispatch,
   type SubagentAnnounceDeliveryResult,
 } from "../announce/subagent-announce-dispatch.js";
+import * as swarmScheduler from "../swarm/swarm-scheduler.js";
 import {
   SUBAGENT_ENDED_REASON_COMPLETE,
   SUBAGENT_ENDED_REASON_ERROR,
   SUBAGENT_ENDED_REASON_KILLED,
 } from "./subagent-lifecycle-events.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
+import { shouldDeferTerminalCleanupForUnconfirmedChild } from "./subagent-registry-cleanup.js";
 import { loadPendingFinalDeliveryPayload } from "./subagent-registry-lifecycle-delivery.js";
 import {
   SubagentLifecycleController,
@@ -222,6 +224,9 @@ vi.mock("../announce/subagent-announce.js", () => ({
   runSubagentAnnounceFlow: vi.fn(async () => "retryable" as const),
 }));
 
+// Only the two decision seams are stubbed. The cleanup-mode resolvers stay real
+// so a deferred unconfirmed-child cleanup is decided here exactly as in
+// production rather than by a stub that can drift from it.
 vi.mock("./subagent-registry-cleanup.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./subagent-registry-cleanup.js")>()),
   resolveCleanupCompletionReason: () => SUBAGENT_ENDED_REASON_COMPLETE,
@@ -570,6 +575,227 @@ describe("subagent registry lifecycle hardening", () => {
       sessionId: "child-session-id",
       lifecycleRevision: "child-lifecycle-revision",
     });
+  });
+
+  it("defers child runtime teardown for an unconfirmed child but not for an observed stop", async () => {
+    // Regression (openclaw-odqn round 2, finding 1): closing the child's
+    // browser sessions and retiring its run-mode MCP runtime are terminal
+    // effects on resources a still-live child is using. A bare deadline is not
+    // evidence it stopped, so neither may run until the stop is observed.
+    const unconfirmed = createRunEntry({ expectsCompletionMessage: false });
+    const unconfirmedController = createLifecycleController({ entry: unconfirmed });
+
+    await completeRun(unconfirmedController, unconfirmed, {
+      outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+      triggerCleanup: true,
+    });
+
+    expect(unconfirmed.execution.outcome).toMatchObject({
+      status: "timeout",
+      disposition: "still-running",
+    });
+    expect(
+      browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd,
+    ).not.toHaveBeenCalled();
+    expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).not.toHaveBeenCalled();
+    expect(internalSessionEffectsMocks.removeInternalSessionEffectsSession).not.toHaveBeenCalled();
+
+    // Control: the same shape with an observed stop must still tear down, or
+    // the fix has simply disabled terminal cleanup for every timeout.
+    const observed = createRunEntry({ runId: "run-observed", expectsCompletionMessage: false });
+    const observedController = createLifecycleController({ entry: observed });
+
+    await completeRun(observedController, observed, {
+      outcome: { status: "timeout", timeoutDisposition: "child-stopped" },
+      triggerCleanup: true,
+    });
+
+    await waitForLifecycleState(() => {
+      expect(
+        browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd,
+      ).toHaveBeenCalledTimes(1);
+      expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).toHaveBeenCalled();
+    });
+  });
+
+  it("holds the swarm concurrency slot until the collector child is observed to stop", async () => {
+    // Regression (round 3, finding 1): `releaseSwarmRun` deletes the lane's
+    // active reservation and pumps the queue, so releasing it on a bare deadline
+    // starts the next queued collector while this one may still be running —
+    // `maxConcurrent` itself creating the overlap this change exists to prevent.
+    const groupId = "swarm-group-unconfirmed";
+    const entry = createRunEntry({
+      runId: "run-collector-unconfirmed",
+      collect: true,
+      schedulerSlotId: "run-collector-unconfirmed",
+      expectsCompletionMessage: false,
+    });
+    const siblingStarts: string[] = [];
+    const activeRunIds: string[] = [];
+    swarmScheduler.enqueueSwarmRun({
+      groupId,
+      runId: entry.runId,
+      maxConcurrent: 1,
+      activeRunIds,
+      start: async () => {
+        activeRunIds.push(entry.runId);
+      },
+      onStartFailure: () => true,
+    });
+    swarmScheduler.enqueueSwarmRun({
+      groupId,
+      runId: "run-collector-sibling",
+      maxConcurrent: 1,
+      activeRunIds,
+      start: async () => {
+        siblingStarts.push("run-collector-sibling");
+      },
+      onStartFailure: () => true,
+    });
+    await waitForLifecycleState(() => {
+      expect(swarmScheduler.isSwarmRunActive(entry.runId)).toBe(true);
+    });
+    expect(siblingStarts).toStrictEqual([]);
+
+    try {
+      const controller = createLifecycleController({ entry });
+      await completeRun(controller, entry, {
+        outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+        triggerCleanup: true,
+      });
+      await new Promise((resolve) => {
+        setTimeout(resolve, 10);
+      });
+
+      expect(swarmScheduler.isSwarmRunActive(entry.runId)).toBe(true);
+      expect(siblingStarts).toStrictEqual([]);
+
+      // Promotion by observed stop releases the slot exactly once, and the
+      // queued sibling finally runs. Without this half the assertions above
+      // could be satisfied by never releasing the slot at all.
+      const promotionController = createLifecycleController({ entry });
+      await completeRun(promotionController, entry, {
+        endedAt: 5_000,
+        outcome: { status: "ok" },
+        triggerCleanup: true,
+      });
+      await waitForLifecycleState(() => {
+        expect(siblingStarts).toStrictEqual(["run-collector-sibling"]);
+      });
+      expect(swarmScheduler.isSwarmRunActive(entry.runId)).toBe(false);
+    } finally {
+      swarmScheduler.releaseSwarmRun(entry.runId);
+      swarmScheduler.releaseSwarmRun("run-collector-sibling");
+      swarmScheduler.removeQueuedSwarmRun("run-collector-sibling");
+    }
+  });
+
+  it("recaptures a legacy provisional result when the child actually finishes", async () => {
+    // Legacy rows could freeze a provisional capture; new wait observations do not.
+    // Regression (round 3, finding 2): the legacy completion path freezes
+    // whatever partial text existed when the WAIT expired, and
+    // `freezeRunResultAtCompletion` is first-write-wins on `resultText`. Without
+    // clearing it at promotion, the promoted successful task publishes
+    // pre-expiry output as the finished run's result.
+    const entry = createRunEntry({ expectsCompletionMessage: false });
+    await completeRun(
+      createLifecycleController({
+        entry,
+        captureSubagentCompletionReply: vi.fn(async () => "PARTIAL output at wait expiry"),
+      }),
+      entry,
+      {
+        outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+        triggerCleanup: true,
+      },
+    );
+
+    expect(entry.completion?.resultText).toBe("PARTIAL output at wait expiry");
+    const provisionalCapturedAt = entry.completion?.capturedAt;
+    expect(typeof provisionalCapturedAt).toBe("number");
+
+    const promotionCapture = vi.fn(async () => "FINAL output after the child actually finished");
+    await completeRun(
+      createLifecycleController({ entry, captureSubagentCompletionReply: promotionCapture }),
+      entry,
+      { endedAt: 5_000, outcome: { status: "ok" }, triggerCleanup: true },
+    );
+
+    expect(promotionCapture).toHaveBeenCalled();
+    expect(entry.completion?.resultText).toBe("FINAL output after the child actually finished");
+  });
+
+  it.each(["observation", "legacy"] as const)(
+    "preserves successful post-deadline completion after a %s wait expiry",
+    async (representation) => {
+      const entry = createRunEntry({
+        expectsCompletionMessage: false,
+        startedAt: 2_000,
+        runTimeoutSeconds: 3,
+        ...(representation === "observation"
+          ? { waitExpiryObservedAt: 5_000 }
+          : {
+              endedAt: 5_000,
+              outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+            }),
+      });
+      await completeRun(createLifecycleController({ entry }), entry, {
+        endedAt: 6_000,
+        outcome: { status: "ok" },
+      });
+      expect(entry.execution.outcome).toMatchObject({ status: "ok", endedAt: 6_000 });
+      expect(entry.execution.endedAt).toBe(6_000);
+      expect(shouldDeferTerminalCleanupForUnconfirmedChild(entry)).toBe(false);
+    },
+  );
+
+  it("still attributes an observed hard timeout after a provisional wait expiry", async () => {
+    const entry = createRunEntry({
+      expectsCompletionMessage: false,
+      startedAt: 2_000,
+      runTimeoutSeconds: 3,
+      waitExpiryObservedAt: 5_000,
+    });
+    await completeRun(createLifecycleController({ entry }), entry, {
+      endedAt: 6_000,
+      outcome: { status: "timeout", disposition: "exited" },
+    });
+    expect(entry.execution.outcome).toMatchObject({ status: "timeout", disposition: "exited" });
+    expect(entry.execution.endedAt).toBe(5_000);
+    expect(shouldDeferTerminalCleanupForUnconfirmedChild(entry)).toBe(false);
+  });
+
+  it("accepts a delayed cancellation recorded at the deadline as stop evidence", async () => {
+    // Regression (round 3, finding 4): a killed lifecycle end IS stop evidence.
+    // The strict post-deadline timestamp test rejected the hard run-timeout kill,
+    // whose authoritative `endedAt` lands exactly ON the deadline, leaving the
+    // row `child-unconfirmed` forever whenever the child's session record was
+    // absent or unreadable — cleanup, hooks and task finalization deferred
+    // permanently even though the cancellation proved the child stopped.
+    const startedAt = 2_000;
+    const runTimeoutSeconds = 3;
+    const deadlineMs = startedAt + runTimeoutSeconds * 1_000;
+    const entry = createRunEntry({
+      expectsCompletionMessage: false,
+      runTimeoutSeconds,
+      startedAt,
+      endedAt: deadlineMs,
+      endedReason: SUBAGENT_ENDED_REASON_COMPLETE,
+      outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+      cleanupHandled: true,
+      cleanupCompletedAt: deadlineMs,
+    });
+
+    await completeRun(createLifecycleController({ entry }), entry, {
+      reason: SUBAGENT_ENDED_REASON_KILLED,
+      endedAt: deadlineMs,
+      outcome: { status: "error", error: "agent run aborted" },
+      triggerCleanup: true,
+    });
+
+    expect(entry.endedReason).toBe(SUBAGENT_ENDED_REASON_KILLED);
+    expect(shouldDeferTerminalCleanupForUnconfirmedChild(entry)).toBe(false);
+    expect(entry.cleanupCompletedAt).not.toBe(deadlineMs);
   });
 
   it("fails a required successful completion without producer reply evidence", async () => {
@@ -3957,6 +4183,59 @@ describe("subagent registry lifecycle hardening", () => {
       { isCurrent: expect.any(Function) },
     );
     expect(persist).toHaveBeenCalled();
+  });
+
+  it("re-announces when a live child's own completion supersedes a wait-expiry publication", async () => {
+    // A wait-expiry publication reported the waiter, not the run. Fencing the
+    // run behind it discarded the child's real ending, so the parent's last
+    // word stayed "still running" for a child that had finished 15m earlier.
+    const entry = createRunEntry({
+      runTimeoutSeconds: 3,
+      startedAt: 2_000,
+      endedAt: 5_000,
+      outcome: { status: "timeout", disposition: "still-running" },
+      endedReason: SUBAGENT_ENDED_REASON_COMPLETE,
+      cleanupHandled: true,
+      cleanupCompletedAt: 5_000,
+      delivery: { status: "delivered", announcedAt: 5_000, deliveredAt: 5_000 },
+    });
+    const runSubagentAnnounceFlow = vi.fn(async () => "delivered" as const);
+    const controller = createLifecycleController({ entry, runSubagentAnnounceFlow });
+
+    await completeRun(controller, entry, {
+      endedAt: 6_500,
+      outcome: { status: "ok" },
+      triggerCleanup: true,
+    });
+
+    expect(runSubagentAnnounceFlow).toHaveBeenCalled();
+    // The superseding publication carries no still-running marker, so the event
+    // reads as an ended child.
+    expect(entry.execution.outcome?.disposition).toBeUndefined();
+  });
+
+  it("does not re-announce when a second wait also expires on the same live child", async () => {
+    const entry = createRunEntry({
+      runTimeoutSeconds: 3,
+      startedAt: 2_000,
+      endedAt: 5_000,
+      outcome: { status: "timeout", disposition: "still-running" },
+      endedReason: SUBAGENT_ENDED_REASON_COMPLETE,
+      cleanupHandled: true,
+      cleanupCompletedAt: 5_000,
+      delivery: { status: "delivered", announcedAt: 5_000, deliveredAt: 5_000 },
+    });
+    const runSubagentAnnounceFlow = vi.fn(async () => "delivered" as const);
+    const controller = createLifecycleController({ entry, runSubagentAnnounceFlow });
+
+    await completeRun(controller, entry, {
+      endedAt: 6_500,
+      outcome: { status: "timeout", disposition: "still-running" },
+      triggerCleanup: true,
+    });
+
+    expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
+    expect(entry.delivery?.status).toBe("delivered");
   });
 
   it("emits ended hook while retrying cleanup after completion was already delivered", async () => {
