@@ -70,12 +70,12 @@ describe("zai provider plugin", () => {
     "%s registers an Agent SDK backend with provider-scoped authentication",
     (_entry, entry) => {
       const captured = capturePluginRegistration({ register: entry.register });
-      expect(captured.cliBackends.map((entry) => entry.id)).toContain(
+      expect(captured.cliBackends.map((candidate) => candidate.id)).toContain(
         ZAI_CLAUDE_AGENT_SDK_BACKEND_ID,
       );
 
       const backend = captured.cliBackends.find(
-        (entry) => entry.id === ZAI_CLAUDE_AGENT_SDK_BACKEND_ID,
+        (candidate) => candidate.id === ZAI_CLAUDE_AGENT_SDK_BACKEND_ID,
       );
       if (!backend) {
         throw new Error("Z.AI entry did not register its Agent SDK backend.");
