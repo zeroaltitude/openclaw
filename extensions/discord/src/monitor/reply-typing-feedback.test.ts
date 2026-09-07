@@ -4,8 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { RequestClient } from "../internal/discord.js";
 import { createDiscordReplyTypingFeedback } from "./reply-typing-feedback.js";
 
+type DiscordPost = RequestClient["post"];
+
 function createFeedback(params: {
-  post: ReturnType<typeof vi.fn>;
+  post: DiscordPost;
   onStartSuccess: () => void;
   log: (message: string) => void;
 }) {
@@ -27,7 +29,7 @@ describe("createDiscordReplyTypingFeedback", () => {
   it("observes a typing start only after Discord accepts it", async () => {
     const onStartSuccess = vi.fn();
     const feedback = createFeedback({
-      post: vi.fn().mockResolvedValue(undefined),
+      post: vi.fn<DiscordPost>().mockResolvedValue(undefined),
       onStartSuccess,
       log: vi.fn(),
     });
@@ -42,7 +44,7 @@ describe("createDiscordReplyTypingFeedback", () => {
     const onStartSuccess = vi.fn();
     const log = vi.fn();
     const feedback = createFeedback({
-      post: vi.fn().mockRejectedValue(new Error("typing denied")),
+      post: vi.fn<DiscordPost>().mockRejectedValue(new Error("typing denied")),
       onStartSuccess,
       log,
     });

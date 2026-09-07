@@ -115,4 +115,30 @@ describe("embedded run stage timing", () => {
       "startup totalMs=111 stages=compaction-runtime:10ms@10ms,runtime-snapshot:10ms@20ms,attempt-entry:5ms@25ms,attempt-workspace:5ms@30ms,attempt-prompt:30ms@60ms,attempt-runtime-plan:50ms@110ms,attempt-dispatch:1ms@111ms",
     );
   });
+
+  it("marks a repeated stage only on its first pass", () => {
+    // The run loop re-enters its retry body per attempt but only the first pass
+    // measures the prepared-runtime snapshot refresh.
+    let clock = 0;
+    const tracker = createEmbeddedRunStageTracker({ now: () => clock });
+
+    clock = 5;
+    tracker.markOnce("runtime-snapshot");
+    clock = 40;
+    tracker.markOnce("runtime-snapshot");
+    clock = 50;
+    tracker.mark("attempt-entry");
+
+    expect(formatEmbeddedRunStageSummary("startup", tracker.snapshot())).toBe(
+      "startup totalMs=50 stages=runtime-snapshot:5ms@5ms,attempt-entry:45ms@50ms",
+    );
+  });
+
+  it("pins the stage names run-loop.ts spells as literals", () => {
+    // run-loop.ts sits one line under its oxlint max-lines cap, so it marks these
+    // two stages by literal instead of importing the constant. This is the guard
+    // that keeps the two spellings from drifting apart.
+    expect(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.compactionRuntime).toBe("compaction-runtime");
+    expect(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.runtimeSnapshot).toBe("runtime-snapshot");
+  });
 });
