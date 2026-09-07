@@ -8,6 +8,7 @@ import { prepareReplyToolAuthority } from "../../auto-reply/reply/reply-tool-aut
 import { messageToolOwnsVisibleReply } from "../../auto-reply/source-reply-delivery-mode.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
+import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   assertContextEngineHostSupport,
@@ -65,10 +66,8 @@ import { externalCliDiscoveryForProviderAuth } from "../auth-profiles/external-c
 import { buildOAuthRefreshFailureLoginCommand } from "../auth-profiles/oauth-refresh-failure.js";
 import { resolveApiKeyForProfile } from "../auth-profiles/oauth.js";
 import { resolveAuthProfileOrder } from "../auth-profiles/order.js";
-import {
-  loadAuthProfileStoreForRuntime,
-  resolveRuntimeAuthProfileAgentDir,
-} from "../auth-profiles/store.js";
+import { loadAuthProfileStoreForRuntime } from "../auth-profiles/store-runtime.js";
+import { resolveRuntimeAuthProfileAgentDir } from "../auth-profiles/store.js";
 import type { AuthProfileCredential, AuthProfileStore } from "../auth-profiles/types.js";
 import {
   buildBootstrapBudgetState,
@@ -117,6 +116,7 @@ import {
 import { selectContextEngineForTranscriptHost } from "../harness/context-engine-logical-turn.js";
 import { drainPendingContextEngineTurnsBeforeRun } from "../harness/context-engine-turn-attempt.js";
 import { createAgentQuestionAnswerAuthority } from "../harness/host-private-capabilities.js";
+import { resolveApiKeyForProviderCore } from "../model-auth-provider.js";
 import type { ResolvedProviderAuth } from "../model-auth-runtime-shared.js";
 import { findModelCatalogEntry, loadManifestModelCatalog } from "../model-catalog.js";
 import type { ModelCatalogEntry } from "../model-catalog.types.js";
@@ -138,6 +138,7 @@ import {
 import { CliAuthProfilePreparationError } from "./auth-profile-preparation-error.js";
 import { prepareCliBundleMcpConfig } from "./bundle-mcp.js";
 import { prepareClaudeCliSkillsPlugin } from "./claude-skills-plugin.js";
+import { runCliCleanup } from "./cleanup.js";
 import {
   resolveBundledCliBackendAuthPolicy,
   type BundledCliBackendAuthPolicy,
@@ -145,6 +146,7 @@ import {
 import { getCliLiveSessionGeneration } from "./cli-live-session-registry.js";
 import { resolveCliExecutionTarget } from "./execution-target.js";
 import { buildCliAgentSystemPrompt, isClaudeCliBackendId, normalizeCliModel } from "./helpers.js";
+import { prepareCliHistoryBoundary } from "./history-boundary.js";
 import { cliBackendLog } from "./log.js";
 import { buildCliMcpGrantContext, normalizeOptionalMcpContextValue } from "./mcp-grant-context.js";
 import { CLAUDE_CLI_CONTEXT_MODEL_ALIASES, detectNodeClaudePlacement } from "./prepare-claude.js";
@@ -210,6 +212,7 @@ const defaultPrepareDeps = {
   claudeCliSessionTranscriptHasOrphanedToolUse,
   getCliLiveSessionGeneration,
   resolveApiKeyForProfile,
+  resolveApiKeyForProviderCore,
   loadManifestModelCatalog,
 };
 const prepareDeps = { ...defaultPrepareDeps };
@@ -465,6 +468,18 @@ function buildCliAuthProfileResolutionError(params: {
 export async function prepareCliRunContext(
   inputParams: RunCliAgentParams,
 ): Promise<PreparedCliRunContext> {
+  // Fallbacks may already have admitted this user turn; recover only prior history.
+  return runWithSessionTranscriptReadFence(
+    inputParams.sessionManager
+      ? undefined
+      : inputParams.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+    () => prepareCliRunContextWithinReadFence(inputParams),
+  );
+}
+
+async function prepareCliRunContextWithinReadFence(
+  inputParams: RunCliAgentParams,
+): Promise<PreparedCliRunContext> {
   let params = inputParams.config ? inputParams : { ...inputParams, config: getRuntimeConfig() };
   if (params.sessionManager) {
     // Caller-owned memory is authoritative even when empty. Correlation and native
@@ -564,6 +579,7 @@ export async function prepareCliRunContext(
     throw new Error(`Unknown CLI backend: ${params.provider}`);
   }
   const backendAuthPolicy = resolveBundledCliBackendAuthPolicy(backendResolved.id);
+  const backendAuthProvider = backendResolved.modelProvider?.trim() || params.provider;
   const canEnforceExactToolAvailability =
     backendResolved.nativeToolMode === "selectable" &&
     ((backendResolved.toolAvailabilityEnforcement === "execution-args" &&
@@ -723,6 +739,21 @@ export async function prepareCliRunContext(
     if (effectiveAuthProfileId) {
       authCredential = authStore.profiles[effectiveAuthProfileId];
     }
+  }
+  if (!authCredential && backendAuthPolicy?.providerConfigApiKey) {
+    const resolvedAuth = await prepareDeps.resolveApiKeyForProviderCore({
+      provider: backendAuthProvider,
+      cfg: params.config,
+      agentDir,
+      allowAuthProfileFallback: false,
+    });
+    params.assertCurrent?.();
+    authCredential = {
+      type: "api_key",
+      provider: backendAuthProvider,
+      key: resolvedAuth.apiKey,
+    };
+    resolvedProfileAuth = resolvedAuth;
   }
   // Claude owns its native login and single-use refresh-token family. Never
   // preflight, refresh, or forward OpenClaw's snapshot; the installed Claude
@@ -1146,11 +1177,6 @@ export async function prepareCliRunContext(
           modelId,
         })
       : undefined;
-  // Callable authoring authority stays host-owned; only proposal metadata enters the cloned grant context.
-  const skillWorkshop =
-    mcpContextBase?.skillWorkshop || skillLibraryAuthoring
-      ? { ...mcpContextBase?.skillWorkshop, libraryAuthoring: skillLibraryAuthoring }
-      : undefined;
   const mcpToolAuthAgentDir = mcpContextBase
     ? resolveRuntimeAuthProfileAgentDir(agentDir)
     : undefined;
@@ -1177,8 +1203,8 @@ export async function prepareCliRunContext(
           await resolveProjectedTools({
             cfg: runConfig,
             signal: params.abortSignal,
-            ...mcpProjectionContext,
-            ...(skillWorkshop ? { skillWorkshop } : {}),
+            context: mcpProjectionContext,
+            ...(skillLibraryAuthoring ? { skillLibraryAuthoring } : {}),
             ...(mcpToolAuth ? { authProfileStore: mcpToolAuth.store } : {}),
             ...(mcpToolAuth?.agentDir ? { authProfileStoreAgentDir: mcpToolAuth.agentDir } : {}),
           })
@@ -1744,7 +1770,7 @@ export async function prepareCliRunContext(
     // Native controls target the already-owned transcript without rebuilding its turn-time MCP
     // topology. Re-validating that topology here would discard the session being compacted.
     const controlOperationCliSessionId = isControlOperation
-      ? params.cliSessionBinding?.sessionId.trim() || params.cliSessionId?.trim()
+      ? params.cliSessionBinding?.sessionId?.trim() || params.cliSessionId?.trim()
       : undefined;
     const reusableCliSessionCandidate: CliReusableSession = ignoreCliSessionCandidate
       ? { mode: "none" }
@@ -1862,7 +1888,6 @@ export async function prepareCliRunContext(
             workspaceDir,
             cwd,
             config: params.config,
-            defaultThinkLevel: params.thinkLevel,
             extraSystemPrompt,
             sourceReplyDeliveryMode: bindingSourceReplyDeliveryMode,
             requireExplicitMessageTarget: bindingRequireExplicitMessageTarget,
@@ -1989,7 +2014,19 @@ export async function prepareCliRunContext(
     }
     const allowRawTranscriptReseed =
       backendResolved.config.reseedFromRawTranscriptWhenUncompacted === true;
-    const rawTranscriptReseedReason = reusableCliSessionId ? "session-expired" : invalidatedReason;
+    const historyParams = await admitPreparedParams(params);
+    params = historyParams;
+    const cliHistoryWriter = !isSideQuestion
+      ? await prepareCliHistoryBoundary(historyParams, { credential: authCredential })
+      : undefined;
+    // Explicit caller-owned memory remains input; it cannot authorize borrowed durable history.
+    const historyAllowed = params.sessionManager !== undefined || cliHistoryWriter !== undefined;
+    // Native compatibility and transcript account ownership are independent gates.
+    const rawTranscriptReseedReason = !historyAllowed
+      ? "auth-unknown"
+      : reusableCliSessionId
+        ? "session-expired"
+        : (invalidatedReason ?? (ignoreCliSessionCandidate ? undefined : "missing-transcript"));
     // Node placement keeps this: the history prompt is built from the
     // gateway-side OpenClaw transcript, so a fresh remote CLI session still
     // receives prior conversation context via stdin.
@@ -2101,6 +2138,7 @@ export async function prepareCliRunContext(
         systemPrompt,
         systemPromptReport,
         claudeSkillsPluginArgs: claudeSkillsPlugin.args,
+        ...(cliHistoryWriter ? { cliHistoryWriter } : {}),
         authEpoch,
         authBindingFingerprint,
         ...(skipLocalCredentialEpoch ? { authBindingSkipsLocalCredential: true } : {}),
@@ -2205,6 +2243,7 @@ export async function prepareCliRunContext(
       claudeSkillsPluginArgs: claudeSkillsPlugin.args,
       ...(nodeSkillWorkshop ? { nodeSkillWorkshop } : {}),
       ...(openClawHistoryPrompt ? { openClawHistoryPrompt } : {}),
+      ...(cliHistoryWriter ? { cliHistoryWriter } : {}),
       authEpoch,
       authBindingFingerprint,
       ...(skipLocalCredentialEpoch ? { authBindingSkipsLocalCredential: true } : {}),
@@ -2218,7 +2257,9 @@ export async function prepareCliRunContext(
     };
   } catch (err) {
     try {
-      await cleanupPreparedResources?.();
+      await runCliCleanup(params, "cli-prepare-failure", async () => {
+        await cleanupPreparedResources?.();
+      });
     } catch (cleanupErr) {
       cliBackendLog.warn(`cli backend cleanup after prepare failure failed: ${String(cleanupErr)}`);
     }
