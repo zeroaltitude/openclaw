@@ -139,6 +139,7 @@ const repositoryScriptEntries = [
   "scripts/proof-117074-tombstone-shared-owners.ts!",
   "scripts/proof-117734-conversation-burst-replay.ts!",
   "scripts/proof-126924-isolated-gateway.ts!",
+  "scripts/proof-126924-provisional-notification-delivery.ts!",
   "scripts/proof-126924-subagent-wait-expiry-not-death.ts!",
   "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
   "scripts/proof-136474-blocked-hook-registrations.ts!",

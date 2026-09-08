@@ -506,6 +506,7 @@ export async function runSubagentAnnounceFlow(params: {
     const announceSessionId = childSessionEffectsAllowed()
       ? childSessionId || "unknown"
       : "unknown";
+    // Preserve both the child-owned output fact and the provisional wait copy.
     const childResultText = childCompletionFindings || reply;
     const findings =
       childResultText ||

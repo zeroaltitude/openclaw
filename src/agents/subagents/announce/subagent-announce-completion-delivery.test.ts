@@ -64,6 +64,27 @@ describe("hasFailedSubagentNoOutputCompletion", () => {
     ).toBe(false);
   });
 
+  it.each([
+    { disposition: "still-running", failed: false },
+    { disposition: "exited", failed: true },
+    { disposition: "killed", failed: true },
+    { disposition: undefined, failed: true },
+  ] as const)(
+    "classifies no-output timeout with $disposition disposition",
+    ({ disposition, failed }) => {
+      expect(
+        hasFailedSubagentNoOutputCompletion([
+          createTaskCompletionEvent({
+            status: "timeout",
+            disposition,
+            result: "(no result observed)",
+            noVisibleResult: true,
+          }),
+        ]),
+      ).toBe(failed);
+    },
+  );
+
   it("reports nothing for an absent or empty event list", () => {
     expect(hasFailedSubagentNoOutputCompletion(undefined)).toBe(false);
     expect(hasFailedSubagentNoOutputCompletion([])).toBe(false);
