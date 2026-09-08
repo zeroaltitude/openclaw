@@ -526,8 +526,13 @@ describe("subagent announce timeout config", () => {
 
     const directAgentCall = findFinalDirectAgentCall();
     const internalEvents =
-      (directAgentCall?.params?.internalEvents as Array<{ result?: string }>) ?? [];
+      (directAgentCall?.params?.internalEvents as Array<{
+        result?: string;
+        noVisibleResult?: boolean;
+      }>) ?? [];
     expect(internalEvents[0]?.result).toBe("authoritative progress");
+    // Real child output must not be flagged as an absent result.
+    expect(internalEvents[0]?.noVisibleResult).toBeUndefined();
     expect(gatewayCalls.some((call) => call.method === "chat.history")).toBe(false);
   });
 
@@ -614,6 +619,29 @@ describe("subagent announce timeout config", () => {
     expect(internalEvents[0]?.statusLabel).toContain("wait expired");
   });
 
+  it("keeps authoritative empty success intentional without transcript inference", async () => {
+    chatHistoryMessages = [
+      { role: "assistant", content: [{ type: "text", text: "stale transcript output" }] },
+    ];
+
+    await runAnnounceFlowForTest("run-ok-empty-terminal", {
+      outcome: { status: "ok" },
+      roundOneReply: undefined,
+      terminalReply: { disposition: "empty" },
+    });
+
+    const directAgentCall = findFinalDirectAgentCall();
+    const internalEvents =
+      (directAgentCall?.params?.internalEvents as Array<{
+        result?: string;
+        noVisibleResult?: boolean;
+      }>) ?? [];
+    expect(internalEvents[0]?.result).toBe("(no output)");
+    // The absence of child output is a fact on the event, not just display copy.
+    expect(internalEvents[0]?.noVisibleResult).toBe(true);
+    expect(gatewayCalls.some((call) => call.method === "chat.history")).toBe(false);
+  });
+
   it("keeps delete-mode timeout retryable while the embedded child request is still active", async () => {
     sessionStore["agent:main:subagent:worker"] = {
       sessionId: "child-session",
@@ -649,10 +677,12 @@ describe("subagent announce timeout config", () => {
         result?: string;
         status?: string;
         statusLabel?: string;
+        noVisibleResult?: boolean;
       }>) ?? [];
     expect(internalEvents[0]?.status).toBe("error");
     expect(internalEvents[0]?.statusLabel).toContain("All models failed");
     expect(internalEvents[0]?.result).toBe("(no output)");
+    expect(internalEvents[0]?.noVisibleResult).toBe(true);
     expect(directAgentCall?.params?.message).not.toContain("stale");
     expect(directAgentCall?.params?.message).not.toContain("older fallback");
   });
