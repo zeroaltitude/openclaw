@@ -405,7 +405,7 @@ async function main(): Promise<void> {
       );
     });
     check("the text view emits the group once with its true size", () => {
-      assert.ok(at20.list.text.includes("[cwd 1] 20 live runs:"));
+      assert.ok(at20.list.text.includes("[cwd 1] 20 runs:"));
       assert.equal(at20.list.text.split(at20.list.sharedCwdGroups[0]!.path).length, 2);
     });
     // Sibling checkouts identical for their first 100+ characters, differing

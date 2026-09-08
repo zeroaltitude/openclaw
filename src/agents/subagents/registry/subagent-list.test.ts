@@ -833,6 +833,69 @@ describe("buildSubagentList", () => {
       expect(list.active.every((item) => item.sharedCwdGroupId === 1)).toBe(true);
     });
 
+    it.each(["legacy-ended", "stale-observation"] as const)(
+      "retains the shared-directory warning for an unconfirmed %s child until actual completion",
+      async (shape) => {
+        const now = Date.now();
+        const sharedDir = path.join(testWorkspaceDir, `shared-tree-unconfirmed-${shape}`);
+        const liveRun = makeRun(`unconfirmed-peer-${shape}`, now);
+        const uncertainRun = makeRun(`unconfirmed-child-${shape}`, now);
+        uncertainRun.createdAt = now - 3 * 60 * 60_000;
+        uncertainRun.waitExpiryObservedAt = now - 60_000;
+        uncertainRun.execution =
+          shape === "legacy-ended"
+            ? {
+                status: "terminal",
+                startedAt: uncertainRun.createdAt,
+                endedAt: now - 60_000,
+                outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+              }
+            : { status: "running", startedAt: uncertainRun.createdAt };
+        const storePath = path.join(
+          testWorkspaceDir,
+          `sessions-shared-cwd-unconfirmed-${shape}.json`,
+        );
+        await seedSessionEntry(storePath, liveRun.childSessionKey, sharedDir);
+        await seedSessionEntry(storePath, uncertainRun.childSessionKey, sharedDir);
+        const cfg = { session: { store: storePath } } as OpenClawConfig;
+        addSubagentRunForTests(liveRun);
+        addSubagentRunForTests(uncertainRun);
+
+        const uncertainList = buildSubagentList({
+          cfg,
+          runs: [liveRun, uncertainRun],
+          recentMinutes: 30,
+        });
+        expect(uncertainList.active).toHaveLength(2);
+        expect(uncertainList.sharedCwdGroupTotal).toBe(1);
+        expect(uncertainList.text).toContain("[cwd 1] 2 runs:");
+        expect(uncertainList.sharedCwdGroups[0]?.runCount).toBe(2);
+        expect(uncertainList.active.every((item) => item.sharedCwdGroupId === 1)).toBe(true);
+
+        // A retained wait marker must not keep the warning after real completion.
+        const completedRun: SubagentRunRecord = {
+          ...uncertainRun,
+          execution: {
+            status: "terminal",
+            startedAt: uncertainRun.createdAt,
+            endedAt: now,
+            outcome: { status: "ok" },
+          },
+        };
+        resetSubagentRegistryForTests();
+        addSubagentRunForTests(liveRun);
+        addSubagentRunForTests(completedRun);
+        const completedList = buildSubagentList({
+          cfg,
+          runs: [liveRun, completedRun],
+          recentMinutes: 30,
+        });
+        expect(completedList.active).toHaveLength(1);
+        expect(completedList.recent[0]?.status).toBe("done");
+        expect(completedList.sharedCwdGroupTotal).toBe(0);
+      },
+    );
+
     it("ignores ended runs that shared a directory", async () => {
       const now = Date.now();
       const sharedDir = path.join(testWorkspaceDir, "shared-tree-ended");

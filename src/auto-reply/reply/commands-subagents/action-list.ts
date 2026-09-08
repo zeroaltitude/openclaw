@@ -31,7 +31,7 @@ export function handleSubagentsListAction(ctx: SubagentsCommandContext): Command
     );
     for (const group of list.sharedCwdGroups) {
       lines.push(
-        `[cwd ${group.id}] ${group.runCount} live runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
+        `[cwd ${group.id}] ${group.runCount} runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
       );
     }
   }

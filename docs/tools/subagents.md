@@ -389,7 +389,7 @@ sub-agent cannot cancel work owned by another session.
 ### Shared working directory advisory
 
 `action: "list"` reports a bounded `sharedCwdGroups` summary when two or more
-**live** sub-agent runs were spawned into the same working directory. Rows refer
+sub-agent runs are running or awaiting confirmed stop in the same working directory. Rows refer
 to a reported group by its small numeric id:
 
 ```json
@@ -410,7 +410,8 @@ to a reported group by its small numeric id:
 `path` is the resolved directory, shortened to 72 characters with a leading
 `...` when it is longer — grouping always uses the full path, so two sibling
 checkouts that differ only in their final segment stay separate groups.
-`runCount` is the exact number of live runs sharing the directory. `runIds` is
+`runCount` includes running children and children whose stop remains unconfirmed
+after a wait expires. Confirmed completion removes the child from the group. `runIds` is
 a **bounded sample** of at most three runs, not a complete list; read
 `runCount` for the real total. At most eight groups are emitted, while
 `sharedCwdGroupTotal` reports the exact total. Only the sampled runs carry a
