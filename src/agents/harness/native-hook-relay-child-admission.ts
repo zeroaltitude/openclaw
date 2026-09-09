@@ -17,9 +17,12 @@ import { normalizePositiveInteger } from "./native-hook-relay-utils.js";
  */
 const CHILD_ADMISSION_TIMEOUT_RATIO = 0.6;
 
-/** Distinguishes a lost admission race from a generic retained-policy refusal. */
-export const NATIVE_HOOK_RELAY_CHILD_ADMISSION_TIMEOUT_ERROR =
-  "native hook relay child admission timed out";
+/**
+ * Distinguishes a lost admission race from a generic retained-policy refusal.
+ * Module-private on purpose: its only consumers assert the message text, and an
+ * export with no production consumer fails the unused-export gate.
+ */
+const CHILD_ADMISSION_TIMEOUT_ERROR = "native hook relay child admission timed out";
 
 /** Bounds child admission strictly below the relay's own command budget. */
 export function resolveNativeHookRelayChildAdmissionTimeoutMs(
@@ -47,10 +50,7 @@ export async function awaitBoundedNativeHookRelayChildAdmission(
     return await Promise.race([
       admission,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(NATIVE_HOOK_RELAY_CHILD_ADMISSION_TIMEOUT_ERROR)),
-          timeoutMs,
-        );
+        timer = setTimeout(() => reject(new Error(CHILD_ADMISSION_TIMEOUT_ERROR)), timeoutMs);
         timer.unref?.();
       }),
     ]);
