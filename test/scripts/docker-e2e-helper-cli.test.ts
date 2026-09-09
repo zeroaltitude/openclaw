@@ -76,7 +76,9 @@ describe("Docker E2E helper CLIs", () => {
     const result = runHelper("scripts/docker-e2e.mjs", "--help");
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
+    // Even a help-only run ends in its terminal marker, so a truncated log
+    // never reads as a clean run; nothing else belongs on stderr.
+    expect(result.stderr.trim()).toBe("[docker-e2e.mts] EXIT 0");
     expect(result.stdout).toContain("node scripts/docker-e2e.mjs github-outputs <plan.json>");
   });
 

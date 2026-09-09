@@ -375,12 +375,17 @@ describe("scripts/changed-lanes", () => {
       expected: {
         contains: "Usage: node scripts/changed-lanes.mjs",
         excludes: "--help: unknown surface",
+        marker: "[changed-lanes.mts] EXIT 0",
       },
     },
     {
       name: "prints changed check help without running the changed gate",
       script: "scripts/check-changed.mjs",
-      expected: { contains: "Usage: node scripts/check-changed.mjs", excludes: "[check:changed]" },
+      expected: {
+        contains: "Usage: node scripts/check-changed.mjs",
+        excludes: "[check:changed]",
+        marker: "[check:changed] EXIT 0",
+      },
     },
   ])("$name", ({ script, expected }) => {
     const result = runRepoScript(script, ["--help"], {
@@ -389,7 +394,9 @@ describe("scripts/changed-lanes", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
+    // Even a run that only prints help ends in its terminal marker, so a
+    // truncated detached log never reads as a clean run.
+    expect(result.stderr.trim()).toBe(expected.marker);
     expect(result.stdout).toContain(expected.contains);
     expect(result.stdout).not.toContain(expected.excludes);
   });
@@ -402,7 +409,10 @@ describe("scripts/changed-lanes", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
-    expect(result.stderr.trim()).toBe("[check:changed] no changed paths; nothing to run");
+    expect(result.stderr.trim().split("\n")).toEqual([
+      "[check:changed] no changed paths; nothing to run",
+      "[check:changed] EXIT 0",
+    ]);
   });
 
   it("delegates when the local checkout cannot resolve the default base ref", () => {
@@ -470,14 +480,26 @@ describe("scripts/changed-lanes", () => {
       name: "rejects unknown changed lane options before treating them as paths",
       script: "scripts/changed-lanes.mjs",
       option: "--jsno",
-      expected: { stderr: "Unknown option: --jsno", excludes: [] },
+      // Without a curated tool name the wrapper's marker names its implementation.
+      expected: { stderr: "Unknown option: --jsno\n[changed-lanes.mts] EXIT 1", excludes: [] },
     },
     {
       name: "rejects unknown changed check options before treating them as paths",
       script: "scripts/check-changed.mjs",
       option: "--dr-run",
       expected: {
-        stderr: "Unknown option: --dr-run\n[check:changed] FAILED (exit 1)",
+        stderr: "Unknown option: --dr-run\n[check:changed] FAILED (exit 1)\n[check:changed] EXIT 1",
+        excludes: [],
+      },
+    },
+    {
+      // The detached gate lanes run the implementation directly, bypassing the
+      // wrapper entirely; the marker has to survive that invocation style too.
+      name: "marks a directly invoked changed check implementation",
+      script: "scripts/check-changed.mts",
+      option: "--dr-run",
+      expected: {
+        stderr: "Unknown option: --dr-run\n[check:changed] EXIT 1\n[check:changed] FAILED (exit 1)",
         excludes: [],
       },
     },
@@ -500,7 +522,7 @@ describe("scripts/changed-lanes", () => {
     const result = runRepoScript("scripts/changed-lanes.mjs", ["--json", "--", "--github-output"]);
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
+    expect(result.stderr.trim()).toBe("[changed-lanes.mts] EXIT 0");
     expect(parseChangedLaneOutput(result.stdout).paths).toEqual(["--github-output"]);
   });
 
@@ -907,7 +929,10 @@ describe("scripts/changed-lanes", () => {
         diagnostics,
       ).toHaveLength(4);
       expect(diagnostics).toContain(broken);
-      expect(failed.stderr.trim().split("\n").at(-1)).toBe("[check:changed] FAILED (exit 1)");
+      expect(failed.stderr.trim().split("\n").slice(-2)).toEqual([
+        "[check:changed] FAILED (exit 1)",
+        "[check:changed] EXIT 1",
+      ]);
 
       writeRepoFile(
         dir,
