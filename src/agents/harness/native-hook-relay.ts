@@ -20,6 +20,10 @@ import {
   isRetryableNativeHookRelayBridgeLookupError,
 } from "./native-hook-relay-bridge.js";
 import {
+  awaitBoundedNativeHookRelayChildAdmission,
+  resolveNativeHookRelayChildAdmissionTimeoutMs,
+} from "./native-hook-relay-child-admission.js";
+import {
   getNativeHookRelayProviderAdapter,
   normalizeNativeHookInvocation,
   normalizeNativeHookToolName,
@@ -80,6 +84,7 @@ const { relays, relayBridges, invocations } = nativeHookRelayState;
 type RelayLifetime = {
   foregroundOpen: boolean;
   foregroundToken: symbol;
+  childAdmissionTimeoutMs: number;
   retained?: ReturnType<typeof retainBeforeToolCallForNativeHookRelay>;
   retention?: NativeHookRelayRetention;
   removeAbortListener?: () => void;
@@ -232,6 +237,9 @@ function registerNativeHookRelayInternal(
     setRelayLifetime(registration, {
       foregroundOpen: true,
       foregroundToken: Symbol("native-hook-relay-foreground"),
+      childAdmissionTimeoutMs: resolveNativeHookRelayChildAdmissionTimeoutMs(
+        params.command?.timeoutMs,
+      ),
       ...(retained ? { retained } : {}),
       ...(retention ? { retention } : {}),
     });
@@ -412,7 +420,22 @@ async function resolveNativeHookRelayInvocationBinding(
       }
     };
     if (lifetime.foregroundOpen && retention.awaitForegroundAdmission) {
-      assertAdmission = await retention.awaitForegroundAdmission(claim);
+      const admissionStartedAtMs = Date.now();
+      try {
+        assertAdmission = await awaitBoundedNativeHookRelayChildAdmission(
+          retention.awaitForegroundAdmission(claim),
+          lifetime.childAdmissionTimeoutMs,
+        );
+      } catch (error) {
+        log.debug("native hook relay child admission failed", {
+          relayId: registration.relayId,
+          childThreadId: claim,
+          admissionWaitMs: Date.now() - admissionStartedAtMs,
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          error,
+        });
+        throw error;
+      }
       if (!assertAdmission) {
         throw new Error("native hook relay retained invocation not allowed");
       }

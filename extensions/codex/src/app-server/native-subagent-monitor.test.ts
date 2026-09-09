@@ -1018,6 +1018,97 @@ describe("CodexNativeSubagentMonitor", () => {
   });
 
   it.each(["v1", "v2"] as const)(
+    "claims direct %s spawn evidence that carries no turn id",
+    async (version) => {
+      // Nothing will ever drain a turn-less evidence, so buffering it silently
+      // discarded the only thing that could unblock the child's first hook.
+      const client = createClient();
+      const claimDirectChild = vi.fn(() => () => undefined);
+      const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+      const owner = monitor.registerParent({ parentThreadId: "parent-thread", claimDirectChild });
+
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          item: directSpawnItem(version, "parent-thread", "child-thread"),
+        },
+      } as unknown as CodexServerNotification);
+
+      expect(claimDirectChild).toHaveBeenCalledWith("child-thread");
+      owner.unregister();
+      monitor.dispose();
+    },
+  );
+
+  it("keeps a direct spawn turn unambiguous so exactly one owner can claim it", async () => {
+    // bindTurn refuses a turn another owner already holds, which is why an
+    // owner-ambiguous direct spawn cannot occur and needs no provisional claim.
+    const client = createClient();
+    const firstClaim = vi.fn(() => () => undefined);
+    const secondClaim = vi.fn(() => () => undefined);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const first = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      claimDirectChild: firstClaim,
+    });
+    const second = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      claimDirectChild: secondClaim,
+    });
+    first.bindTurn("turn-1");
+    second.bindTurn("turn-1");
+
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-1",
+        item: directSpawnItem("v1", "parent-thread", "child-thread"),
+      },
+    } as unknown as CodexServerNotification);
+
+    expect(firstClaim).toHaveBeenCalledWith("child-thread");
+    expect(secondClaim).not.toHaveBeenCalled();
+    first.unregister();
+    second.unregister();
+    monitor.dispose();
+  });
+
+  it("evicts the oldest pending direct spawn evidence instead of refusing the newest", async () => {
+    const client = createClient();
+    const claimDirectChild = vi.fn(() => () => undefined);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const owner = monitor.registerParent({ parentThreadId: "parent-thread", claimDirectChild });
+
+    for (let index = 0; index < 32; index += 1) {
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          turnId: "turn-1",
+          item: directSpawnItem("v1", "parent-thread", `child-${index}`),
+        },
+      } as unknown as CodexServerNotification);
+    }
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-1",
+        item: directSpawnItem("v1", "parent-thread", "child-last"),
+      },
+    } as unknown as CodexServerNotification);
+    owner.bindTurn("turn-1");
+
+    // The newest child is live and already blocked on its claim; the oldest is
+    // the one most likely to be gone.
+    expect(claimDirectChild).toHaveBeenCalledWith("child-last");
+    expect(claimDirectChild).not.toHaveBeenCalledWith("child-0");
+    monitor.dispose();
+  });
+
+  it.each(["v1", "v2"] as const)(
     "keeps another bound parent from consuming %s pre-bind evidence capacity",
     async (version) => {
       const client = createClient();

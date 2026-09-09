@@ -273,9 +273,13 @@ export function createCodexNativeHookRelay(params: {
     retention: {
       readClaim: readCodexNativeChildThreadId,
       // A child claim identifies the subject; successful parent finalization
-      // separately authorizes its lifetime beyond foreground closure.
+      // separately authorizes its lifetime beyond foreground closure. A child
+      // whose claim is still pending is alive and blocked on this relay, so
+      // unregistering here would convert one lost admission race into a
+      // permanent session-wide deny for the rest of that child's run.
       shouldRetainAfterForegroundClose: () =>
-        successfulYieldRetentionAuthorized && directChildClaims.size > 0,
+        successfulYieldRetentionAuthorized &&
+        (directChildClaims.size > 0 || pendingDirectChildAdmissions.size > 0),
       allowPreToolUse: (childThreadId) => directChildClaims.has(childThreadId),
       awaitForegroundAdmission: (childThreadId) => {
         if (foregroundClosed) {
@@ -317,7 +321,9 @@ export function createCodexNativeHookRelay(params: {
   });
   const unregister = () => {
     foregroundClosed = true;
-    rejectPendingAdmissions("native hook relay foreground closed");
+    // Do not reject pending admissions here: shouldRetainAfterForegroundClose
+    // is evaluated inside relay.unregister() and must still see them. onDispose
+    // rejects them if the registration is actually torn down.
     relay.unregister();
   };
   return {
@@ -360,7 +366,13 @@ export function createCodexNativeHookRelay(params: {
           return;
         }
         directChildClaims.delete(threadId);
-        if (foregroundClosed && directChildClaims.size === 0) {
+        // Same invariant as shouldRetainAfterForegroundClose: a sibling child
+        // still awaiting admission keeps the relay alive.
+        if (
+          foregroundClosed &&
+          directChildClaims.size === 0 &&
+          pendingDirectChildAdmissions.size === 0
+        ) {
           relay.unregister();
         }
       };

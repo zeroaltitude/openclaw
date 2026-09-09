@@ -104,7 +104,12 @@ type ChildState = {
   deliveryOwnerKey?: string;
   settledWithoutCompletion: boolean;
   releaseDirectChild?: () => void;
+  // Claim callbacks already applied to this child, held by identity so a
+  // repeated spawn notification cannot re-claim the same owner.
+  claimedDirectChildOwners?: Set<DirectChildClaim>;
 };
+
+type DirectChildClaim = (threadId: string) => (() => void) | undefined;
 
 type ChildAssistantMessages = {
   texts: Map<string, string>;
@@ -1460,13 +1465,8 @@ class Monitor {
         },
       );
     }
-    if (
-      options.claimDirectChild &&
-      !childState.terminal &&
-      !childState.settledWithoutCompletion &&
-      !childState.releaseDirectChild
-    ) {
-      childState.releaseDirectChild = options.claimDirectChild(childThreadId);
+    if (options.claimDirectChild) {
+      this.addDirectChildClaim(childState, options.claimDirectChild);
     }
     this.registerAgentPath(childState, childThreadId);
     state.mirror?.markAuthoritativeCompletionExpected(childThreadId);
@@ -1501,11 +1501,60 @@ class Monitor {
       ...(owner?.claimDirectChild ? { claimDirectChild: owner.claimDirectChild } : {}),
     });
     if (!owner) {
+      // The child's first pre_tool_use hook blocks on this claim, so evidence
+      // that owner resolution can never consume must still admit the child.
+      if (childState && !turnIdInput?.trim()) {
+        this.claimDirectChildWithoutTurn(state, childState);
+      }
       this.bufferPendingDirectSpawnEvidence(turnIdInput, evidence);
     } else if (childState) {
       owner.onDirectChildAccepted?.();
     }
     return childState;
+  }
+
+  /** Applies a claim once per owner, composing releases so none are lost. */
+  private addDirectChildClaim(childState: ChildState, claimDirectChild: DirectChildClaim): void {
+    if (childState.terminal || childState.settledWithoutCompletion) {
+      return;
+    }
+    const claimed = (childState.claimedDirectChildOwners ??= new Set<DirectChildClaim>());
+    if (claimed.has(claimDirectChild)) {
+      return;
+    }
+    claimed.add(claimDirectChild);
+    const release = claimDirectChild(childState.childThreadId);
+    if (!release) {
+      return;
+    }
+    const previous = childState.releaseDirectChild;
+    childState.releaseDirectChild = previous
+      ? () => {
+          previous();
+          release();
+        }
+      : release;
+  }
+
+  /**
+   * Provisional admission for direct-spawn evidence that owner resolution can
+   * never consume. Only turn-less evidence qualifies: it is keyed by nothing, so
+   * no bindTurn will ever drain it, and the child's first pre_tool_use hook is
+   * already blocked on the claim it will never receive. Evidence whose turn id
+   * matches no owner stays unclaimed on purpose — it is not authoritative for
+   * this parent's live runs, and its own turn's owner still drains the buffer.
+   */
+  private claimDirectChildWithoutTurn(state: ParentState, childState: ChildState): void {
+    if (this.threadStatusRevisions.get(childState.childThreadId)?.terminal) {
+      // Matches registerChildThread: a late spawn event must not mint direct
+      // authority for a child this client has already seen terminate.
+      return;
+    }
+    for (const owner of state.owners.values()) {
+      if (owner.claimDirectChild) {
+        this.addDirectChildClaim(childState, owner.claimDirectChild);
+      }
+    }
   }
 
   private bufferPendingDirectSpawnEvidence(
@@ -1523,16 +1572,38 @@ class Monitor {
           candidate.parentThreadId === evidence.parentThreadId &&
           candidate.childThreadId === evidence.childThreadId &&
           candidate.agentPath === evidence.agentPath,
-      ) ||
-      [...this.pendingDirectSpawnEvidence.values()].reduce(
-        (count, entries) => count + entries.length,
-        0,
-      ) >= MAX_PENDING_DIRECT_SPAWN_EVIDENCE
+      )
     ) {
       return;
     }
+    // At capacity, evict the oldest rather than refusing the newest. Refusing
+    // silently discarded the only evidence that could ever claim a live child,
+    // whose first pre_tool_use hook is already blocked on that claim.
+    this.evictOldestPendingDirectSpawnEvidence();
     pending.push(evidence);
     this.pendingDirectSpawnEvidence.set(turnId, pending);
+  }
+
+  /** Frees a slot so a new spawn evidence fits, oldest turn first. */
+  private evictOldestPendingDirectSpawnEvidence(): void {
+    const countPending = () =>
+      [...this.pendingDirectSpawnEvidence.values()].reduce(
+        (count, entries) => count + entries.length,
+        0,
+      );
+    while (countPending() >= MAX_PENDING_DIRECT_SPAWN_EVIDENCE) {
+      const oldest = [...this.pendingDirectSpawnEvidence.entries()].find(
+        ([, entries]) => entries.length > 0,
+      );
+      if (!oldest) {
+        return;
+      }
+      const [oldestTurnId, entries] = oldest;
+      entries.shift();
+      if (entries.length === 0) {
+        this.pendingDirectSpawnEvidence.delete(oldestTurnId);
+      }
+    }
   }
 
   private drainPendingDirectSpawnEvidence(
@@ -1660,6 +1731,7 @@ class Monitor {
   private releaseDirectChild(childState: ChildState): void {
     const release = childState.releaseDirectChild;
     childState.releaseDirectChild = undefined;
+    childState.claimedDirectChildOwners = undefined;
     release?.();
   }
 
