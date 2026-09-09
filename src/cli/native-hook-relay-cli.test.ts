@@ -1,6 +1,12 @@
 // Native hook relay CLI tests cover relay command registration and runtime delegation.
 import { PassThrough, Readable, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import { renderNativeHookRelayUnavailableResponse } from "../agents/harness/native-hook-relay-client.js";
+import { codexNativeHookRelayResponseCodec } from "../agents/harness/native-hook-relay-response-codec.js";
+import {
+  NATIVE_HOOK_RELAY_DISPOSITION_MARKER,
+  NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR,
+} from "../agents/harness/native-hook-relay-transport-error.js";
 import { runNativeHookRelayCli, runNativeHookRelayCliFromArgv } from "./native-hook-relay-cli.js";
 
 function createReadableTextStream(text: string): NodeJS.ReadableStream {
@@ -547,6 +553,122 @@ describe("native hook relay CLI", () => {
       },
     });
     expect(stderr.text()).toContain("native hook relay unavailable");
+    // Attribution the parent can act on: this deny came from an unreachable
+    // relay, not from an OpenClaw policy decision.
+    expect(stderr.text()).toContain(`${NATIVE_HOOK_RELAY_DISPOSITION_MARKER} failed`);
+  });
+
+  it("attributes the fail-closed PreToolUse deny as an unreachable relay", async () => {
+    const callGateway = vi.fn(async () => {
+      throw new Error("gateway closed");
+    });
+
+    const response = renderNativeHookRelayUnavailableResponse({
+      provider: "codex",
+      event: "pre_tool_use",
+      message: "Native hook relay unavailable",
+      failureDisposition: "failed",
+    });
+
+    // A policy deny renders through the same codec with no disposition at all,
+    // which is the only thing that tells the two cases apart downstream.
+    expect(response.failureDisposition).toBe("failed");
+    expect(
+      codexNativeHookRelayResponseCodec.renderPreToolUseBlockResponse("repo policy blocks this"),
+    ).not.toHaveProperty("failureDisposition");
+    expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  it("marks a relay deadline deny as timed out rather than merely failed", async () => {
+    const invokeBridge = vi.fn(
+      async () =>
+        await new Promise<never>((_resolve, reject) => {
+          setTimeout(reject, 5_000);
+        }),
+    );
+    const stdout = createWritableTextBuffer();
+    const stderr = createWritableTextBuffer();
+    const callGateway = vi.fn(async () => {
+      throw new Error("gateway closed");
+    });
+
+    const exitCode = await runNativeHookRelayCli(
+      {
+        provider: "codex",
+        relayId: "relay-1",
+        generation: "generation-1",
+        event: "pre_tool_use",
+        timeout: "1",
+      },
+      {
+        stdin: createReadableTextStream("{}"),
+        stdout,
+        stderr,
+        invokeBridge: invokeBridge as never,
+        callGateway: callGateway as never,
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      hookSpecificOutput: { permissionDecisionReason: "Native hook relay timed out" },
+    });
+    expect(stderr.text()).toContain("native hook relay timed out");
+    expect(stderr.text()).toContain(`${NATIVE_HOOK_RELAY_DISPOSITION_MARKER} timed_out`);
+  });
+
+  it("exits nonzero instead of fail-closed denying once the relay transport is dead", async () => {
+    const invokeBridge = vi.fn(async () => {
+      throw new Error(NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR);
+    });
+    const callGateway = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const stdout = createWritableTextBuffer();
+    const stderr = createWritableTextBuffer();
+
+    const exitCode = await runNativeHookRelayCli(
+      { provider: "codex", relayId: "relay-1", generation: "generation-1", event: "pre_tool_use" },
+      {
+        stdin: createReadableTextStream("{}"),
+        stdout,
+        stderr,
+        invokeBridge: invokeBridge as never,
+        callGateway: callGateway as never,
+      },
+    );
+
+    // Exit 0 plus a deny reads as a hook that ran fine and made a policy call.
+    // A dead transport must read as a hook error so the run cannot finish clean.
+    expect(exitCode).toBe(1);
+    expect(stdout.text()).toBe("");
+    expect(stderr.text()).toContain("native hook relay transport failed");
+    // No gateway retry: the relay itself declared the transport dead.
+    expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  it("exits nonzero when the gateway fallback reports a dead relay transport", async () => {
+    const invokeBridge = vi.fn(async () => {
+      throw new Error("native hook relay bridge not found");
+    });
+    const callGateway = vi.fn(async () => {
+      throw new Error(NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR);
+    });
+    const stdout = createWritableTextBuffer();
+    const stderr = createWritableTextBuffer();
+
+    const exitCode = await runNativeHookRelayCli(
+      { provider: "codex", relayId: "relay-1", generation: "generation-1", event: "pre_tool_use" },
+      {
+        stdin: createReadableTextStream("{}"),
+        stdout,
+        stderr,
+        invokeBridge: invokeBridge as never,
+        callGateway: callGateway as never,
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(stdout.text()).toBe("");
+    expect(stderr.text()).toContain("native hook relay transport failed");
   });
 
   it("keeps PreToolUse unavailable handling observational only with an explicit no-policy marker", async () => {
@@ -575,6 +697,8 @@ describe("native hook relay CLI", () => {
     expect(exitCode).toBe(0);
     expect(stdout.text()).toBe("");
     expect(stderr.text()).toContain("native hook relay unavailable");
+    // Nothing was denied, so there is nothing to attribute.
+    expect(stderr.text()).not.toContain(NATIVE_HOOK_RELAY_DISPOSITION_MARKER);
   });
 
   it("fails closed for PermissionRequest when the gateway relay is unavailable", async () => {
