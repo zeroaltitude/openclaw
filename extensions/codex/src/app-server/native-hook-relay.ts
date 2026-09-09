@@ -366,13 +366,11 @@ export function createCodexNativeHookRelay(params: {
           return;
         }
         directChildClaims.delete(threadId);
-        // Same invariant as shouldRetainAfterForegroundClose: a sibling child
-        // still awaiting admission keeps the relay alive.
-        if (
-          foregroundClosed &&
-          directChildClaims.size === 0 &&
-          pendingDirectChildAdmissions.size === 0
-        ) {
+        // No pending-admission check here on purpose: relay.unregister()
+        // re-evaluates shouldRetainAfterForegroundClose, so a sibling pending
+        // admission already keeps the relay alive, and short-circuiting would
+        // also retain it when retention was never authorized.
+        if (foregroundClosed && directChildClaims.size === 0) {
           relay.unregister();
         }
       };
