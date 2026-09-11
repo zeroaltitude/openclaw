@@ -617,7 +617,7 @@ describe("native hook relay CLI", () => {
     expect(stderr.text()).toContain(`${NATIVE_HOOK_RELAY_DISPOSITION_MARKER} timed_out`);
   });
 
-  it("exits nonzero instead of fail-closed denying once the relay transport is dead", async () => {
+  it("blocks native tools when the relay transport is dead", async () => {
     const invokeBridge = vi.fn(async () => {
       throw new Error(NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR);
     });
@@ -636,16 +636,15 @@ describe("native hook relay CLI", () => {
       },
     );
 
-    // Exit 0 plus a deny reads as a hook that ran fine and made a policy call.
-    // A dead transport must read as a hook error so the run cannot finish clean.
-    expect(exitCode).toBe(1);
+    // Native PreToolUse interprets exit 2 plus stderr as blocking; exit 1 is only observational.
+    expect(exitCode).toBe(2);
     expect(stdout.text()).toBe("");
     expect(stderr.text()).toContain("native hook relay transport failed");
     // No gateway retry: the relay itself declared the transport dead.
     expect(callGateway).not.toHaveBeenCalled();
   });
 
-  it("exits nonzero when the gateway fallback reports a dead relay transport", async () => {
+  it("blocks native tools when the gateway fallback reports a dead relay transport", async () => {
     const invokeBridge = vi.fn(async () => {
       throw new Error("native hook relay bridge not found");
     });
@@ -666,7 +665,7 @@ describe("native hook relay CLI", () => {
       },
     );
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(2);
     expect(stdout.text()).toBe("");
     expect(stderr.text()).toContain("native hook relay transport failed");
   });

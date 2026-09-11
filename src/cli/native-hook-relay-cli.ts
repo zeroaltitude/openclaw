@@ -8,7 +8,7 @@ import {
 } from "../agents/harness/native-hook-relay-client.js";
 import type { NativeHookRelayProcessResponse } from "../agents/harness/native-hook-relay-types.js";
 import type { CallGatewayOptions } from "../gateway/call.js";
-import { ADMIN_SCOPE } from "../gateway/method-scopes.js";
+import { ADMIN_SCOPE } from "../gateway/operator-scopes.js";
 import { setSafeTimeout } from "../utils/timer-delay.js";
 import { parseTimeoutMsWithFallback } from "./parse-timeout.js";
 
@@ -402,20 +402,11 @@ function writeNativeHookRelayDeadlineResponse(params: {
   });
 }
 
-/**
- * Escalate a dead relay transport into a hook execution error.
- *
- * Every other failure path here fails closed with exit 0 and a deny, which the
- * native runtime reads as a policy decision from a hook that ran fine. Once the
- * relay has latched its transport as failed, that reading is wrong and actively
- * harmful: it lets a child that can no longer be governed finish normally. A
- * non-zero exit with no stdout decision surfaces as a hook error instead, so the
- * run ends explicitly.
- */
+/** Native hooks require exit 2 plus stderr to block on a dead policy transport. */
 function writeNativeHookRelayTransportFailedResponse(params: {
   stderr: NodeJS.WritableStream;
   error: unknown;
 }): number {
   writeText(params.stderr, formatRelayCliError("native hook relay transport failed", params.error));
-  return 1;
+  return 2;
 }

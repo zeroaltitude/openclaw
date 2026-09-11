@@ -160,6 +160,47 @@ async function registerRelayWithHangingBeforeToolCall(params: {
 }
 
 describe("native hook relay bridge client disconnect", () => {
+  it("does not charge a retired request's disconnect to the replacement relay", async () => {
+    const oldFailure = vi.fn();
+    const newFailure = vi.fn();
+    const relayId = `codex-replaced-${randomUUID()}`;
+    const { relay, hookEntered } = await registerRelayWithHangingBeforeToolCall({
+      relayId,
+      onPreToolUseFailure: oldFailure,
+    });
+    let record: ReturnType<typeof readNativeHookRelayBridgeRecord>;
+    await vi.waitFor(() => {
+      record = readNativeHookRelayBridgeRecord({ relayId });
+      expect(record?.relayId).toBe(relayId);
+    });
+    if (!record) {
+      throw new Error("Expected the original relay bridge");
+    }
+    const request = openNativeHookRelayBridgeRequest(record, {
+      provider: "codex",
+      relayId,
+      generation: relay.generation,
+      event: "pre_tool_use",
+      rawPayload: preToolUsePayload("retired-request"),
+    });
+    await hookEntered;
+    const replacement = registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      agentId: "agent-1",
+      sessionId: "session-1",
+      runId: "run-2",
+      onPreToolUseFailure: newFailure,
+    });
+    expect(replacement.generation).not.toBe(relay.generation);
+    request.destroy();
+    await request.failed;
+    // Wait for the server-side abort to settle, not only the client's socket.
+    await vi.waitFor(() => expect(oldFailure).toHaveBeenCalledOnce());
+    expect(readTransportFailureCount(relayId)).toBe(0);
+    expect(newFailure).not.toHaveBeenCalled();
+  });
+
   it("warns, counts, and projects a failure when the client socket dies mid-invocation", async () => {
     const onPreToolUseFailure = vi.fn();
     const relayId = `codex-disconnect-${randomUUID()}`;
