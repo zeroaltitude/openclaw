@@ -1,4 +1,5 @@
 // Coverage for embedded attempt startup stage timing diagnostics.
+import { isMainThread, threadId } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import {
   createEmbeddedRunStageTracker,
@@ -67,7 +68,7 @@ describe("embedded run stage timing", () => {
         ],
       }),
     ).toBe(
-      "embedded run startup stages: runId=r1 totalMs=80 stages=workspace:25ms@25ms,tools:55ms@80ms",
+      `embedded run startup stages: runId=r1 pid=${process.pid} threadId=${threadId} isMainThread=${isMainThread} totalMs=80 stages=workspace:25ms@25ms,tools:55ms@80ms`,
     );
   });
 
@@ -86,7 +87,7 @@ describe("embedded run stage timing", () => {
     tracker.mark("runtime-plugins");
 
     expect(formatEmbeddedRunStageSummary("startup", tracker.snapshot())).toBe(
-      "startup totalMs=21 stages=workspace:2ms@2ms,harness-selection:5ms@7ms,prepared-runtime:11ms@18ms,runtime-context:3ms@21ms,runtime-plugins:0ms@21ms",
+      `startup pid=${process.pid} threadId=${threadId} isMainThread=${isMainThread} totalMs=21 stages=workspace:2ms@2ms,harness-selection:5ms@7ms,prepared-runtime:11ms@18ms,runtime-context:3ms@21ms,runtime-plugins:0ms@21ms`,
     );
   });
 
@@ -112,7 +113,7 @@ describe("embedded run stage timing", () => {
     tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.dispatch);
 
     expect(formatEmbeddedRunStageSummary("startup", tracker.snapshot())).toBe(
-      "startup totalMs=111 stages=compaction-runtime:10ms@10ms,runtime-snapshot:10ms@20ms,attempt-entry:5ms@25ms,attempt-workspace:5ms@30ms,attempt-prompt:30ms@60ms,attempt-runtime-plan:50ms@110ms,attempt-dispatch:1ms@111ms",
+      `startup pid=${process.pid} threadId=${threadId} isMainThread=${isMainThread} totalMs=111 stages=compaction-runtime:10ms@10ms,runtime-snapshot:10ms@20ms,attempt-entry:5ms@25ms,attempt-workspace:5ms@30ms,attempt-prompt:30ms@60ms,attempt-runtime-plan:50ms@110ms,attempt-dispatch:1ms@111ms`,
     );
   });
 
@@ -130,7 +131,7 @@ describe("embedded run stage timing", () => {
     tracker.mark("attempt-entry");
 
     expect(formatEmbeddedRunStageSummary("startup", tracker.snapshot())).toBe(
-      "startup totalMs=50 stages=runtime-snapshot:5ms@5ms,attempt-entry:45ms@50ms",
+      `startup pid=${process.pid} threadId=${threadId} isMainThread=${isMainThread} totalMs=50 stages=runtime-snapshot:5ms@5ms,attempt-entry:45ms@50ms`,
     );
   });
 
