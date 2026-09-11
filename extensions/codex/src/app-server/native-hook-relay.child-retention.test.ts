@@ -33,7 +33,7 @@ afterEach(() => {
   nativeHookRelayTesting.clearNativeHookRelaysForTests();
 });
 
-async function createRelayFixture(label: string) {
+async function createRelayFixture(label: string, ttlMs?: number) {
   const runId = `run-${label}-${randomUUID()}`;
   const sessionId = `session-${label}-${randomUUID()}`;
   const fixture = await createAdmittedHostCapabilityTestFixture({ runId, sessionId });
@@ -43,7 +43,7 @@ async function createRelayFixture(label: string) {
   );
   const controller = new AbortController();
   const relay = createCodexNativeHookRelay({
-    options: { enabled: true, gatewayTimeoutMs: GATEWAY_TIMEOUT_MS },
+    options: { enabled: true, gatewayTimeoutMs: GATEWAY_TIMEOUT_MS, ttlMs },
     events: ["pre_tool_use"],
     agentId: undefined,
     sessionId,
@@ -98,6 +98,19 @@ describe("Codex native hook relay direct-child retention", () => {
     expect(
       nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relay.relayId),
     ).toBeDefined();
+  });
+
+  it("expires a retained pending admission at the existing relay lifetime bound", async () => {
+    const { relay } = await createRelayFixture("pending-expiry", 500);
+    await startUnclaimedChildAdmission(relay.relayId, "child-never-claimed");
+    relay.authorizeRetentionAfterSuccessfulYield();
+    relay.unregister();
+    expect(
+      nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relay.relayId),
+    ).toBeDefined();
+    await expect
+      .poll(() => nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relay.relayId))
+      .toBeUndefined();
   });
 
   it("unregisters when no child is claimed and none is awaiting admission", async () => {

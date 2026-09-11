@@ -893,7 +893,7 @@ describe("CodexNativeSubagentMonitor", () => {
     expect(runtime.recordTaskRunProgressByRunId).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: "codex-thread:child-thread",
-        progressSummary: "Codex native subagent is idle.",
+        progressSummary: "Subagent is idle.",
       }),
     );
     expect(runtime.finalizeTaskRunByRunId).not.toHaveBeenCalled();
@@ -954,7 +954,7 @@ describe("CodexNativeSubagentMonitor", () => {
     expect(runtime.createRunningTaskRun).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: "codex-thread:child-v2",
-        task: "Codex native subagent /root/researcher",
+        task: "Subagent /root/researcher",
       }),
     );
     expect(runtime.finalizeTaskRunByRunId).toHaveBeenCalledWith(
@@ -1038,6 +1038,49 @@ describe("CodexNativeSubagentMonitor", () => {
       expect(claimDirectChild).toHaveBeenCalledWith("child-thread");
       owner.unregister();
       monitor.dispose();
+    },
+  );
+
+  it.each(["v1", "v2"] as const)(
+    "does not grant turn-less %s spawn authority to multiple parent owners",
+    async (version) => {
+      const client = createClient();
+      const firstClaim = vi.fn(() => () => undefined);
+      const secondClaim = vi.fn(() => () => undefined);
+      const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+      onTestFinished(() => monitor.dispose());
+      const first = monitor.registerParent({
+        parentThreadId: "parent-thread",
+        claimDirectChild: firstClaim,
+      });
+      const second = monitor.registerParent({
+        parentThreadId: "parent-thread",
+        claimDirectChild: secondClaim,
+      });
+      first.bindTurn("turn-first");
+      second.bindTurn("turn-second");
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          item: directSpawnItem(version, "parent-thread", "child-thread"),
+        },
+      } as unknown as CodexServerNotification);
+      expect(firstClaim).not.toHaveBeenCalled();
+      expect(secondClaim).not.toHaveBeenCalled();
+      // Identified evidence can still admit the same child through its actual owner.
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          turnId: "turn-second",
+          item: directSpawnItem(version, "parent-thread", "child-thread"),
+        },
+      } as unknown as CodexServerNotification);
+      expect(firstClaim).not.toHaveBeenCalled();
+      expect(secondClaim).toHaveBeenCalledExactlyOnceWith("child-thread");
+      first.unregister();
+      second.unregister();
     },
   );
 
@@ -1893,7 +1936,7 @@ describe("CodexNativeSubagentMonitor", () => {
       expect(runtime.deliverAgentHarnessTaskCompletion).toHaveBeenCalledWith(
         expect.objectContaining({
           statusLabel: "completed_without_final_message",
-          result: "Codex native subagent completed without a final assistant message.",
+          result: "Subagent completed without a final assistant message.",
         }),
       );
       client.close();
@@ -2192,7 +2235,7 @@ describe("CodexNativeSubagentMonitor", () => {
       expect(runtime.deliverAgentHarnessTaskCompletion).toHaveBeenCalledWith(
         expect.objectContaining({
           status: "failed",
-          result: "Codex app-server reported a system error for the native subagent thread.",
+          result: "Subagent runtime reported a system error.",
         }),
       );
       expect(releaseClient).toHaveBeenCalledTimes(1);

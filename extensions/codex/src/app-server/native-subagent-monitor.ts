@@ -30,6 +30,7 @@ import {
 import type { CodexAppServerClient } from "./client.js";
 import { projectNormalizedToolItem } from "./event-projector-events.js";
 import { readItem } from "./event-projector-values.js";
+import type { CodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
 import {
   codexNativeSubagentNotifications as nativeSubagentNotifications,
   type CodexNativeSubagentCompletion,
@@ -74,6 +75,7 @@ type ParentState = {
   nativeCompletionReceipts: Set<string>;
   requesterSessionKey?: string;
   taskRuntimeScope?: AgentHarnessTaskRuntimeScope;
+  historyOwner?: CodexNativeSubagentHistoryOwner;
   agentId?: string;
   taskRuntime?: AgentHarnessTaskRuntime;
   mirror?: CodexNativeSubagentTaskMirror;
@@ -203,6 +205,7 @@ function registerMonitor(params: {
   parentThreadId: string;
   requesterSessionKey?: string;
   taskRuntimeScope?: AgentHarnessTaskRuntimeScope;
+  historyOwner?: CodexNativeSubagentHistoryOwner;
   agentId?: string;
   runtime?: NativeSubagentMonitorRuntime;
   retainClient?: () => (() => void) | undefined;
@@ -272,6 +275,7 @@ function registerMonitor(params: {
     parentThreadId: params.parentThreadId,
     requesterSessionKey: params.requesterSessionKey,
     taskRuntimeScope: params.taskRuntimeScope,
+    historyOwner: params.historyOwner,
     agentId: params.agentId,
     claimDirectChild: params.claimDirectChild,
     rejectPendingDirectChild: params.rejectPendingDirectChild,
@@ -377,6 +381,7 @@ class Monitor {
     parentThreadId: string;
     requesterSessionKey?: string;
     taskRuntimeScope?: AgentHarnessTaskRuntimeScope;
+    historyOwner?: CodexNativeSubagentHistoryOwner;
     agentId?: string;
     claimDirectChild?: (threadId: string) => (() => void) | undefined;
     rejectPendingDirectChild?: (threadId: string, reason: string) => void;
@@ -408,6 +413,7 @@ class Monitor {
     }
     state.requesterSessionKey ??= params.requesterSessionKey;
     state.taskRuntimeScope ??= params.taskRuntimeScope;
+    state.historyOwner ??= params.historyOwner;
     state.agentId ??= params.agentId;
     const owner = Symbol("codex-native-subagent-owner");
     state.owners.set(owner, {
@@ -490,7 +496,7 @@ class Monitor {
     this.clearPendingDirectSpawnEvidenceForParent(parentThreadId);
     for (const childState of Array.from(this.childStates.values())) {
       if (childState.parentThreadId === parentThreadId) {
-        this.retireChild(state, childState, "Codex native subagent parent session ended.");
+        this.retireChild(state, childState, "Subagent parent session ended.");
       }
     }
     if (this.parentStates.get(parentThreadId) === state) {
@@ -512,6 +518,7 @@ class Monitor {
       {
         parentThreadId: state.parentThreadId,
         requesterSessionKey: state.requesterSessionKey,
+        historyOwner: state.historyOwner,
         agentId: state.agentId,
       },
       state.taskRuntime,
@@ -973,7 +980,7 @@ class Monitor {
         continue;
       }
       if (childState) {
-        this.retireChild(state, childState, "Codex native subagent was closed.");
+        this.retireChild(state, childState, "Subagent was closed.");
       } else {
         this.updateChildThreadOwnership("release", childThreadId, this.releaseChildThread);
       }
@@ -1281,8 +1288,8 @@ class Monitor {
         childSessionKey: codexNativeSubagentRunId(completion.childThreadId),
         childSessionId: completion.childThreadId,
         announceId: `codex-native:${state.parentThreadId}:${completion.childThreadId}:${completion.status}`,
-        announceType: "Codex native subagent",
-        taskLabel: "Codex native subagent",
+        announceType: "Subagent",
+        taskLabel: "Subagent",
         status: completion.status,
         statusLabel: completion.statusLabel,
         result: completion.result,
@@ -1550,10 +1557,14 @@ class Monitor {
       // authority for a child this client has already seen terminate.
       return;
     }
-    for (const owner of state.owners.values()) {
-      if (owner.claimDirectChild) {
-        this.addDirectChildClaim(childState, owner.claimDirectChild);
-      }
+    // Without a turn ID, the parent must have exactly one owner. Fan-out would
+    // grant unrelated runs authority over a child they did not spawn.
+    if (state.owners.size !== 1) {
+      return;
+    }
+    const owner = state.owners.values().next().value;
+    if (owner?.claimDirectChild) {
+      this.addDirectChildClaim(childState, owner.claimDirectChild);
     }
   }
 
@@ -2199,7 +2210,7 @@ function toChildTurnCompletion(
       childThreadId: childState.childThreadId,
       status: "succeeded",
       statusLabel: result ? "turn_completed" : "completed_without_final_message",
-      result: result ?? "Codex native subagent completed without a final assistant message.",
+      result: result ?? "Subagent completed without a final assistant message.",
     };
   }
   if (status === "failed") {
@@ -2207,7 +2218,7 @@ function toChildTurnCompletion(
       childThreadId: childState.childThreadId,
       status: "failed",
       statusLabel: "turn_failed",
-      result: readTurnErrorMessage(turn) ?? "Codex native subagent failed.",
+      result: readTurnErrorMessage(turn) ?? "Subagent failed.",
     };
   }
   return undefined;
@@ -2244,7 +2255,7 @@ function systemErrorFallbackCompletion(childThreadId: string): RecoveredCompleti
     childThreadId,
     status: "failed",
     statusLabel: "system_error",
-    result: "Codex app-server reported a system error for the native subagent thread.",
+    result: "Subagent runtime reported a system error.",
   };
 }
 
@@ -2265,7 +2276,7 @@ function readTurnCompletion(
       childThreadId,
       status: "succeeded",
       statusLabel: result ? "task_complete" : "completed_without_final_message",
-      result: result ?? "Codex native subagent completed without a final assistant message.",
+      result: result ?? "Subagent completed without a final assistant message.",
       completedAt,
     };
   }
@@ -2279,7 +2290,7 @@ function readTurnCompletion(
       childThreadId,
       status: "failed",
       statusLabel: "task_failed",
-      result: readTurnErrorMessage(turn) ?? result ?? "Codex native subagent failed.",
+      result: readTurnErrorMessage(turn) ?? result ?? "Subagent failed.",
       completedAt,
     };
   }
