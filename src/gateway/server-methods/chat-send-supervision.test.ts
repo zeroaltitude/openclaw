@@ -313,8 +313,8 @@ it("replays consumed collected input after supervision is enabled without classi
   expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
 });
 
-it.each(["throws", "missing-anchor"] as const)(
-  "does not commit an agent-root task when source transcript persistence %s",
+it.each(["throws", "missing-anchor", "accepted"] as const)(
+  "awaits agent-root cleanup when source transcript persistence is %s",
   async (failure) => {
     const f = await fixture(false);
     const recorder = createUserTurnTranscriptRecorder({
@@ -324,7 +324,7 @@ it.each(["throws", "missing-anchor"] as const)(
     const persist = vi.spyOn(recorder, "persistApproved");
     if (failure === "throws") {
       persist.mockRejectedValue(new Error("source transcript unavailable"));
-    } else {
+    } else if (failure === "missing-anchor") {
       persist.mockResolvedValue(undefined);
     }
     const activeRunAbort = registerChatAbortController({
@@ -334,9 +334,16 @@ it.each(["throws", "missing-anchor"] as const)(
       timeoutMs: 60_000,
     });
     cleanups.push(activeRunAbort.cleanup);
-    const onRejected = vi.fn();
+    const cleanupStarted = createDeferred();
+    const cleanupReleased = createDeferred();
+    const cleanup = vi.fn(async () => {
+      cleanupStarted.resolve();
+      await cleanupReleased.promise;
+    });
+    const onAccepted = failure === "accepted" ? cleanup : vi.fn();
+    const onRejected = failure === "accepted" ? vi.fn() : cleanup;
     const emitAcceptance = vi.fn();
-    await maybeAdmitSupervisedGatewayRoot({
+    const admission = maybeAdmitSupervisedGatewayRoot({
       admission: {
         cfg: getRuntimeConfig(),
         activeSessionAgentId: f.scope.agentId,
@@ -367,12 +374,59 @@ it.each(["throws", "missing-anchor"] as const)(
       activeModel: { provider: "openai", model: "supervision-fixture-model" },
       activeRunAbort,
       onInputAccepted: vi.fn(),
-      onAccepted: vi.fn(),
+      onAccepted,
       onRejected,
     });
+    let settled = false;
+    const result = admission?.then((value) => {
+      settled = true;
+      return value;
+    });
+    try {
+      await cleanupStarted.promise;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(settled, "admission returned before asynchronous cleanup completed").toBe(false);
+    } finally {
+      cleanupReleased.resolve();
+      await result;
+    }
     expect(persist).toHaveBeenCalledOnce();
-    expect(listSupervisedTasks()).toHaveLength(0);
-    expect(onRejected).toHaveBeenCalledOnce();
-    expect(emitAcceptance).not.toHaveBeenCalled();
+    expect(listSupervisedTasks()).toHaveLength(failure === "accepted" ? 1 : 0);
+    expect(onRejected).toHaveBeenCalledTimes(failure === "accepted" ? 0 : 1);
+    expect(onAccepted).toHaveBeenCalledTimes(failure === "accepted" ? 1 : 0);
+    expect(emitAcceptance).toHaveBeenCalledTimes(failure === "accepted" ? 1 : 0);
   },
 );
+
+it("retries direct supervision from the transcript after interrupted classification", async () => {
+  const f = await fixture(true);
+  classifier.mockRejectedValueOnce(new Error("simulated restart before handoff"));
+  const first = vi.fn<RespondFn>();
+  await f.send(first);
+  expect(classifier).toHaveBeenCalledOnce();
+  // Direct promotion deletes its pending row; only collected sources retain a
+  // consumed receipt. Restart therefore recovers exact transcript custody.
+  expect(listSessionPendingInputReceipts(f.scope, { runIds: [f.params.idempotencyKey] })).toEqual(
+    [],
+  );
+  expect(listSessionPendingInputs(f.scope).total).toBe(0);
+  expect(listSupervisedTasks()).toHaveLength(0);
+  f.context.dedupe.clear();
+  f.context.chatAbortControllers.clear();
+  f.context.chatQueuedTurns?.clear();
+  const replay = vi.fn<RespondFn>();
+  await f.send(replay);
+  expect(classifier).toHaveBeenCalledTimes(2);
+  expect(listSupervisedTasks()).toHaveLength(1);
+  expect(replay).toHaveBeenCalledWith(
+    true,
+    expect.objectContaining({
+      supervisedTask: expect.objectContaining({ episode: 1 }),
+    }),
+    undefined,
+    expect.anything(),
+  );
+  expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+});

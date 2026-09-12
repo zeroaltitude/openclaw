@@ -24,13 +24,13 @@ const GATEWAY_TIMEOUT_MS = 300;
 
 const cleanups: (() => void)[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   while (cleanups.length > 0) {
     cleanups.pop()?.();
   }
   vi.restoreAllMocks();
   resetGlobalHookRunner();
-  nativeHookRelayTesting.clearNativeHookRelaysForTests();
+  await nativeHookRelayTesting.clearNativeHookRelaysForTests();
 });
 
 async function createRelayFixture(label: string, ttlMs?: number) {

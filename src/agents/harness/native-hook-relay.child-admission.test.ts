@@ -15,7 +15,7 @@ import { closeAdmittedRunDelegatedAuthority } from "../admitted-run-context.js";
 import { createAdmittedHostCapabilityTestFixture } from "./host-capability.test-support.js";
 import {
   invokeNativeHookRelay,
-  registerRetainedNativeHookRelay,
+  registerOwnedNativeHookRelay,
   testing,
 } from "./native-hook-relay.js";
 
@@ -41,12 +41,12 @@ function childPreToolUsePayload(childThreadId: string) {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   resetGlobalHookRunner();
   setActivePluginRegistry(createEmptyPluginRegistry());
-  testing.clearNativeHookRelaysForTests();
+  await testing.clearNativeHookRelaysForTests();
 });
 
 describe("native hook relay child admission bound", () => {
@@ -61,7 +61,7 @@ describe("native hook relay child admission bound", () => {
     );
     // The claim never arrives: this is the lost admission race verbatim.
     const neverAdmitted = new Promise<(() => boolean) | undefined>(() => {});
-    const relay = registerRetainedNativeHookRelay({
+    const relay = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId: `codex-admission-timeout-${randomUUID()}`,
       sessionId: "session-admission-timeout",
@@ -115,7 +115,7 @@ describe("native hook relay child admission bound", () => {
       admitChild = resolve;
     });
     let claimed = false;
-    const relay = registerRetainedNativeHookRelay({
+    const relay = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId: `codex-admission-late-${randomUUID()}`,
       sessionId: "session-admission-late",
@@ -162,7 +162,7 @@ describe("native hook relay child admission bound", () => {
       createMockPluginRegistry([{ hookName: "before_tool_call", handler: async () => undefined }]),
     );
     const shortBudgetMs = 200;
-    const relay = registerRetainedNativeHookRelay({
+    const relay = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId: `codex-admission-scaled-${randomUUID()}`,
       sessionId: "session-admission-scaled",
@@ -205,7 +205,7 @@ describe("native hook relay child admission bound", () => {
     initializeGlobalHookRunner(
       createMockPluginRegistry([{ hookName: "before_tool_call", handler: async () => undefined }]),
     );
-    const relay = registerRetainedNativeHookRelay({
+    const relay = registerOwnedNativeHookRelay({
       provider: "codex",
       relayId: `codex-admission-rejected-${randomUUID()}`,
       sessionId: "session-admission-rejected",

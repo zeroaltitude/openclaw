@@ -76,6 +76,15 @@ import type {
   SubagentRunRecord,
 } from "./subagent-registry.types.js";
 
+const orphanBoots = vi.hoisted(() => ({
+  current: [] as ReturnType<
+    typeof import("./subagent-orphan-attribution.js").loadGatewayBootSegmentsForAttribution
+  >,
+}));
+vi.mock("./subagent-orphan-attribution.js", async (original) => ({
+  ...(await original<typeof import("./subagent-orphan-attribution.js")>()),
+  loadGatewayBootSegmentsForAttribution: () => orphanBoots.current,
+}));
 const noop = () => {};
 
 function findRecordCallArg(
@@ -521,6 +530,7 @@ describe("subagent registry seam flow", () => {
   });
 
   beforeEach(() => {
+    orphanBoots.current = [];
     resetGatewayWorkAdmission();
     resetDetachedTaskLifecycleRuntimeForTests();
     vi.clearAllMocks();
@@ -5163,6 +5173,61 @@ describe("subagent registry seam flow", () => {
             .some((entry) => entry.runId === `run-${stopReason}-wait`),
         ).toBe(false);
       });
+    },
+  );
+
+  it.each(["dead boot", "unknown boot", "live context"] as const)(
+    "reconciles wait expiry only with positive death evidence (%s)",
+    async (evidence) => {
+      const now = Date.now();
+      mockPendingAgentWait();
+      mocks.loadSessionStore.mockReturnValue({});
+      orphanBoots.current =
+        evidence === "unknown boot"
+          ? []
+          : [
+              {
+                bootId: "dead",
+                pid: 101,
+                startedAtMs: now - 300_000,
+                completedAtMs: null,
+                outcome: null,
+                hostBootId: null,
+              },
+              {
+                bootId: "live",
+                pid: process.pid,
+                startedAtMs: now - 60_000,
+                completedAtMs: null,
+                outcome: null,
+                hostBootId: null,
+              },
+            ];
+      if (evidence === "live context") {
+        mocks.getAgentRunContext.mockReturnValue({});
+      }
+      mod.addSubagentRunForTests({
+        runId: "wait-expired-boot",
+        createdAt: now - 240_000,
+        startedAt: now - 240_000,
+        waitExpiryObservedAt: now - 120_000,
+        cleanup: "keep",
+        expectsCompletionMessage: true,
+      });
+      await mod.testing.sweepOnceForTests();
+      if (evidence === "dead boot") {
+        await waitForFast(() => expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalled());
+        expect(mocks.runSubagentAnnounceFlow).toHaveBeenNthCalledWith(
+          1,
+          expect.objectContaining({
+            childRunId: "wait-expired-boot",
+            outcome: expect.objectContaining({ status: "error" }),
+          }),
+        );
+      } else {
+        expect(findRequesterRun("wait-expired-boot")?.execution.endedAt).toBeUndefined();
+        expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
+      }
     },
   );
 

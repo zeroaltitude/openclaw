@@ -99,6 +99,7 @@ import { resolvePromptBuildHookResult } from "../src/agents/embedded-agent-runne
  * RUN: pnpm tsx scripts/proof-prompt-build-drop-marker.ts
  */
 import { resolveAgentHarnessBeforePromptBuildResult } from "../src/agents/harness/prompt-compaction-hook-helpers.js";
+import { SessionManager } from "../src/agents/sessions/session-manager.js";
 import { CURRENT_SESSION_VERSION } from "../src/config/sessions/version.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import {
@@ -297,26 +298,20 @@ async function runCliPromptBuild(
     config: {},
   };
   if (options.failBeforeDispatch) {
-    // The CLI catch spans EVERY pre-dispatch preparation step, not just the
-    // dispatcher, so the proof has to make one of those steps fail. It does that
-    // through real production code and real input: the lazy history loader reads
-    // `params.sessionTarget` inside the same try, strictly before
-    // `resolvePromptBuildHookResult` dispatches anything.
-    // Non-enumerable so the failure lands exactly once, at the hook-context
-    // read inside the try. `prepareCliRunContext` re-spreads `params` in later
-    // stages; an enumerable throwing getter would fire again there and mask
-    // what this scenario is measuring.
-    let firstSessionTargetRead = true;
-    Object.defineProperty(runParams, "sessionTarget", {
-      enumerable: false,
-      get(): undefined {
-        if (firstSessionTargetRead) {
-          firstSessionTargetRead = false;
-          throw new Error(`pre-dispatch preparation failed: ${SECRET}`);
-        }
-        return undefined;
-      },
-    });
+    // Cold-transcript restoration now reads sessionTarget before hook preparation.
+    // Fail the actual history read through a caller-owned in-memory session,
+    // inside the preparation catch and before any hook is dispatched.
+    const manager = SessionManager.inMemory();
+    const getBranch = manager.getBranch.bind(manager);
+    let firstHistoryRead = true;
+    manager.getBranch = (...args) => {
+      if (firstHistoryRead) {
+        firstHistoryRead = false;
+        throw new Error(`pre-dispatch preparation failed: ${SECRET}`);
+      }
+      return getBranch(...args);
+    };
+    runParams.sessionManager = manager;
   }
   const prepared = await prepareCliRunContext(runParams as never);
   fs.rmSync(dir, { recursive: true, force: true });

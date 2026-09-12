@@ -302,3 +302,35 @@ it("binds CI to the exact commit and accepted App, rejects skipped checks, and o
   ).toBe("pending");
   expect(evaluateSupervisedChecks([run], head, required)).toBe("succeeded");
 });
+
+it.each(["main", "release"])(
+  "rejects a foreign PR against %s before pushing its head",
+  async (baseBranch) => {
+    const f = fixture();
+    remote = base;
+    const original = transport.require.getMockImplementation()!;
+    transport.require.mockImplementation(async (args: string[]) => {
+      if (args.some((arg) => arg.endsWith("/pulls"))) {
+        if (args.includes("base=main") && baseBranch !== "main") {
+          return "[]";
+        }
+        return JSON.stringify([
+          {
+            number: 9,
+            html_url: "https://github.com/upstream/repo/pull/9",
+            state: "open",
+            body: "Unrelated work",
+            user: { id: 2 },
+            head: { sha: remote, ref: "work", repo: { full_name: "author/repo" } },
+            base: { ref: baseBranch, repo: { full_name: "upstream/repo" } },
+          },
+        ]);
+      }
+      return original(args);
+    });
+    await expect(runSupervisedPublication(f.claim())).rejects.toThrow(/another open PR/);
+    expect(pushCount).toBe(0);
+    expect(createCount).toBe(0);
+    expect(remote).toBe(base);
+  },
+);

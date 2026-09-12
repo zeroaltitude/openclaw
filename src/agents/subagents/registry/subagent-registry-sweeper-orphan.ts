@@ -16,6 +16,7 @@ import {
 } from "./subagent-orphan-attribution.js";
 import { reconcileOrphanedRun } from "./subagent-registry-helpers.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
+import { isSubagentChildStopUnconfirmed } from "./subagent-session-metrics.js";
 import {
   loadSubagentSessionEntry,
   resolveCompletionFromSessionEntry,
@@ -89,6 +90,11 @@ export async function reconcileStaleActiveSubagentRun(params: {
     boots,
     currentBootId,
   });
+  // Missing local/session state is not evidence of a stopped wait-expired child.
+  // A positively attributed prior boot death is different and must be settled.
+  if (!attribution && isSubagentChildStopUnconfirmed(entry)) {
+    return false;
+  }
   const attributedError = attribution ? formatSubagentOrphanErrorMessage(attribution) : undefined;
 
   const orphanReason = resolveSubagentRunOrphanReason({ entry });

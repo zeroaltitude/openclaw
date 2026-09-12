@@ -305,16 +305,29 @@ export function createSubagentRegistrySweeper(params: SubagentRegistrySweeperOpt
           if (clearUnconfirmedCollectorRetention(entry)) {
             mutatedRunIds.add(runId);
           }
-          // Restart evidence above keeps its existing owner. In the absence of
-          // that evidence, neither missing local context nor retention expiry
-          // proves that a child stopped. Use the child's own terminal record.
-          await settleSubagentRunFromSessionStore(params.completeSubagentRunWithRecovery, {
-            runId,
-            entry,
-            now,
-            storeCache,
-            source: "sweeper-unconfirmed-child",
-          });
+          if (!getAgentRunContext(runId)) {
+            if (
+              await reconcileStaleActiveSubagentRun({
+                runId,
+                entry,
+                now,
+                runs,
+                resumedRuns,
+                storeCache,
+                completeSubagentRunWithRecovery: params.completeSubagentRunWithRecovery,
+              })
+            ) {
+              mutatedRunIds.add(runId);
+            }
+          } else {
+            await settleSubagentRunFromSessionStore(params.completeSubagentRunWithRecovery, {
+              runId,
+              entry,
+              now,
+              storeCache,
+              source: "sweeper-unconfirmed-child",
+            });
+          }
           continue;
         }
         if (typeof entry.execution.endedAt !== "number") {

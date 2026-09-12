@@ -126,24 +126,10 @@ export async function runPreparedEmbeddedLoop(
     maybeRefreshRuntimeAuthForAuthError,
     getApiKeyInfo,
   } = preparedRuntime;
-  let {
-    agentHarness,
-    pluginHarnessOwnsTransport,
-    effectiveModel,
-    outerContextTokenMeta,
-    thinkLevel,
-    lastProfileId,
-  } = preparedRuntime.snapshot();
-  const refreshPreparedRuntimeSnapshot = () => {
-    ({
-      agentHarness,
-      pluginHarnessOwnsTransport,
-      effectiveModel,
-      outerContextTokenMeta,
-      thinkLevel,
-      lastProfileId,
-    } = preparedRuntime.snapshot());
-  };
+  let { agentHarness, effectiveModel, outerContextTokenMeta } = preparedRuntime.snapshot();
+  let thinkLevel: ReturnType<typeof preparedRuntime.snapshot>["thinkLevel"];
+  let pluginHarnessOwnsTransport: boolean;
+  let lastProfileId: string | undefined;
   const traceAttempts: TraceAttempt[] = [];
   const resolveRuntimeFallbackReason = (): string | null => {
     const fallbackAttempt = traceAttempts.findLast(
@@ -301,7 +287,14 @@ export async function runPreparedEmbeddedLoop(
         throw new Error("embedded run requires an active admitted run");
       }
       assertAdmittedActive();
-      refreshPreparedRuntimeSnapshot();
+      ({
+        agentHarness,
+        pluginHarnessOwnsTransport,
+        effectiveModel,
+        outerContextTokenMeta,
+        thinkLevel,
+        lastProfileId,
+      } = preparedRuntime.snapshot());
       startupStages.markOnce("runtime-snapshot");
       if (isRunRetryBudgetExhausted(runRetryBudget)) {
         const message =

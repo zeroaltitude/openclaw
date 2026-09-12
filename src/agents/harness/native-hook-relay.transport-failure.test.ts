@@ -51,11 +51,11 @@ const TRANSPORT_FAILURE_THRESHOLD = 3;
 
 type RelayHandle = ReturnType<typeof registerNativeHookRelay>;
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   resetGlobalHookRunner();
   setActivePluginRegistry(createEmptyPluginRegistry());
-  testing.clearNativeHookRelaysForTests();
+  await testing.clearNativeHookRelaysForTests();
   for (const mock of [
     subsystemLogger.trace,
     subsystemLogger.debug,
@@ -168,9 +168,9 @@ describe("native hook relay bridge client disconnect", () => {
       relayId,
       onPreToolUseFailure: oldFailure,
     });
-    let record: ReturnType<typeof readNativeHookRelayBridgeRecord>;
-    await vi.waitFor(() => {
-      record = readNativeHookRelayBridgeRecord({ relayId });
+    let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
+    await vi.waitFor(async () => {
+      record = await readNativeHookRelayBridgeRecord({ relayId });
       expect(record?.relayId).toBe(relayId);
     });
     if (!record) {
@@ -208,9 +208,9 @@ describe("native hook relay bridge client disconnect", () => {
       relayId,
       onPreToolUseFailure,
     });
-    let record: ReturnType<typeof readNativeHookRelayBridgeRecord>;
-    await vi.waitFor(() => {
-      record = readNativeHookRelayBridgeRecord({ relayId });
+    let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
+    await vi.waitFor(async () => {
+      record = await readNativeHookRelayBridgeRecord({ relayId });
       expect(record?.relayId).toBe(relayId);
     });
     if (!record) {

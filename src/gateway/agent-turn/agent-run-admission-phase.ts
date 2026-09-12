@@ -324,20 +324,13 @@ export async function prepareAgentRunDispatch(params: {
       });
     }
     if (params.resolvedSessionKey) {
-      claimAgentRunContext(
-        params.runId,
-        params.suppressVisibleSessionEffects
-          ? {
-              isControlUiVisible: false,
-              lifecycleGeneration: params.lifecycleGeneration,
-              mainSessionRestartRecovery: params.isRestartRecoveryResumeRun ? true : undefined,
-            }
-          : {
-              sessionKey: params.resolvedSessionKey,
-              lifecycleGeneration: params.lifecycleGeneration,
-              mainSessionRestartRecovery: params.isRestartRecoveryResumeRun ? true : undefined,
-            },
-      );
+      claimAgentRunContext(params.runId, {
+        ...(params.suppressVisibleSessionEffects
+          ? { isControlUiVisible: false }
+          : { sessionKey: params.resolvedSessionKey }),
+        lifecycleGeneration: params.lifecycleGeneration,
+        mainSessionRestartRecovery: params.isRestartRecoveryResumeRun ? true : undefined,
+      });
     }
     params.io.emitStartOwner?.(params.runId, activeRunAbort.entry);
   }
@@ -383,10 +376,9 @@ export async function prepareAgentRunDispatch(params: {
     } catch (err) {
       return rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, err));
     }
-    if (!params.respondToGatewayAdmissionOutcome()) {
-      return true;
-    }
-    return cleanupPreaccept(true).then(() => undefined);
+    return params.respondToGatewayAdmissionOutcome()
+      ? cleanupPreaccept(true).then(() => undefined)
+      : true;
   };
   let replyDispatchRuntime: PreparedReplyDispatchRuntime;
   try {
@@ -473,8 +465,6 @@ export async function prepareAgentRunDispatch(params: {
     modelRun: params.isOneShotModelRun,
     runId: params.runId,
   });
-  const dispatchTaskTrackingMode: PreparedAgentRunDispatch["dispatchTaskTrackingMode"] =
-    taskTrackingMode === "cli" ? "cli" : "none";
   if (taskTrackingMode === "plugin_subagent" && params.resolvedSessionKey) {
     try {
       await registerPluginSubagentRunFromGateway({
@@ -711,7 +701,7 @@ export async function prepareAgentRunDispatch(params: {
     restoredCronContinuationLifecycleRevision: params.restoredCronContinuation?.lifecycleRevision,
     lifecycleStorePath,
     resolvedThreadId,
-    dispatchTaskTrackingMode,
+    dispatchTaskTrackingMode: taskTrackingMode === "cli" ? "cli" : "none",
     preparedModelRuntimeLease,
     replyDispatchRuntime,
     unpersistedOffloadedRefs: userTurn.recorder ? [] : params.offloadedRefs,

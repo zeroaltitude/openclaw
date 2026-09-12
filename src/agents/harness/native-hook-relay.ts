@@ -31,19 +31,20 @@ import {
 import { processNativeHookRelayInvocation } from "./native-hook-relay-events.js";
 import {
   clearNativeHookRelayPermissionsForTests,
-  formatPermissionApprovalDescriptionForTests as formatPermissionApprovalDescriptionForTestsImpl,
-  permissionRequestContentFingerprintForTests as permissionRequestContentFingerprintForTestsImpl,
-  permissionRequestToolInputKeyFingerprintForTests as permissionRequestToolInputKeyFingerprintForTestsImpl,
+  formatPermissionApprovalDescriptionForTests,
+  permissionRequestContentFingerprintForTests,
+  permissionRequestToolInputKeyFingerprintForTests,
   pruneNativeHookRelayPermissionAllowAlways,
   removeNativeHookRelayPermissionState,
   removeNativeHookRelayPreToolUseApprovals,
-  setNativeHookRelayDeferredToolApprovalRequesterForTests as setNativeHookRelayDeferredToolApprovalRequesterForTestsImpl,
-  setNativeHookRelayPermissionApprovalRequesterForTests as setNativeHookRelayPermissionApprovalRequesterForTestsImpl,
+  setNativeHookRelayDeferredToolApprovalRequesterForTests,
+  setNativeHookRelayPermissionApprovalRequesterForTests,
 } from "./native-hook-relay-permissions.js";
-import type { NativeHookRelayDeferredToolApprovalRequester } from "./native-hook-relay-permissions.js";
 import { buildNativeHookRelayCommandPlan } from "./native-hook-relay-plan.js";
 import {
-  MAX_NATIVE_HOOK_RELAY_INVOCATIONS,
+  recordNativeHookRelayInvocation,
+  removeNativeHookRelayInvocations,
+  canAcceptNativeHookRelayGenerationMismatch,
   nativeHookRelayState,
 } from "./native-hook-relay-state.js";
 import { NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR } from "./native-hook-relay-transport-error.js";
@@ -59,8 +60,6 @@ import type {
   InvokeNativeHookRelayParams,
   NativeHookRelayEvent,
   NativeHookRelayInvocation,
-  NativeHookRelayPermissionApprovalRequest,
-  NativeHookRelayPermissionApprovalRequester,
   NativeHookRelayProcessResponse,
   NativeHookRelayRegistration,
   OwnedNativeHookRelayRegistrationHandle,
@@ -73,7 +72,6 @@ import {
   readNativeHookRelayEvent,
   readNativeHookRelayProvider,
   readNonEmptyString,
-  snapshotNativeHookRelayPayload,
 } from "./native-hook-relay-utils.js";
 import {
   assertNativeHookRelayForegroundCurrent,
@@ -701,39 +699,6 @@ export function hasNativeHookRelayInvocation(params: {
   );
 }
 
-function recordNativeHookRelayInvocation(invocation: NativeHookRelayInvocation): void {
-  invocations.push({
-    ...invocation,
-    rawPayload: snapshotNativeHookRelayPayload(invocation.rawPayload),
-  });
-  if (invocations.length > MAX_NATIVE_HOOK_RELAY_INVOCATIONS) {
-    invocations.splice(0, invocations.length - MAX_NATIVE_HOOK_RELAY_INVOCATIONS);
-  }
-}
-
-function removeNativeHookRelayInvocations(relayId: string): void {
-  for (let index = invocations.length - 1; index >= 0; index -= 1) {
-    if (invocations[index]?.relayId === relayId) {
-      invocations.splice(index, 1);
-    }
-  }
-}
-
-function canAcceptNativeHookRelayGenerationMismatch(
-  registration: NativeHookRelayRegistration,
-  generation: string,
-): boolean {
-  const expiresAtMs = registration.generationMismatchGraceExpiresAtMs;
-  if (typeof expiresAtMs !== "number" || Date.now() > expiresAtMs) {
-    return false;
-  }
-  if (registration.generationMismatchGraceAcceptedGeneration) {
-    return registration.generationMismatchGraceAcceptedGeneration === generation;
-  }
-  registration.generationMismatchGraceAcceptedGeneration = generation;
-  return true;
-}
-
 function pruneExpiredNativeHookRelays(now = Date.now()): void {
   for (const [relayId, registration] of relays) {
     if (now > registration.expiresAtMs) {
@@ -745,10 +710,7 @@ function pruneExpiredNativeHookRelays(now = Date.now()): void {
 function normalizeAllowedEvents(
   events: readonly NativeHookRelayEvent[] | undefined,
 ): readonly NativeHookRelayEvent[] {
-  if (!events?.length) {
-    return NATIVE_HOOK_RELAY_EVENTS;
-  }
-  return [...new Set(events)];
+  return events?.length ? [...new Set(events)] : NATIVE_HOOK_RELAY_EVENTS;
 }
 
 export const testing = {
@@ -782,26 +744,9 @@ export const testing = {
   isNativeHookRelayBridgeLookupRetryableForTests(error: unknown, elapsedMs = 0): boolean {
     return isRetryableNativeHookRelayBridgeLookupError({ error, elapsedMs });
   },
-  formatPermissionApprovalDescriptionForTests(
-    request: NativeHookRelayPermissionApprovalRequest,
-  ): string {
-    return formatPermissionApprovalDescriptionForTestsImpl(request);
-  },
-  permissionRequestContentFingerprintForTests(
-    request: NativeHookRelayPermissionApprovalRequest,
-  ): string {
-    return permissionRequestContentFingerprintForTestsImpl(request);
-  },
-  permissionRequestToolInputKeyFingerprintForTests:
-    permissionRequestToolInputKeyFingerprintForTestsImpl,
-  setNativeHookRelayPermissionApprovalRequesterForTests(
-    requester: NativeHookRelayPermissionApprovalRequester,
-  ): void {
-    setNativeHookRelayPermissionApprovalRequesterForTestsImpl(requester);
-  },
-  setNativeHookRelayDeferredToolApprovalRequesterForTests(
-    requester: NativeHookRelayDeferredToolApprovalRequester,
-  ): void {
-    setNativeHookRelayDeferredToolApprovalRequesterForTestsImpl(requester);
-  },
+  formatPermissionApprovalDescriptionForTests,
+  permissionRequestContentFingerprintForTests,
+  permissionRequestToolInputKeyFingerprintForTests,
+  setNativeHookRelayDeferredToolApprovalRequesterForTests,
+  setNativeHookRelayPermissionApprovalRequesterForTests,
 } as const;

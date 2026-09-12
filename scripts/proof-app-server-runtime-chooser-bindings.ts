@@ -523,10 +523,9 @@ try {
   const { createDiscordModelPickerFallbackButton } = (await importSource(
     "extensions/discord/src/monitor/native-command-model-picker-interaction.ts",
   )) as DiscordPickerModule;
-  const { renderDiscordModelPickerModelsView, toDiscordModelPickerMessagePayload } =
-    (await importSource(
-      "extensions/discord/src/monitor/model-picker.view.ts",
-    )) as DiscordPickerViewModule;
+  const { renderDiscordModelPickerModelsView } = (await importSource(
+    "extensions/discord/src/monitor/model-picker.view.ts",
+  )) as DiscordPickerViewModule;
   const { resolveDiscordModelPickerRoute } = (await importSource(
     "extensions/discord/src/monitor/native-command-model-picker-ui.ts",
   )) as DiscordPickerUiModule;
@@ -661,21 +660,19 @@ try {
      * so the state a callback acts on is authored by production rendering.
      */
     function renderSubmitCustomId(params: { provider: string; model: string; runtime: string }) {
-      const rendered = toDiscordModelPickerMessagePayload(
-        renderDiscordModelPickerModelsView({
-          command: "model",
-          userId: "proof-owner",
-          data,
-          provider: params.provider,
-          page: 1,
-          providerPage: 1,
-          currentModel: `${data.resolvedDefault.provider}/${data.resolvedDefault.model}`,
-          currentRuntime: "openclaw",
-          quickModels: [],
-          pendingModel: `${params.provider}/${params.model}`,
-          pendingRuntime: params.runtime,
-        } as never),
-      );
+      const rendered = renderDiscordModelPickerModelsView({
+        command: "model",
+        userId: "proof-owner",
+        data,
+        provider: params.provider,
+        page: 1,
+        providerPage: 1,
+        currentModel: `${data.resolvedDefault.provider}/${data.resolvedDefault.model}`,
+        currentRuntime: "openclaw",
+        quickModels: [],
+        pendingModel: `${params.provider}/${params.model}`,
+        pendingRuntime: params.runtime,
+      } as never);
       const submitId = collectCustomIds(rendered).find((id) => /(^|;)a=submit(;|$)/.test(id));
       assert.ok(
         submitId,
