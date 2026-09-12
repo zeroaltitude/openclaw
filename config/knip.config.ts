@@ -182,6 +182,7 @@ const repositoryScriptEntries = [
   "scripts/proof-126924-subagent-wait-expiry-not-death.ts!",
   "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
   "scripts/proof-136474-blocked-hook-registrations.ts!",
+  "scripts/proof-136476-orphan-owner-binding.ts!",
   "scripts/proof-136554-timeout-notification-boundaries.ts!",
   "scripts/proof-app-server-runtime-chooser-bindings.ts!",
   "scripts/qa-coverage-report.ts!",
