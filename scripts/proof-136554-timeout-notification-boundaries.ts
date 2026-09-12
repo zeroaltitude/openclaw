@@ -508,12 +508,10 @@ try {
         terminalReply: { disposition: "visible", text: finalText },
       },
     });
-    // The child reports its real result after the wait expired, so it is also
-    // past the 1s run budget this scenario used to force the expiry. Production
-    // therefore settles it as a run timeout that still carries the child's real
-    // terminal text — the point being that a settled notification neither
-    // suppressed the later result nor left the row claiming `still-running`.
-    await until(`${mode}: same child settles`, () => taskStatus() === "timed_out");
+    // Wait expiry describes the waiter, not an observed child stop. The child's
+    // authoritative successful completion must survive the earlier notification,
+    // even when its timestamp is beyond that wait budget.
+    await until(`${mode}: same child succeeds`, () => taskStatus() === "succeeded");
     await until(`${mode}: final delivery`, () =>
       observed.some((item) => item.runId === runId && !item.phase),
     );
@@ -523,7 +521,7 @@ try {
     );
     assert.equal(run()?.execution.status, "terminal");
     assert.equal(run()?.endedReason, "subagent-complete");
-    assert.equal(run()?.execution.outcome?.status, "timeout");
+    assert.equal(run()?.execution.outcome?.status, "ok");
     // Absent disposition reads as `exited`: the terminal record stops asserting
     // the provisional `still-running` the expiry notification published.
     assert.equal(run()?.execution.outcome?.disposition, undefined);

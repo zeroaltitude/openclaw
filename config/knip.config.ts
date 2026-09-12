@@ -49,6 +49,12 @@ const repositoryScriptEntries = [
   // Maintainer prompt proofs are invoked directly rather than imported.
   "scripts/dev/message-tool-only-codex-app-server-proof.ts!",
   "scripts/dev/message-tool-only-prompt-live-proof.ts!",
+  // Documented real-process supervised TaskFlow failure proof.
+  "scripts/dev/supervised-task-coding-proof.ts!",
+  "scripts/dev/supervised-task-mutation-proof.ts!",
+  "scripts/dev/supervised-task-process-proof.ts!",
+  "scripts/dev/supervised-task-runtime-proof.ts!",
+  "scripts/dev/supervised-workflow-runtime-proof.ts!",
   "scripts/diffs-shiki-curated.ts!",
   // Reusable Docker workflows invoke this from the downloaded .release-harness tree.
   "scripts/docker-e2e.mts!",

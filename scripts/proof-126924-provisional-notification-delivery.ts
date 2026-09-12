@@ -191,7 +191,10 @@ try {
         if (response === "error") {
           assert.equal(result.disposition, "retryable");
         } else {
-          assert.equal(result.reason, "message_tool_delivery_missing");
+          assert.equal(result.reason, "delivery_suppressed");
+          assert.equal(result.disposition, "intentional_non_delivery");
+          assert.equal(result.terminal, true);
+          assert.equal(result.error, undefined);
         }
       } else {
         assert.equal(

@@ -15,7 +15,6 @@
     "../../src/gateway/**",
     "../../src/infra/**",
     "../../src/commands/**",
-    "../../src/wizard/**",
     "../../src/plugins/**",
     "../../src/config/**",
     "../../src/cli/**",
@@ -34,6 +33,7 @@
     "../../src/logging/**",
     "../../src/hooks/**",
     "../../src/daemon/**",
+    "../../src/tasks/**",
     "../../src/plugin-state/**",
     "../../src/state/**"
   ]

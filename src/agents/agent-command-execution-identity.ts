@@ -225,6 +225,7 @@ export function sanitizePublicAgentCommandIngressOpts(
     ...opts,
     runtimeContextFragments: undefined,
     senderIsOwner: false,
+    outputJsonSchema: undefined,
     mainRestartRecoveryOwnerLease: undefined,
     mainRestartRecoveryAdmitted: undefined,
     mainRestartRecoveryAttempt: undefined,

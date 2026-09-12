@@ -4,6 +4,26 @@ const currentModuleUrl = import.meta.url;
 export const SQLITE_READONLY_CHILD_ARG = "--openclaw-sqlite-readonly-child";
 
 export const runtimeProcessEntrypoints = {
+  supervisedReview: {
+    currentModuleUrl,
+    sourceWorkerName: "../tasks/supervised-review-process",
+    distWorkerPath: "tasks/supervised-review-process.js",
+  },
+  supervisedAttempt: {
+    currentModuleUrl,
+    sourceWorkerName: "../tasks/supervised-attempt-process",
+    distWorkerPath: "tasks/supervised-attempt-process.js",
+  },
+  supervisedCommand: {
+    currentModuleUrl,
+    sourceWorkerName: "../tasks/supervised-command-process",
+    distWorkerPath: "tasks/supervised-command-process.js",
+  },
+  supervisedOperation: {
+    currentModuleUrl,
+    sourceWorkerName: "../tasks/supervised-operation-process",
+    distWorkerPath: "tasks/supervised-operation-process.js",
+  },
   sharedStateStore: {
     currentModuleUrl,
     sourceWorkerName: "../state/openclaw-state.worker",
