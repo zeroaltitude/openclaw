@@ -92,16 +92,6 @@ export function isFailedTerminalSubagentCompletion(event: AgentInternalEvent | u
   );
 }
 
-export function hasFailedSubagentNoOutputCompletion(
-  events: readonly AgentInternalEvent[] | undefined,
-) {
-  return (
-    events?.some(
-      (event) => isFailedTerminalSubagentCompletion(event) && !hasVisibleCompletionResult(event),
-    ) === true
-  );
-}
-
 export async function deliverCompletionDirect(params: {
   cfg: OpenClawConfig;
   requesterSessionKey: string;

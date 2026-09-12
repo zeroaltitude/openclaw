@@ -31,17 +31,33 @@ export type AgentInternalEventStatus = (typeof AGENT_INTERNAL_EVENT_STATUSES)[nu
  */
 export type AgentRunDisposition = (typeof AGENT_RUN_DISPOSITIONS)[number];
 
-/**
- * Total read for the "did the child produce output" fact on a completion event.
- *
- * `noVisibleResult` is recorded by the producer that substituted placeholder
- * copy into `result`; delivery gates consult it instead of matching the
- * placeholder wording, so display copy and control flow stay independent.
- * Absence means the ordinary case — `result` carries the child's own output —
- * which keeps payloads from producers that always have output byte-identical.
- */
+/** Only the producer that substituted placeholder text records absence. */
 export function hasVisibleCompletionResult(event: { noVisibleResult?: boolean }): boolean {
   return event.noVisibleResult !== true;
+}
+
+/** Identify failed child events without loading the delivery runtime. */
+export function hasFailedSubagentNoOutputCompletion(
+  events:
+    | readonly {
+        type: string;
+        source: AgentInternalEventSource;
+        status: AgentInternalEventStatus;
+        disposition?: AgentRunDisposition;
+        noVisibleResult?: boolean;
+      }[]
+    | undefined,
+) {
+  return (
+    events?.some(
+      (event) =>
+        event.type === AGENT_INTERNAL_EVENT_TYPE_TASK_COMPLETION &&
+        event.source === "subagent" &&
+        event.status !== "ok" &&
+        event.disposition !== "still-running" &&
+        !hasVisibleCompletionResult(event),
+    ) === true
+  );
 }
 
 /** Identifies completion events that can resume an exact cron run. */
