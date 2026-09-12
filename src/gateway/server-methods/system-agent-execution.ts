@@ -1,3 +1,4 @@
+import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../../agents/prepared-model-runtime-generation-scope.js";
 import {
   getRuntimeConfigAppliedHash,
   hashRuntimeConfigValue,
@@ -7,6 +8,7 @@ import type {
   RuntimeConfigWriteApplicationStatus,
 } from "../../config/runtime-write-application.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
+import { runOutsidePluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { enqueueCommandInLane, setCommandLaneConcurrency } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import type { RuntimeEnv } from "../../runtime.js";
@@ -24,11 +26,18 @@ export async function runSystemAgentGatewayTask<T>(task: () => Promise<T>): Prom
   // Track every accepted RPC as active, never queued: restart draining snapshots
   // active ids, so a queued OpenClaw request could otherwise outlive its socket.
   setCommandLaneConcurrency(CommandLane.SystemAgent, Number.MAX_SAFE_INTEGER);
-  return await enqueueCommandInLane(CommandLane.SystemAgent, () =>
-    // Bound expensive detection, activation, and agent turns without hiding
-    // accepted work from restart draining. This also makes session eviction and
-    // setup writes atomic with respect to other OpenClaw gateway requests.
-    systemAgentGatewayExecutionQueue.enqueue(SYSTEM_AGENT_GATEWAY_EXECUTION_KEY, task),
+  // In-process delegation retains the caller's turn scopes. System work selects
+  // its own verified runtime; it must not borrow the caller's plugin generation.
+  // Drop only selection state, preserving Gateway authority and cancellation.
+  return await runOutsidePreparedModelRuntimePluginGenerationScope(() =>
+    runOutsidePluginRuntimeGenerationScope(() =>
+      enqueueCommandInLane(CommandLane.SystemAgent, () =>
+        // Bound expensive detection, activation, and agent turns without hiding
+        // accepted work from restart draining. This also makes session eviction and
+        // setup writes atomic with respect to other OpenClaw gateway requests.
+        systemAgentGatewayExecutionQueue.enqueue(SYSTEM_AGENT_GATEWAY_EXECUTION_KEY, task),
+      ),
+    ),
   );
 }
 
