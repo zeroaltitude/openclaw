@@ -124,6 +124,7 @@ export type SupervisedTaskInput = {
   flowId?: string;
   agentId: string;
   model: string;
+  authProfileId?: string;
   runtime: SupervisedTask["runtime"];
   prompt: string;
   goal?: SupervisedGoal;
@@ -158,6 +159,7 @@ export function createSupervisedTask(
         revision: 0,
         agentId: input.agentId,
         model: input.model,
+        ...(input.authProfileId ? { authProfileId: input.authProfileId } : {}),
         runtime: input.runtime,
         prompt: input.prompt,
         goal: input.goal ?? null,

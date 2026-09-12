@@ -207,6 +207,23 @@ shell, or other action tools. Existing attempt deadlines, resource limits, and
 supervisor recovery budgets still apply; schema-valid output alone cannot authorize
 success or lower the accepted criteria.
 
+### Credential selection
+
+A task definition may set `authProfileId` to an existing OpenClaw credential
+profile. The controller retains that identifier across attempts and resumes;
+it never copies the credential into task records or workspaces. The normal
+runtime resolver checks the profile's availability and provider compatibility.
+If omitted, the runtime's existing default authentication behavior is unchanged.
+
+For automatic admission, the operator policy may bind profiles by provider:
+`"authProfiles": { "anthropic": "anthropic:work" }`. The same binding is used
+for classification and the admitted task. Unlisted providers keep their normal
+authentication behavior; an Anthropic binding is not forwarded to Codex.
+A selected missing or inactive profile fails rather than silently using a
+different account. Existing working chat sessions may carry an explicit profile
+while fresh native CLI sessions use a separate local login; use the intended
+saved profile instead of assuming these are the same credential source.
+
 ### Start a supervised task
 
 Use a dedicated configured agent with an explicit per-model `agentRuntime.id` of

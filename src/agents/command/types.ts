@@ -77,6 +77,8 @@ export type AgentCommandOpts = {
   provider?: string;
   /** Per-run model override. */
   model?: string;
+  /** Trusted per-run credential binding; never accepted from public ingress. */
+  authProfileId?: string;
   /** Explicit ordered fallback chain for this run. Undefined uses normal selection policy. */
   modelFallbacksOverride?: string[];
   to?: string;
@@ -249,6 +251,7 @@ export type AgentCommandOpts = {
 /** Restricted option surface for external ingress callsites. */
 export type AgentCommandIngressOpts = Omit<
   AgentCommandOpts,
+  | "authProfileId"
   | "runtimeContextFragments"
   | "senderIsOwner"
   | "outputJsonSchema"

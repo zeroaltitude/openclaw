@@ -77,7 +77,9 @@ it("refuses a CLI runtime alias as a canonical model provider before invoking th
 });
 
 it("requires actual CLI execution evidence, not an echoed provider name", async () => {
-  const current = task("claude-cli", "anthropic/fixture");
+  const current = Object.assign(task("claude-cli", "anthropic/fixture"), {
+    authProfileId: "anthropic:work",
+  });
   mocks.command.mockResolvedValue({
     payloads: [{ mediaUrl: null, text: JSON.stringify(decision) }],
     meta: {
@@ -111,6 +113,7 @@ it("requires actual CLI execution evidence, not an echoed provider name", async 
       additionalProperties: false,
       $schema: "http://json-schema.org/draft-07/schema#",
     }),
+    authProfileId: "anthropic:work",
     toolsAllow: [],
     cleanupCliLiveSessionOnRunEnd: true,
     cleanupBundleMcpOnRunEnd: true,

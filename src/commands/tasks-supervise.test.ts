@@ -86,6 +86,7 @@ it("opens foreground dispatch only after admitting a new task", async () => {
       agentId: "poc",
       runtime: "codex",
       model: "openai/fixture",
+      authProfileId: "openai:work",
       prompt: "Check fixture",
       goal: {
         objective: "Check fixture",
@@ -96,6 +97,7 @@ it("opens foreground dispatch only after admitting a new task", async () => {
     }),
   );
   mocks.attempt.mockImplementation(async (task) => {
+    expect(task.authProfileId).toBe("openai:work");
     expect(getSupervisedTask(task.flowId)?.attempt?.id).toBe(task.attempt?.id);
     return {
       kind: "succeeded",
