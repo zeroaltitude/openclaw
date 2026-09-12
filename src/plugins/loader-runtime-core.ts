@@ -23,6 +23,11 @@ import {
   type PreparedPluginConfig,
 } from "./loader-runtime-candidate.js";
 import {
+  formatSlowPluginDiscoveryWarning,
+  formatSlowPluginRegistryWarning,
+  type PluginLoadTiming,
+} from "./loader-runtime-diagnostics.js";
+import {
   activatePluginRegistry,
   matchesScopedPluginOrDreamingSidecar,
   maybeThrowOnPluginLoadError,
@@ -192,6 +197,7 @@ export function loadOpenClawPluginsCore(
     const builder = registryBuilder;
     const { registry } = builder;
     inspectionResources?.attach(registry);
+    const discoveryStartMs = performance.now();
     const { manifestRegistry, orderedCandidates, manifestBySource, provenance } =
       resolvePluginLoadDiscovery({
         options,
@@ -202,6 +208,14 @@ export function loadOpenClawPluginsCore(
         emitWarning: context.shouldActivate,
         warningCacheKey: context.cacheKey,
       });
+    const discoveryElapsedMs = performance.now() - discoveryStartMs;
+    const discoveryWarning = formatSlowPluginDiscoveryWarning({
+      elapsedMs: discoveryElapsedMs,
+      candidateCount: orderedCandidates.length,
+    });
+    if (discoveryWarning) {
+      logger.warn(discoveryWarning);
+    }
     // Raw and prepared loads share one owner; absent workspace means shared-root scope.
     setPluginRuntimeLoadContext(
       registry,
@@ -357,6 +371,7 @@ export function loadOpenClawPluginsCore(
       pluginLoadAttemptCount: 0,
     };
     const pluginLoadStartMs = performance.now();
+    const perPluginLoadMs: PluginLoadTiming[] = [];
     for (const candidate of orderedCandidates) {
       const manifestRecord = manifestBySource.get(candidate.source);
       if (!manifestRecord) {
@@ -372,6 +387,7 @@ export function loadOpenClawPluginsCore(
         }
         continue;
       }
+      const candidateStartMs = performance.now();
       const input = inputs.get(manifestRecord.id);
       const loadCandidate = () =>
         loadRuntimePluginCandidate({
@@ -393,12 +409,23 @@ export function loadOpenClawPluginsCore(
       } else {
         loadCandidate();
       }
+      perPluginLoadMs.push([manifestRecord.id, performance.now() - candidateStartMs]);
     }
     const pluginLoadElapsedMs = performance.now() - pluginLoadStartMs;
     if (state.pluginLoadAttemptCount > 0) {
       logger.debug?.(
         `[plugins] loaded ${registry.plugins.length} plugin(s) (${state.pluginLoadAttemptCount} attempted) in ${pluginLoadElapsedMs.toFixed(1)}ms`,
       );
+    }
+    const registryWarning = formatSlowPluginRegistryWarning({
+      elapsedMs: pluginLoadElapsedMs,
+      pluginCount: registry.plugins.length,
+      attemptedCount: state.pluginLoadAttemptCount,
+      runtimeSubagentMode: context.runtimeSubagentMode,
+      timings: perPluginLoadMs,
+    });
+    if (registryWarning) {
+      logger.warn(registryWarning);
     }
     // Scoped snapshots may omit the configured memory plugin intentionally.
     if (

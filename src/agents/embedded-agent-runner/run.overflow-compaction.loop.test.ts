@@ -134,7 +134,7 @@ function makeDispatchInput(
       resolvedSessionKey: "agent:main:session-1",
       resolvedToolResultFormat: "markdown",
       startedAtMs: Date.now(),
-      startupStages: { mark: vi.fn() },
+      startupStages: { mark: vi.fn(), markOnce: vi.fn() },
       emitStartupStageSummary: vi.fn(),
       lifecycleGeneration,
       laneController,

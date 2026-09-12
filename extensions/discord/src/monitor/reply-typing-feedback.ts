@@ -16,6 +16,7 @@ export function createDiscordReplyTypingFeedback(params: {
   channelId: string;
   rest?: RequestClient;
   log: (message: string) => void;
+  onStartSuccess?: () => void;
   maxDurationMs?: number;
   keepaliveIntervalMs?: number;
 }) {
@@ -27,7 +28,10 @@ export function createDiscordReplyTypingFeedback(params: {
       accountId: params.accountId,
     }).rest;
   return createTypingCallbacks({
-    start: () => sendTyping({ rest, channelId: params.channelId }),
+    start: async () => {
+      await sendTyping({ rest, channelId: params.channelId });
+      params.onStartSuccess?.();
+    },
     onStartError: (err) => {
       logTypingFailure({
         log: params.log,

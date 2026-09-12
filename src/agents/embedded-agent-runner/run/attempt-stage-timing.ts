@@ -10,11 +10,19 @@ type EmbeddedRunStageSummary = StageTimingSummary;
 /** Lightweight monotonic-ish stage tracker used for embedded run startup diagnostics. */
 type EmbeddedRunStageTracker = {
   mark: (name: string) => void;
+  /**
+   * Marks `name` the first time it is seen and ignores every later call. Used by
+   * retry loops that want the first pass attributed without re-marking per attempt.
+   */
+  markOnce: (name: string) => void;
   snapshot: () => EmbeddedRunStageSummary;
 };
 
 /** Canonical stage names for dispatch-time embedded attempt diagnostics. */
 export const EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE = {
+  compactionRuntime: "compaction-runtime",
+  runtimeSnapshot: "runtime-snapshot",
+  attemptEntry: "attempt-entry",
   workspace: "attempt-workspace",
   prompt: "attempt-prompt",
   runtimePlan: "attempt-runtime-plan",
@@ -33,7 +41,18 @@ export function createEmbeddedRunStageTracker(options?: {
   now?: () => number;
 }): EmbeddedRunStageTracker {
   const { mark, snapshot } = createStageTimingTracker(options?.now ?? Date.now);
-  return { mark, snapshot };
+  const markedOnce = new Set<string>();
+  return {
+    mark,
+    markOnce(name) {
+      if (markedOnce.has(name)) {
+        return;
+      }
+      markedOnce.add(name);
+      mark(name);
+    },
+    snapshot,
+  };
 }
 
 /** Returns true when either total runtime or any single stage exceeds warning thresholds. */

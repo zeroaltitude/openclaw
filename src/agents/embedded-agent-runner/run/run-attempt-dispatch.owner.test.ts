@@ -212,7 +212,7 @@ it.each([
           resolvedSessionKey: "global",
           resolvedToolResultFormat: "markdown",
           startedAtMs: Date.now(),
-          startupStages: { mark: vi.fn() },
+          startupStages: { mark: vi.fn(), markOnce: vi.fn() },
           emitStartupStageSummary: vi.fn(),
           lifecycleGeneration,
           laneController,
