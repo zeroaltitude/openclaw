@@ -23,7 +23,6 @@ import { startSessionUpstreamMonitor } from "../sessions/session-upstream-monito
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
 import { startGatewayTaskSupervision } from "../tasks/supervised-task.gateway.js";
 import { assertQueuedConversationDeliveryAttemptAuthorized } from "./conversation-route-ownership.js";
-import { resolveGatewayPluginConfig } from "./runtime-plugin-config.js";
 import {
   fenceScheduledGatewayContextResolver,
   runWithScheduledGatewayContext,
@@ -91,9 +90,12 @@ export async function clearGatewayMaintenanceHandles(
   clearInterval(maintenance.tickInterval);
   clearInterval(maintenance.healthInterval);
   clearInterval(maintenance.dedupeCleanup);
-  await maintenance.stopMediaCleanup();
   clearInterval(maintenance.worktreeCleanup);
   maintenance.skillUsageCleanup();
+  await Promise.all([
+    maintenance.stopSessionColdStorageMaintenance(),
+    maintenance.stopMediaCleanup(),
+  ]);
 }
 
 /** Schedules post-ready maintenance and cancels/cleans handles if shutdown wins the race. */
@@ -199,7 +201,7 @@ function startPendingOutboundDeliveryRecovery(params: {
               return;
             }
             assertQueuedConversationDeliveryAttemptAuthorized({
-              config: resolveGatewayPluginConfig({ config: getRuntimeConfig() }),
+              config: getRuntimeConfig(),
               agentId: attemptAuthority.agentId,
               operationId: attemptAuthority.operationId,
               ...(attemptAuthority.storePath ? { storePath: attemptAuthority.storePath } : {}),

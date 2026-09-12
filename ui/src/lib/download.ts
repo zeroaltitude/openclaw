@@ -1,10 +1,15 @@
 export function downloadTextFile(filename: string, content: string, type = "text/plain"): void {
-  const url = URL.createObjectURL(new Blob([content], { type }));
+  downloadBlobFile(filename, new Blob([content], { type }));
+}
+
+export function downloadBlobFile(filename: string, content: Blob): void {
+  const url = URL.createObjectURL(content);
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
   link.click();
-  URL.revokeObjectURL(url);
+  // Let the browser consume the click before releasing the download payload.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 /** Binary artifacts are downloaded as data, never navigated as executable HTML. */

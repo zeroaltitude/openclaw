@@ -3,6 +3,7 @@ import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gatewa
 import { sessionRefFromPath } from "../../app-session-route-paths.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/context.ts";
 import type { TaskStatus, TaskSummary } from "../../lib/tasks/task-summary.ts";
+import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import {
   createContext,
@@ -79,6 +80,22 @@ afterEach(() => {
 });
 
 describe("TasksPage concurrent refresh events", () => {
+  it("identifies agents on each row in an all-agents task list", async () => {
+    const tasks = [createTask("home"), createTask("research", "running", { agentId: "research" })];
+    const request = vi.fn(async () => ({ tasks }));
+    const source = createGateway(createTestGatewayClient(request));
+    const page = document.createElement("openclaw-tasks-page") as TasksPageTestElement;
+    page.context = createContext(source.gateway, null);
+    document.body.append(page);
+    await waitForFast(() => {
+      const owners = [...page.querySelectorAll(".task-row .agent-row-chip")].map((chip) =>
+        chip.getAttribute("data-agent-id"),
+      );
+      expect(owners).toHaveLength(2);
+      expect(owners).toEqual(expect.arrayContaining(["main", "research"]));
+    });
+  });
+
   it("keeps the later recent snapshot when a task transitions to terminal", async () => {
     const initial = createTask("task-progress", "running", {
       toolUseCount: 2,

@@ -66,12 +66,18 @@ vi.mock("./abort-cutoff.js", () => ({
   shouldPersistAbortCutoff: vi.fn(() => false),
 }));
 
-vi.mock("./abort.js", () => ({
+vi.mock("./abort-operation.js", () => ({
   abortSessionRunTargetWithOutcome: abortSessionRunTargetWithOutcomeMock,
-  formatAbortReplyText: formatAbortReplyTextMock,
+  stopSubagentsForRequester: stopSubagentsForRequesterMock,
+}));
+
+vi.mock("./abort-primitives.js", () => ({
   isAbortTrigger: vi.fn((raw: string) => raw === "stop"),
   setAbortMemory: vi.fn(),
-  stopSubagentsForRequester: stopSubagentsForRequesterMock,
+}));
+
+vi.mock("./abort.js", () => ({
+  formatAbortReplyText: formatAbortReplyTextMock,
 }));
 
 vi.mock("./commands-session-store.js", () => ({
