@@ -716,13 +716,24 @@ public struct OpenClawChatMetadataCapabilities: Codable, Sendable, Equatable {
 public struct OpenClawChatModelCatalogSnapshot: Sendable, Equatable {
     public let choices: [OpenClawChatModelChoice]
     public let availabilityIsSessionScoped: Bool
+    public let refreshFailed: Bool
+
+    public var message: String? {
+        if !self.availabilityIsSessionScoped {
+            return String(
+                localized: "Update your Gateway to use session model choices. Slash commands are still available.")
+        }
+        return self.refreshFailed ? String(localized: "Model choices could not refresh. Reconnect and try again.") : nil
+    }
 
     public init(
         choices: [OpenClawChatModelChoice],
-        availabilityIsSessionScoped: Bool)
+        availabilityIsSessionScoped: Bool,
+        refreshFailed: Bool = false)
     {
         self.choices = choices
         self.availabilityIsSessionScoped = availabilityIsSessionScoped
+        self.refreshFailed = refreshFailed
     }
 }
 
@@ -822,6 +833,7 @@ public protocol OpenClawChatTransport: Sendable {
     func fetchProgressCard(sessionKey: String, agentID: String?) async throws -> ProgressCard?
     func requestFullMessage(sessionKey: String, messageID: String) async throws -> OpenClawChatMessage?
     func listModels(agentID: String?) async throws -> [OpenClawChatModelChoice]
+    func acquireModelSignInContext(agentID: String?) async -> OpenClawChatModelSignInContext?
     func loadModelCatalog(
         sessionKey: String,
         agentID: String?) async throws -> OpenClawChatModelCatalogSnapshot
@@ -1332,6 +1344,10 @@ extension OpenClawChatTransport {
             domain: "OpenClawChatTransport",
             code: 0,
             userInfo: [NSLocalizedDescriptionKey: "models.list not supported by this transport"])
+    }
+
+    public func acquireModelSignInContext(agentID _: String?) async -> OpenClawChatModelSignInContext? {
+        nil
     }
 
     public func loadModelCatalog(
