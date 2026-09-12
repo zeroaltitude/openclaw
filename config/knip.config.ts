@@ -177,6 +177,7 @@ const repositoryScriptEntries = [
   "scripts/proof-117074-tombstone-shared-owners.ts!",
   "scripts/proof-117734-conversation-burst-replay.ts!",
   "scripts/proof-117734-slack-gateway-isolation.ts!",
+  "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
   "scripts/proof-136474-blocked-hook-registrations.ts!",
   "scripts/proof-app-server-runtime-chooser-bindings.ts!",
   "scripts/qa-coverage-report.ts!",
