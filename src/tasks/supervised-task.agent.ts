@@ -158,6 +158,7 @@ async function runSupervisedAgentAdapter(
       agentId: task.agentId,
       provider,
       model,
+      authProfileId: task.authProfileId,
       modelFallbacksOverride: [],
       allowModelOverride: true,
       senderIsOwner: false,

@@ -432,3 +432,20 @@ it("rejects a policy changed during supervisor preparation before creating the e
     readSupervisedInputReceipt(supervisedInputIdentity(f.source, f.message).sourceKey, f.options),
   ).toBeUndefined();
 });
+
+it("binds the operator credential profile to classification and the durable task", async () => {
+  const f = await fixture();
+  const file = f.config.agents!.entries!.poc!.taskSupervision!.policyFile!;
+  const policy = JSON.parse(await fs.readFile(file, "utf8"));
+  await fs.writeFile(file, JSON.stringify({ ...policy, authProfiles: { openai: "openai:work" } }));
+  const result = await maybeAdmitSupervisedRootTask(f);
+  expect(mocks.classify).toHaveBeenCalledWith(
+    expect.objectContaining({ authProfileId: "openai:work" }),
+  );
+  if (result.kind !== "admitted") {
+    throw new Error("Expected admission");
+  }
+  expect(getSupervisedTask(result.flowId, f.options)?.authProfileId).toBe("openai:work");
+  const claimed = claimSupervisedTask(result.flowId, "native-owner", 1001, f.options);
+  expect(claimed?.authProfileId).toBe("openai:work");
+});

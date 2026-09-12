@@ -68,6 +68,7 @@ const SupervisedTaskSchema = z.strictObject({
   revision: z.number().int().nonnegative(),
   agentId: id,
   model: id,
+  authProfileId: id.optional(),
   runtime: z.enum(["codex", "claude-cli"]),
   prompt: text,
   goal: SupervisedGoalSchema.nullable(),

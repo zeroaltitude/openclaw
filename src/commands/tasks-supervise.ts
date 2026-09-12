@@ -25,6 +25,7 @@ const DefinitionSchema = z.strictObject({
   flowId: z.string().min(1).max(128).optional(),
   agentId: z.string().min(1).max(128),
   model: z.string().min(1).max(128),
+  authProfileId: z.string().trim().min(1).max(128).optional(),
   runtime: z.enum(["codex", "claude-cli"]),
   prompt: z.string().trim().min(1).max(4096),
   goal: SupervisedGoalSchema.optional(),

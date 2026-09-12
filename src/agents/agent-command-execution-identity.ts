@@ -223,6 +223,7 @@ export function sanitizePublicAgentCommandIngressOpts(
 ): AgentCommandGatewayIngressOpts {
   return withoutAgentCommandExecutionIdentitySpawnFacts({
     ...opts,
+    authProfileId: undefined,
     runtimeContextFragments: undefined,
     senderIsOwner: false,
     outputJsonSchema: undefined,

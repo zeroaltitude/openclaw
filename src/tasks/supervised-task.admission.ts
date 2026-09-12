@@ -34,6 +34,7 @@ import { SupervisedWorkflowContractSchema } from "./supervised-workflow.types.js
 export const SupervisedAdmissionPolicySchema = z.strictObject({
   version: z.literal(1),
   scope: z.string().min(1).max(4096),
+  authProfiles: z.record(z.string().min(1).max(128), z.string().trim().min(1).max(128)).optional(),
   goal: SupervisedGoalSchema,
   workflow: SupervisedWorkflowContractSchema,
   maxAttempts: z.number().int().min(1).max(100),
@@ -204,6 +205,7 @@ export async function maybeAdmitSupervisedRootTask(params: {
     provider,
     model,
     agentId: source.agentId,
+    authProfileId: policy.authProfiles?.[provider],
     agentHarnessRuntimeOverride: runtime,
     timeoutMs: 60_000,
     assertCurrent: params.assertCurrent,
@@ -271,6 +273,7 @@ export async function maybeAdmitSupervisedRootTask(params: {
         flowId,
         agentId: source.agentId,
         model: params.model,
+        authProfileId: policy.authProfiles?.[provider],
         runtime,
         prompt: params.message,
         goal: policy.goal,
