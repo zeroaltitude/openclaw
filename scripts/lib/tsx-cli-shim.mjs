@@ -8,6 +8,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ensureRepoNodeModulesLink } from "./local-check-runtime.mts";
 
 const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+// Mirrors EXIT_TRAILER_DEFER_ENV in scripts/lib/failed-trailer.mts.
+const EXIT_TRAILER_DEFER_ENV = "OPENCLAW_CLI_EXIT_TRAILER_DEFER";
 const DEFAULT_FORCE_KILL_DELAY_MS = 5_000;
 const SHIM_CHECKOUT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -52,9 +54,32 @@ function signalExitCode(signal) {
   return typeof signalNumber === "number" ? 128 + signalNumber : 1;
 }
 
-function writeFailureTrailer(tool, exitCode) {
-  if (tool && exitCode !== 0) {
-    console.error(`[${tool}] FAILED (exit ${exitCode})`);
+/**
+ * Write the fixed-shape terminal marker for a shimmed run, then the human
+ * failure line. A detached gate log is judged by this marker: a killed run
+ * leaves none, so a pass must not be silent and a wrapper without a curated
+ * `failureTool` must not be silent either. Keep both lines on stderr — several
+ * shimmed implementations emit machine-parsed stdout, and detached runs
+ * redirect `2>&1` anyway.
+ *
+ * The text mirrors `scripts/lib/failed-trailer.mts` deliberately rather than
+ * importing it: this shim's dependency set is mirrored in packaging manifests
+ * and test fixtures, so it stays free of repo-internal imports.
+ *
+ * `exitTool` names the marker for a wrapper whose implementation already owns
+ * the human failure line, so both lines read as one tool. Without either name
+ * the implementation's file name still identifies the run.
+ * @param {{ exitTool?: string, failureTool?: string, implementation?: string }} options
+ * @param {number} exitCode
+ */
+function writeExitTrailer(options, exitCode) {
+  const tool =
+    options.exitTool ?? options.failureTool ?? path.basename(options.implementation ?? "cli");
+  console.error(`[${tool}] EXIT ${exitCode}`);
+  // Only a curated tool name gets the human line, and it stays last so the
+  // existing "final line names the failure" contracts keep holding.
+  if (options.failureTool && exitCode !== 0) {
+    console.error(`[${options.failureTool}] FAILED (exit ${exitCode})`);
   }
 }
 
@@ -118,7 +143,9 @@ async function runCliShimInner(moduleUrl, options, nodeArgs) {
     child = spawn(nodeExecutable, [...nodeArgs, implementationPath, ...process.argv.slice(2)], {
       cwd: process.cwd(),
       detached,
-      env: process.env,
+      // This shim writes the terminal marker for the whole invocation, so the
+      // implementation's own trailer skips its EXIT line instead of doubling it.
+      env: { ...process.env, [EXIT_TRAILER_DEFER_ENV]: implementationPath },
       stdio: "inherit",
     });
     const result = await new Promise((resolve, reject) => {
@@ -128,17 +155,17 @@ async function runCliShimInner(moduleUrl, options, nodeArgs) {
     cleanup();
 
     if (result.signal) {
-      writeFailureTrailer(options.failureTool, signalExitCode(result.signal));
+      writeExitTrailer(options, signalExitCode(result.signal));
       process.kill(process.pid, result.signal);
       return;
     }
     const exitCode = result.code ?? 1;
-    writeFailureTrailer(options.failureTool, exitCode);
+    writeExitTrailer(options, exitCode);
     process.exitCode = exitCode;
   } catch (error) {
     cleanup();
     console.error(error);
-    writeFailureTrailer(options.failureTool, 1);
+    writeExitTrailer(options, 1);
     process.exitCode = 1;
   }
 }
@@ -148,7 +175,7 @@ async function runCliShim(moduleUrl, options, nodeArgs) {
     await runCliShimInner(moduleUrl, options, nodeArgs);
   } catch (error) {
     console.error(error);
-    writeFailureTrailer(options.failureTool, 1);
+    writeExitTrailer(options, 1);
     process.exitCode = 1;
   }
 }
