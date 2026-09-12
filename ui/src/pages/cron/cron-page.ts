@@ -67,7 +67,7 @@ class CronPage extends OpenClawLightDomElement {
   @state() private heartbeatScratch = "";
 
   private pendingRouteData: ReturnType<typeof resolveCronRouteData> | null = null;
-  private routeJobState: CronState | null = null;
+  private routeJobRequested = false;
   private highlightedRunId: string | null = null;
   private pendingRunScroll = false;
   private deliveryConversationsRequest = 0;
@@ -167,6 +167,7 @@ class CronPage extends OpenClawLightDomElement {
     });
     cron.canRefresh = () => this.canRefreshCron(cron);
     this.cron = cron;
+    this.routeJobRequested = false;
     this.pageHidden = document.visibilityState === "hidden";
     this.cron.cronAgentId = this.context.agentSelection.state.scopeId;
     this.agentsList = connected ? this.context.agents.state.agentsList : null;
@@ -223,7 +224,7 @@ class CronPage extends OpenClawLightDomElement {
       this.cron.cronError = null;
       const routeData = resolveCronRouteData(this.routeSearch);
       this.pendingRouteData = routeData.jobId ? routeData : null;
-      this.routeJobState = null;
+      this.routeJobRequested = false;
       this.highlightedRunId = null;
       this.pendingRunScroll = false;
     }
@@ -245,8 +246,8 @@ class CronPage extends OpenClawLightDomElement {
     }
     const routeData = this.pendingRouteData;
     const client = this.cron.client;
-    if (routeData && client && this.cron.connected && this.routeJobState !== this.cron) {
-      this.routeJobState = this.cron;
+    if (routeData && client && this.cron.connected && !this.routeJobRequested) {
+      this.routeJobRequested = true;
       void this.runCronTask(async (current) => {
         const isCurrent = () =>
           this.isConnected && this.cron === current && this.pendingRouteData === routeData;
