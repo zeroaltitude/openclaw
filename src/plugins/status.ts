@@ -28,6 +28,7 @@ import {
 } from "./loader.js";
 import type { PluginDiagnostic } from "./manifest-types.js";
 import { tracksPluginDependencyStatus } from "./official-external-plugin-repair-hints.js";
+import { createPluginCache, withPluginCache } from "./plugin-cache.js";
 import {
   tracePluginLifecyclePhase,
   tracePluginLifecyclePhaseAsync,
@@ -293,7 +294,7 @@ function preparePluginReport(params: PluginReportParams | undefined) {
       workspaceDir,
       env: params?.env,
       loadModules: true,
-      cache: false,
+      cache: true,
       onlyPluginIds,
       toolDiscovery: params?.runtimeInspection,
     }),
@@ -392,8 +393,13 @@ export function buildPluginSnapshotReport(params?: PluginReportParams): PluginSt
   return buildPluginReport(params, false);
 }
 
-export function buildPluginDiagnosticsReport(params?: PluginReportParams): PluginStatusReport {
-  return buildPluginReport(params, true);
+/** Complete diagnostics projection before retiring its imported plugin generation. */
+export async function withPluginDiagnosticsReport<T>(
+  params: PluginReportParams | undefined,
+  consume: (report: PluginStatusReport) => T | Promise<T>,
+): Promise<T> {
+  await using cache = createPluginCache();
+  return await withPluginCache(cache, () => consume(buildPluginReport(params, true)));
 }
 
 /** Serializes an owned inspection before disposing its registration resources. */
@@ -430,13 +436,13 @@ type PluginInspectParams = Pick<
   PluginReportParams,
   "config" | "workspaceDir" | "env" | "logger"
 > & {
-  report?: PluginStatusReportLike;
+  report: PluginStatusReportLike;
 };
 
 function resolvePluginInspectContext({ report, ...params }: PluginInspectParams) {
-  const { rawConfig, config } = resolvePluginRuntimeLoadContext(params);
+  const { config } = resolvePluginRuntimeLoadContext(params);
   return {
-    report: report ?? buildPluginDiagnosticsReport({ ...params, config: rawConfig }),
+    report,
     entries: normalizePluginsConfig(config.plugins).entries,
   };
 }
@@ -582,21 +588,19 @@ function buildPluginInspectRecord(
   };
 }
 
-export function buildAllPluginInspectReports(
-  params: PluginInspectParams = {},
-): PluginInspectReport[] {
+export function buildAllPluginInspectReports(params: PluginInspectParams): PluginInspectReport[] {
   const context = resolvePluginInspectContext(params);
   return context.report.plugins.map((plugin) => buildPluginInspectRecord(plugin, context));
 }
 
-export function buildPluginCompatibilityWarnings(params?: PluginInspectParams): string[] {
+export function buildPluginCompatibilityWarnings(params: PluginInspectParams): string[] {
   return buildPluginCompatibilityNotices(params).map(formatPluginCompatibilityNotice);
 }
 
 export function buildPluginCompatibilityNotices(
-  params?: PluginInspectParams,
+  params: PluginInspectParams,
 ): PluginCompatibilityNotice[] {
-  const registry = params?.report ?? buildPluginDiagnosticsReport(params);
+  const registry = params.report;
   return registry.plugins.flatMap((plugin) =>
     buildCompatibilityNoticesForInspect({
       plugin,

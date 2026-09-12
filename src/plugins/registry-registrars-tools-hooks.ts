@@ -97,6 +97,7 @@ function canRegisterInstalledTrustedHook(record: PluginRecord): boolean {
 export function createToolHookRegistrars(state: PluginRegistryState) {
   const {
     registry,
+    createRegistration,
     registryParams,
     pluginsWithChannelRegistrationConflict,
     pushDiagnostic,
@@ -148,12 +149,8 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
       }
     };
     registry.codexAppServerExtensionFactories.push({
-      pluginId: record.id,
-      pluginName: record.name,
+      ...createRegistration(record, { factory: safeFactory }),
       rawFactory: factory,
-      factory: safeFactory,
-      source: record.source,
-      rootDir: record.rootDir,
     });
   };
 
@@ -223,14 +220,12 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
       }
     };
     const registration: PluginAgentToolResultMiddlewareRegistration = {
-      pluginId: record.id,
-      pluginName: record.name,
+      ...createRegistration(record, {
+        handler: safeHandler,
+        runtimes,
+        scopes: [{ runtimes, ...(matcher ? { matcher } : {}) }],
+      }),
       rawHandler: handler,
-      handler: safeHandler,
-      runtimes,
-      scopes: [{ runtimes, ...(matcher ? { matcher } : {}) }],
-      source: record.source,
-      rootDir: record.rootDir,
     };
     registry.agentToolResultMiddlewares.push(registration);
   };
@@ -270,17 +265,15 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
     if (normalized.length > 0) {
       record.toolNames.push(...normalized);
     }
-    registry.tools.push({
-      pluginId: record.id,
-      pluginName: record.name,
-      factory,
-      names: normalized,
-      declaredNames,
-      optional,
-      origin: record.origin,
-      source: record.source,
-      rootDir: record.rootDir,
-    });
+    registry.tools.push(
+      createRegistration(record, {
+        factory,
+        names: normalized,
+        declaredNames,
+        optional,
+        origin: record.origin,
+      }),
+    );
   };
 
   const registerHook = (
