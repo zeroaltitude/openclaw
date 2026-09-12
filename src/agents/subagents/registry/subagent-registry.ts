@@ -515,14 +515,6 @@ const subagentRunManager = createSubagentRunManager({
       subagentRuns.get(entry.runId) === entry &&
       typeof entry.execution.endedAt !== "number";
     const ownsObservation = () => isCurrent() && entry.waitExpiryObservedAt === observedAt;
-    // The runtime owns configured execution deadlines and commonly emits its
-    // terminal event in the same clock tick as agent.wait expires. Give that
-    // authoritative event one brief turn to win before publishing a still-live
-    // observation; this avoids a duplicate provisional wake for normal timeouts.
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, SUBAGENT_WAIT_EXPIRY_TERMINAL_GRACE_MS);
-      timer.unref?.();
-    });
     if (
       !isCurrent() ||
       typeof entry.waitExpiryAnnouncedAt === "number" ||
@@ -536,6 +528,17 @@ const subagentRunManager = createSubagentRunManager({
       entry.sessionStartedAt ??= startedAt;
     }
     persistSubagentRunsOrThrow(entry.runId);
+
+    // Record the observation before yielding so the sweeper cannot mistake this
+    // live-but-unconfirmed child for a lost execution during announcement grace.
+    // The grace delays only the wake: an authoritative terminal event still wins.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, SUBAGENT_WAIT_EXPIRY_TERMINAL_GRACE_MS);
+      timer.unref?.();
+    });
+    if (!ownsObservation()) {
+      return;
+    }
 
     if (entry.collect === true || entry.expectsCompletionMessage === false) {
       return;

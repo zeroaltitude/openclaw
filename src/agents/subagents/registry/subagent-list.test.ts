@@ -531,6 +531,70 @@ describe("buildSubagentList", () => {
     expect(list.recent[0]?.status).toBe("done");
   });
 
+  it("lists a run whose wait expired without an observed child stop as live, not as a recent timeout", () => {
+    // Regression (round 3, finding 3): a `child-unconfirmed` timeout records the
+    // end of the PARENT'S WAIT. Filing it under "recent" with a bare `timeout`
+    // told the parent the child was dead in the same breath as the completion
+    // warning that told it the child may still be running — and a parent that
+    // believes the list is the one that spawns the destructive replacement.
+    const now = Date.now();
+    const unconfirmedRun = {
+      runId: "run-wait-expired-unconfirmed",
+      childSessionKey: "agent:main:subagent:wait-expired-unconfirmed",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "long build that outlived the parent's wait",
+      cleanup: "keep",
+      createdAt: now - 120_000,
+      runTimeoutSeconds: 60,
+      execution: {
+        status: "terminal",
+        startedAt: now - 120_000,
+        endedAt: now - 60_000,
+        outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+      },
+    } satisfies SubagentRunRecord;
+    addSubagentRunForTests(unconfirmedRun);
+
+    const list = buildSubagentList({
+      cfg: baseConfig,
+      runs: [unconfirmedRun],
+      recentMinutes: 30,
+      taskMaxChars: 110,
+    });
+
+    expect(list.recent).toStrictEqual([]);
+    expect(list.active).toHaveLength(1);
+    expect(list.active[0]?.status).toBe("running (wait expired; child stop unconfirmed)");
+    expect(list.active[0]?.status).not.toBe("timeout");
+    expect(list.text).toContain("child stop unconfirmed");
+
+    // Anti-vacuity control: an OBSERVED timeout on the same shape still reads as
+    // a finished timeout under "recent", so the change is scoped to the
+    // unconfirmed disposition rather than hiding every timeout from the list.
+    resetSubagentRegistryForTests();
+    const observedRun = {
+      ...unconfirmedRun,
+      runId: "run-wait-expired-observed",
+      childSessionKey: "agent:main:subagent:wait-expired-observed",
+      execution: {
+        ...unconfirmedRun.execution,
+        outcome: { status: "timeout", timeoutDisposition: "child-stopped" },
+      },
+    } satisfies SubagentRunRecord;
+    addSubagentRunForTests(observedRun);
+
+    const observedList = buildSubagentList({
+      cfg: baseConfig,
+      runs: [observedRun],
+      recentMinutes: 30,
+      taskMaxChars: 110,
+    });
+
+    expect(observedList.active).toStrictEqual([]);
+    expect(observedList.recent[0]?.status).toBe("timeout");
+  });
+
   // The shared-cwd advisory warns when a caller deliberately aimed two live
   // children at one directory. Each directory is emitted once in a bounded
   // summary; individual rows carry only a small group id.
@@ -743,6 +807,69 @@ describe("buildSubagentList", () => {
       ]);
       expect(list.active.every((item) => item.sharedCwdGroupId === 1)).toBe(true);
     });
+
+    it.each(["legacy-ended", "stale-observation"] as const)(
+      "retains the shared-directory warning for an unconfirmed %s child until actual completion",
+      async (shape) => {
+        const now = Date.now();
+        const sharedDir = path.join(testWorkspaceDir, `shared-tree-unconfirmed-${shape}`);
+        const liveRun = makeRun(`unconfirmed-peer-${shape}`, now);
+        const uncertainRun = makeRun(`unconfirmed-child-${shape}`, now);
+        uncertainRun.createdAt = now - 3 * 60 * 60_000;
+        uncertainRun.waitExpiryObservedAt = now - 60_000;
+        uncertainRun.execution =
+          shape === "legacy-ended"
+            ? {
+                status: "terminal",
+                startedAt: uncertainRun.createdAt,
+                endedAt: now - 60_000,
+                outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+              }
+            : { status: "running", startedAt: uncertainRun.createdAt };
+        const storePath = path.join(
+          testWorkspaceDir,
+          `sessions-shared-cwd-unconfirmed-${shape}.json`,
+        );
+        await seedSessionEntry(storePath, liveRun.childSessionKey, sharedDir);
+        await seedSessionEntry(storePath, uncertainRun.childSessionKey, sharedDir);
+        const cfg = { session: { store: storePath } } as OpenClawConfig;
+        addSubagentRunForTests(liveRun);
+        addSubagentRunForTests(uncertainRun);
+
+        const uncertainList = buildSubagentList({
+          cfg,
+          runs: [liveRun, uncertainRun],
+          recentMinutes: 30,
+        });
+        expect(uncertainList.active).toHaveLength(2);
+        expect(uncertainList.sharedCwdGroupTotal).toBe(1);
+        expect(uncertainList.text).toContain("[cwd 1] 2 runs:");
+        expect(uncertainList.sharedCwdGroups[0]?.runCount).toBe(2);
+        expect(uncertainList.active.every((item) => item.sharedCwdGroupId === 1)).toBe(true);
+
+        // A retained wait marker must not keep the warning after real completion.
+        const completedRun: SubagentRunRecord = {
+          ...uncertainRun,
+          execution: {
+            status: "terminal",
+            startedAt: uncertainRun.createdAt,
+            endedAt: now,
+            outcome: { status: "ok" },
+          },
+        };
+        resetSubagentRegistryForTests();
+        addSubagentRunForTests(liveRun);
+        addSubagentRunForTests(completedRun);
+        const completedList = buildSubagentList({
+          cfg,
+          runs: [liveRun, completedRun],
+          recentMinutes: 30,
+        });
+        expect(completedList.active).toHaveLength(1);
+        expect(completedList.recent[0]?.status).toBe("done");
+        expect(completedList.sharedCwdGroupTotal).toBe(0);
+      },
+    );
 
     it("ignores ended runs that shared a directory", async () => {
       const now = Date.now();

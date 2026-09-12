@@ -119,16 +119,14 @@ function buildAnnounceReplyInstruction(params: {
   modelRouteChange?: string;
   preserveModelRouteNotice: boolean;
 }): string {
-  if (params.stillRunning) {
-    // The parent's next act decides whether this event is harmless or
-    // destructive, so name the forbidden act rather than only the state.
-    return `This ${params.announceType} has NOT finished — the wait above expired, the child did not. It is still running and still owns its session, working directory, and any branch or file it was given. Do not treat this as a result, do not report it as done or failed, and do not start a replacement or duplicate for the same work. Anything above is partial. Continue with other work; a further completion event will arrive when the child actually ends. Keep this internal context private (don't mention system/log/stats/session details or announce type). If there is nothing for the user right now, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
-  }
   const modelRouteInstruction = !params.modelRouteChange
     ? ""
     : params.preserveModelRouteNotice
       ? " Preserve any runtime-authored model-route change notice in your update."
       : " Keep runtime-authored model-route change notices internal on this shared surface.";
+  if (params.stillRunning) {
+    return `This ${params.announceType} is NOT known to have finished: the wait for it expired without observing it stop, so it may still be running. Do not treat this as a completed result, and do not start a replacement, duplicate, or successor for it — a second worker on the same files or working directory can corrupt what the first one is mid-edit on. Re-check whether it is still live before acting, and keep waiting or harvest its own output when it lands.${modelRouteInstruction} Keep this internal context private (don't mention system/log/stats/session details or announce type). Reply ONLY: ${SILENT_REPLY_TOKEN} if there is nothing to say to the user about this yet.`;
+  }
   if (params.requesterIsSubagent) {
     return `Convert this completion into a concise internal orchestration update for your parent agent in your own words.${modelRouteInstruction} Keep this internal context private (don't mention system/log/stats/session details or announce type). If this result is duplicate or no update is needed, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
   }
@@ -490,11 +488,10 @@ export async function runSubagentAnnounceFlow(params: {
       shouldDeleteChildSession = false;
     }
 
-    // Build status label
     const statusLabel = stillRunning
       ? outcome.error
-        ? `still running; last error while retrying: ${outcome.error}`
-        : "still running; the wait for it expired, it did not"
+        ? `wait expired; child stop NOT observed — it may still be running (last error while retrying: ${outcome.error})`
+        : "wait expired; child stop NOT observed — it may still be running"
       : outcome.status === "ok"
         ? "completed; ready for parent review"
         : outcome.status === "timeout"
@@ -509,9 +506,13 @@ export async function runSubagentAnnounceFlow(params: {
     const announceSessionId = childSessionEffectsAllowed()
       ? childSessionId || "unknown"
       : "unknown";
+    // Preserve both the child-owned output fact and the provisional wait copy.
     const childResultText = childCompletionFindings || reply;
     const findings =
-      childResultText || (stillRunning ? "(no result yet; child still running)" : "(no output)");
+      childResultText ||
+      (stillRunning
+        ? "(no output observed before this wait expired; the child may still be working — re-check before acting on this)"
+        : "(no output)");
 
     let requesterIsSubagent = requesterIsInternalSession();
     if (requesterIsSubagent) {

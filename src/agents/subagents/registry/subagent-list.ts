@@ -33,7 +33,10 @@ import {
   shouldKeepSubagentRunChildLink,
 } from "./subagent-run-liveness.js";
 import { buildSubagentRunView } from "./subagent-run-view.js";
-import { resolveSubagentDisplayStatus } from "./subagent-session-metrics.js";
+import {
+  isSubagentChildStopUnconfirmed,
+  resolveSubagentDisplayStatus,
+} from "./subagent-session-metrics.js";
 
 /**
  * Model-visible bounds for the shared-cwd advisory.
@@ -54,7 +57,7 @@ const SHARED_CWD_RUN_SAMPLE_MAX = 3;
 const SHARED_CWD_PATH_MAX_CHARS = 72;
 
 /**
- * Advisory marker for live sibling runs spawned into one working directory.
+ * Advisory marker for sibling runs without confirmed stop sharing one working directory.
  * Present only when the spawner passed an explicit `cwd`; inherited workspaces
  * are shared by design and are never reported.
  */
@@ -66,7 +69,7 @@ type SubagentSharedCwdGroup = {
    * untruncated path stays internal to grouping and is never emitted per row.
    */
   path: string;
-  /** Exact live-run count for the group. */
+  /** Exact group count, including children whose stop remains unconfirmed. */
   runCount: number;
   /**
    * At most `SHARED_CWD_RUN_SAMPLE_MAX` run ids, ordered by run id. A sample,
@@ -258,7 +261,8 @@ function buildSharedCwdIndex(params: {
   const groups = new Map<string, { path: string; displayPath: string; runIds: string[] }>();
   const identityMemo = new Map<string, string>();
   for (const run of params.runs) {
-    if (!isLiveUnendedSubagentRun(run, params.now)) {
+    // A wait expiry does not prove the child stopped accessing its directory.
+    if (!isLiveUnendedSubagentRun(run, params.now) && !isSubagentChildStopUnconfirmed(run)) {
       continue;
     }
     const spawnedCwd = resolveSessionEntryForKey({
@@ -390,7 +394,7 @@ function buildListText(params: {
     );
     for (const group of params.sharedCwdGroups) {
       lines.push(
-        `[cwd ${group.id}] ${group.runCount} live runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
+        `[cwd ${group.id}] ${group.runCount} runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
       );
     }
   }
