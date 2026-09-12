@@ -142,6 +142,77 @@ describe("supervised task controls", () => {
     );
     expect(page.querySelector('[role="alert"]')).toBeNull();
   });
+  it("clears old file bytes when a control observes a newer artifact", async () => {
+    vi.stubGlobal("crypto", webcrypto);
+    const task = supervisedTask();
+    const next = supervisedTask({
+      revision: 8,
+      artifact: { versionId: "00000000-0000-4000-8000-000000000002", sourceHash: "c".repeat(64) },
+    });
+    const content = "stale first artifact bytes";
+    let current = task;
+    const request = vi.fn(async (method: string, params?: { path?: string }) => {
+      if (method === "tasks.supervision.list") {
+        return { tasks: [current] };
+      }
+      if (method === "tasks.supervision.artifact") {
+        return {
+          ...current.artifact,
+          files: [
+            {
+              path: "answer.txt",
+              sha256: createHash("sha256").update(content).digest("hex"),
+              bytes: content.length,
+              executable: false,
+            },
+          ],
+          ...(params?.path
+            ? {
+                file: {
+                  path: "answer.txt",
+                  sha256: createHash("sha256").update(content).digest("hex"),
+                  bytes: content.length,
+                  offset: 0,
+                  base64: btoa(content),
+                },
+              }
+            : {}),
+        };
+      }
+      if (method === "tasks.supervision.control") {
+        current = next;
+        return {
+          acknowledgement: {
+            flowId: task.flowId,
+            episode: task.episode,
+            revision: task.revision,
+            phase: task.phase,
+          },
+          currentTask: next,
+        };
+      }
+      return { tasks: [] };
+    });
+    const { page } = await mountSupervision(request);
+    await waitForFast(() => expect(page.textContent).toContain(task.title));
+    button(page, "Details and controls").click();
+    await waitForFast(() => expect(button(page, "Inspect retained files")).toBeDefined());
+    button(page, "Inspect retained files").click();
+    await waitForFast(() => expect(page.textContent).toContain("answer.txt"));
+    button(page, "answer.txt").click();
+    await waitForFast(() => expect(page.textContent).toContain(content));
+    button(page, "I reviewed and accept this artifact").click();
+    await waitForFast(() =>
+      expect(request).toHaveBeenCalledWith("tasks.supervision.control", expect.anything()),
+    );
+    await waitForFast(() => expect(page.textContent).not.toContain(content));
+    expect(button(page, "I reviewed and accept this artifact").disabled).toBe(true);
+    button(page, "Inspect retained files").click();
+    await waitForFast(() =>
+      expect(button(page, "I reviewed and accept this artifact").disabled).toBe(false),
+    );
+    expect(page.textContent).not.toContain(content);
+  });
   it("does not show a previous task's delayed file beneath the selected task's approval", async () => {
     vi.stubGlobal("crypto", webcrypto);
     const first = supervisedTask({ title: "First artifact" });

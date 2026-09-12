@@ -121,23 +121,6 @@ export async function runSupervisedPublication(params: {
     assertCurrent();
     return head;
   };
-  const previous = await remoteHead();
-  if (previous !== prepared.headCommit) {
-    if (previous && previous !== prepared.baseCommit) {
-      throw new Error("Publication branch advanced independently; refusing overwrite");
-    }
-    const env = await refresh();
-    reserveSupervisedPublicationAction(execution, "push", Date.now(), options);
-    // A nonzero/unknown transport result is reconciled by the following read;
-    // it is never interpreted as proof that the push did not happen.
-    await runPublicationCommand(
-      githubPublicationPushArgs(remote, prepared.headCommit, profile.branch),
-      { cwd: gitDirectory, env },
-    );
-    if ((await remoteHead()) !== prepared.headCommit) {
-      throw new Error("Prepared push has not been observed at the remote");
-    }
-  }
   const lookup = async () => {
     const env = await refresh();
     const raw = await requirePublicationCommand(
@@ -151,8 +134,6 @@ export async function runSupervisedPublication(params: {
         `repos/${profile.repository}/pulls`,
         "-f",
         `head=${profile.pushRepository.split("/")[0]}:${profile.branch}`,
-        "-f",
-        `base=${profile.baseBranch}`,
         "-f",
         "state=all",
         "-f",
@@ -194,12 +175,32 @@ export async function runSupervisedPublication(params: {
     if (found?.state === "closed") {
       throw new Error("Owned PR is closed; do not recreate it automatically");
     }
-    if (!found && candidates.some((candidate) => candidate.state === "open")) {
+    if (candidates.some((candidate) => candidate.state === "open" && candidate !== found)) {
       throw new Error("Publication branch has another open PR; refusing adoption");
     }
     return found;
   };
+  // Head branches affect every open PR using them, including other base branches.
+  // Validate ownership before any push, not only before PR creation.
   let pull = await lookup();
+  const previous = await remoteHead();
+  if (previous !== prepared.headCommit) {
+    if (previous && previous !== prepared.baseCommit) {
+      throw new Error("Publication branch advanced independently; refusing overwrite");
+    }
+    const env = await refresh();
+    reserveSupervisedPublicationAction(execution, "push", Date.now(), options);
+    // A nonzero/unknown transport result is reconciled by the following read;
+    // it is never interpreted as proof that the push did not happen.
+    await runPublicationCommand(
+      githubPublicationPushArgs(remote, prepared.headCommit, profile.branch),
+      { cwd: gitDirectory, env },
+    );
+    if ((await remoteHead()) !== prepared.headCommit) {
+      throw new Error("Prepared push has not been observed at the remote");
+    }
+  }
+
   if (!pull) {
     const env = await refresh();
     reserveSupervisedPublicationAction(execution, "create", Date.now(), options);

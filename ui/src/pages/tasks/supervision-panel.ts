@@ -158,6 +158,14 @@ export class SupervisionPanelController implements ReactiveController {
       );
       // Controls acknowledge their original revision; details display the
       // separately supplied current observation, including later controls.
+      if (
+        this.selected?.artifact?.versionId !== payload.currentTask.artifact?.versionId ||
+        this.selected?.artifact?.sourceHash !== payload.currentTask.artifact?.sourceHash
+      ) {
+        this.artifact = null;
+        this.fileBytes = null;
+        this.fileName = "";
+      }
       this.selected = payload.currentTask;
       this.input = "";
     } catch (error) {

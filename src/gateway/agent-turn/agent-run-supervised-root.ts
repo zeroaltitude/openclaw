@@ -41,8 +41,8 @@ export function maybeAdmitSupervisedGatewayRoot(input: {
   activeModel: { provider: string; model: string };
   activeRunAbort: PreparedAgentRunDispatch["activeRunAbort"];
   onInputAccepted: () => void;
-  onAccepted: () => void;
-  onRejected: (error: unknown) => void;
+  onAccepted: () => void | Promise<void>;
+  onRejected: (error: unknown) => void | Promise<void>;
 }): Promise<boolean> | undefined {
   const { admission: params, userTurn, activeModel, activeRunAbort } = input;
   // Internal completions and supervised attempts never enter task admission.
@@ -158,11 +158,11 @@ export function maybeAdmitSupervisedGatewayRoot(input: {
         ],
         { runId: params.runId },
       );
-      input.onAccepted();
+      await input.onAccepted();
       return true;
     } catch (error) {
       releasePreparedAgentRunUserTurn(userTurn);
-      input.onRejected(error);
+      await input.onRejected(error);
       return true;
     }
   })();
