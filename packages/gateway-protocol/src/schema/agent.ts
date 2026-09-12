@@ -50,6 +50,8 @@ const AgentInternalEventSchema = closedObject({
   statusLabel: Type.String(),
   disposition: Type.Optional(Type.String({ enum: [...AGENT_RUN_DISPOSITIONS] })),
   result: Type.String(),
+  // The producer records placeholder substitution independently of its display text.
+  noVisibleResult: Type.Optional(Type.Boolean()),
   modelRouteChange: Type.Optional(Type.String()),
   attachments: Type.Optional(Type.Array(AgentGeneratedAttachmentSchema)),
   mediaUrls: Type.Optional(Type.Array(Type.String())),

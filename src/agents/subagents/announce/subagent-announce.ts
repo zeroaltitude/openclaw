@@ -509,10 +509,9 @@ export async function runSubagentAnnounceFlow(params: {
     const announceSessionId = childSessionEffectsAllowed()
       ? childSessionId || "unknown"
       : "unknown";
+    const childResultText = childCompletionFindings || reply;
     const findings =
-      childCompletionFindings ||
-      reply ||
-      (stillRunning ? "(no result yet; child still running)" : "(no output)");
+      childResultText || (stillRunning ? "(no result yet; child still running)" : "(no output)");
 
     let requesterIsSubagent = requesterIsInternalSession();
     if (requesterIsSubagent) {
@@ -607,6 +606,7 @@ export async function runSubagentAnnounceFlow(params: {
         statusLabel,
         disposition,
         result: findings,
+        ...(childResultText ? {} : { noVisibleResult: true }),
         modelRouteChange,
         statsLine,
         replyInstruction,

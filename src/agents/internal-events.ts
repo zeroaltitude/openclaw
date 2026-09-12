@@ -42,6 +42,8 @@ type AgentTaskCompletionInternalEvent = {
   /** Set by producers that own a child run; absent for sources without one. */
   disposition?: AgentRunDisposition;
   result: string;
+  /** True only when the producer substituted placeholder text for an absent result. */
+  noVisibleResult?: boolean;
   modelRouteChange?: string;
   attachments?: AgentGeneratedAttachment[];
   mediaUrls?: string[];
