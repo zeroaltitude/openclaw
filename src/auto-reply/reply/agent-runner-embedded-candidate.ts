@@ -204,7 +204,13 @@ export async function runEmbeddedFallbackCandidate(
         forceMessageTool: turn.followupRun.run.sourceReplyDeliveryMode === "message_tool_only",
         // Heartbeat ambient routes are delivery context, never implicit message recipients.
         // Omit false so subagent sessions keep their downstream default.
-        ...(turn.isHeartbeat ? { requireExplicitMessageTarget: true } : {}),
+        ...(turn.isHeartbeat
+          ? {
+              requireExplicitMessageTarget: true,
+              cleanupBundleMcpOnRunEnd: true,
+              oneShotCliRun: true,
+            }
+          : {}),
         silentReplyPromptMode: turn.followupRun.run.silentReplyPromptMode,
         suppressNextUserMessagePersistence: params.suppressQueuedUserPersistenceForCandidate,
         onUserMessagePersisted: params.notifyUserMessagePersisted,
