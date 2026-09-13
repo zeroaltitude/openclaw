@@ -84,6 +84,17 @@ Example config:
 - Active hours (`heartbeat.activeHours`) are checked in the configured timezone. Outside the window, heartbeats are skipped until the next tick inside the window.
 - Scheduled heartbeats defer while the main queue or automation work is active or queued, while any reply or embedded run for the same agent is active, and while the resolved target session has active or queued work. Immediate and manual wakes bypass the broad same-agent active-run check, but still honor the main, automation, and target-session busy guards. Sibling agents do not pause each other.
 
+Heartbeat attempts release their own native CLI processes and tool resources when
+an attempt completes, fails, or is canceled, including fallback attempts. Shared
+Codex clients remain open while another conversation or native child owns a lease;
+a heartbeat never bulk-closes unrelated sessions. Ordinary chat retains its warm
+runtime behavior.
+
+For Claude CLI heartbeats, an explicit account selection still wins. Without one,
+OpenClaw can use an eligible saved Anthropic profile in the agent's normal auth
+order instead of relying only on the CLI's ambient native login. Ordinary chat's
+native-login selection is unchanged.
+
 ## What the heartbeat prompt is for
 
 The default prompt is intentionally narrow: follow the heartbeat monitor scratch
