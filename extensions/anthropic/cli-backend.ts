@@ -305,13 +305,18 @@ export function buildClaudeAgentSdkCliBackend(
           authCredential?: ClaudeCliAuthCredential;
           isolatedCompletionPrompt?: string;
           isolatedCompletionSystemPrompt?: string;
+          isolatedCompletionOutputJsonSchema?: Record<string, unknown>;
         };
         const authInput = resolveClaudeCliAuthInput(credentialContext.authCredential, {
           apiKeyAsAuthToken: options.apiKeyAsAuthToken,
         });
         const isolatedCompletion = credentialContext.isolatedCompletionPrompt !== undefined;
+        // Schema-requesting isolated calls need native initialization and result validation;
+        // ordinary side questions retain the existing per-process execution path.
         const cliExecution =
-          options.apiKeyAsAuthToken || (!isolatedCompletion && context.executionMode === "agent")
+          options.apiKeyAsAuthToken ||
+          (!isolatedCompletion && context.executionMode === "agent") ||
+          (isolatedCompletion && credentialContext.isolatedCompletionOutputJsonSchema !== undefined)
             ? {
                 async *execute(executionContext: CliBackendExecuteContext) {
                   const { executeClaudeCli } = await import("./cli.runtime.js");
