@@ -226,7 +226,7 @@ describe("executeAgentTurn: CLI credential selection", () => {
     state.runCliAgentMock.mockResolvedValueOnce({ payloads: [{ text: "done" }], meta: {} });
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     const params = createMinimalRunAgentTurnParams({ followupRun });
-    params.isHeartbeat = "heartbeat" in testCase && testCase.heartbeat;
+    params.isHeartbeat = "heartbeat" in testCase && testCase.heartbeat === true;
     const result = executeAgentTurn(params);
     if ("error" in testCase) {
       expect(await result).toMatchObject({ kind: "final", payload: { isError: true } });
