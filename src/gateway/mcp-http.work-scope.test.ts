@@ -178,7 +178,7 @@ describe("MCP loopback work ownership", () => {
   });
 
   it("joins plugin cleanup tails when the loopback runtime closes", async () => {
-    const release = createDeferred<void>();
+    const release = createDeferred();
     let workSignal: AbortSignal | undefined;
     let descendant: Promise<void> | undefined;
     pluginFixture(async () => {

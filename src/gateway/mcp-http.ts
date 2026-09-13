@@ -563,7 +563,7 @@ export async function ensureMcpLoopbackServer(port = 0): Promise<void> {
           }
         };
       })
-      .catch(async (error) => {
+      .catch(async (error: unknown) => {
         await work.drain();
         throw error;
       })
