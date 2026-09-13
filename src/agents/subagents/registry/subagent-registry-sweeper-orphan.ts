@@ -1,3 +1,4 @@
+import { createWorkerSessionPlacementStore } from "../../../gateway/worker-environments/placement-store.js";
 /**
  * Sweep handling for runs that are still marked active but have no execution
  * context left — the shape a subagent run is left in when the gateway dies
@@ -6,6 +7,7 @@
  * Split out of the sweeper so the reap decision, which has to reason about boot
  * history and about who still needs to be told, reads as one thing.
  */
+import { getAgentRunContext } from "../../../infra/agent-run-registry.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import {
   formatSubagentOrphanErrorMessage,
@@ -15,6 +17,7 @@ import {
   resolveSubagentRunLastActivityMs,
 } from "./subagent-orphan-attribution.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
+import { isSubagentChildStopUnconfirmed } from "./subagent-session-metrics.js";
 import {
   loadSubagentSessionEntry,
   resolveCompletionFromSessionEntry,
@@ -83,6 +86,32 @@ export async function reconcileStaleActiveSubagentRun(params: {
     boots,
     currentBootId,
   });
+  // A missing process-local context is not child-stop evidence. Only an
+  // authoritative host reboot (not a Gateway-only restart or inferred host
+  // identity) can promote an unconfirmed wait without child terminal metadata.
+  if (isSubagentChildStopUnconfirmed(entry) && attribution?.cause !== "host_reboot") {
+    return;
+  }
+  const canRecoverInterrupted = isSubagentChildStopUnconfirmed(entry)
+    ? () => {
+        try {
+          // Remote worker ownership survives missing session metadata. Default
+          // dispatch is local only when no unreconciled worker placement exists.
+          return (
+            !getAgentRunContext(runId) &&
+            !createWorkerSessionPlacementStore()
+              .listForReconcile()
+              .some((placement) => placement.sessionKey === entry.childSessionKey)
+          );
+        } catch {
+          // Unknown placement state is not positive local-child stop evidence.
+          return false;
+        }
+      }
+    : undefined;
+  if (canRecoverInterrupted && !canRecoverInterrupted()) {
+    return;
+  }
   const attributedError = attribution ? formatSubagentOrphanErrorMessage(attribution) : undefined;
 
   const orphanReason = resolveSubagentRunOrphanReason({ entry });
@@ -103,6 +132,7 @@ export async function reconcileStaleActiveSubagentRun(params: {
       },
       reason: SUBAGENT_ENDED_REASON_ERROR,
       ...(attribution ? { recoverInterrupted: true as const } : {}),
+      ...(canRecoverInterrupted ? { canRecoverInterrupted } : {}),
       sendFarewell: true,
       accountId,
       triggerCleanup: true,
