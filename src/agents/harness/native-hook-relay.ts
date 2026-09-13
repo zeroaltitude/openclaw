@@ -21,8 +21,6 @@ import {
 import {
   getNativeHookRelayProviderAdapter,
   normalizeNativeHookInvocation,
-  normalizeNativeHookToolName,
-  readNativeHookRelayApprovalMode,
 } from "./native-hook-relay-codec.js";
 import { processNativeHookRelayInvocation } from "./native-hook-relay-events.js";
 import {
@@ -45,9 +43,10 @@ import {
 import { NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR } from "./native-hook-relay-transport-error.js";
 import {
   nativeHookRelayTransportFailureDisposition,
-  projectNativeHookRelayPreToolUseFailure,
+  createNativeHookRelayPreToolUseFailureProjector,
   readNativeHookRelayTransportFailureTerminal,
   resetNativeHookRelayTransportFailures,
+  withNativeHookRelayInvocationAbort,
 } from "./native-hook-relay-transport-failure.js";
 import type {
   ActiveNativeHookRelayRegistration,
@@ -513,55 +512,6 @@ function normalizeRelayKey(
   return trimmed;
 }
 
-/**
- * Reject as soon as the caller can no longer receive the response.
- *
- * The underlying work may still settle later; the point is that the handler
- * awaiting it does not stay pinned to a client that has gone away.
- */
-async function withNativeHookRelayInvocationAbort<T>(
-  signal: AbortSignal | undefined,
-  work: Promise<T>,
-): Promise<T> {
-  if (!signal) {
-    return await work;
-  }
-  if (signal.aborted) {
-    void work.catch(() => {});
-    throw new Error(NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR);
-  }
-  return await new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      void work.catch(() => {});
-      reject(new Error(NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    work.then(
-      (value) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
-  });
-}
-
 export async function invokeNativeHookRelay(
   params: InvokeNativeHookRelayParams,
 ): Promise<NativeHookRelayProcessResponse> {
@@ -612,22 +562,11 @@ export async function invokeNativeHookRelay(
     rawPayload: params.rawPayload,
   });
   const startedAt = Date.now();
-  const shouldProjectFailure =
-    Boolean(normalized.toolUseId) &&
-    readNativeHookRelayApprovalMode(normalized.rawPayload) !== "report";
-  const projectFailure = (
-    disposition: NonNullable<NativeHookRelayProcessResponse["failureDisposition"]>,
-  ) => {
-    if (!shouldProjectFailure || !normalized.toolUseId) {
-      return;
-    }
-    projectNativeHookRelayPreToolUseFailure(registration, {
-      toolName: normalizeNativeHookToolName(normalized.toolName),
-      toolCallId: normalized.toolUseId,
-      disposition,
-      durationMs: Date.now() - startedAt,
-    });
-  };
+  const projectFailure = createNativeHookRelayPreToolUseFailureProjector(
+    registration,
+    normalized,
+    startedAt,
+  );
   try {
     const effectiveRegistration = await withNativeHookRelayInvocationAbort(
       params.signal,
