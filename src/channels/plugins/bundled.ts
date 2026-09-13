@@ -19,6 +19,7 @@ import {
 import { unwrapDefaultModuleExport } from "../../plugins/module-export.js";
 import { pluginCacheRealpathSync } from "../../plugins/plugin-cache-files.js";
 import { getPluginCacheRoot, getPluginCacheSource } from "../../plugins/plugin-cache.js";
+import { pluginInstanceInvocation } from "../../plugins/plugin-instance-invocation.js";
 import { getCachedPluginModuleLoader } from "../../plugins/plugin-module-loader-cache.js";
 import { resolveBundledChannelRootScope, type BundledChannelRootScope } from "./bundled-root.js";
 import { normalizeChannelMeta } from "./meta-normalization.js";
@@ -387,7 +388,11 @@ function getBundledChannelArtifactForRoot<TKind extends BundledChannelArtifactKi
   }
   artifactLoadsInProgress.add(loadKey);
   try {
-    const artifact = bundledChannelArtifactLoaders[kind]({ id, rootScope });
+    // These entries belong to the host bundled cache, not the plugin calling it.
+    // Keep its Gateway scope, but never borrow its captured graph for companions.
+    const artifact = pluginInstanceInvocation.exit(() =>
+      bundledChannelArtifactLoaders[kind]({ id, rootScope }),
+    );
     rememberBundledChannelArtifact(rootScope, kind, id, artifact);
     return artifact;
   } catch (error) {
@@ -543,5 +548,5 @@ export function setBundledChannelRuntime(id: ChannelId, runtime: PluginRuntime):
   if (!setter) {
     throw new Error(`missing bundled channel runtime setter: ${id}`);
   }
-  setter(runtime);
+  pluginInstanceInvocation.exit(() => setter(runtime));
 }
