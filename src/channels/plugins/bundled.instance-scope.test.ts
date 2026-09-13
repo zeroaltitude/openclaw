@@ -92,7 +92,7 @@ it("loads lazy bundled companions independently of the calling plugin's captured
     // Merely listing metadata must not evaluate either companion.
     expect(bundled.listBundledChannelPluginIds()).toEqual(["alpha"]);
     expect(fs.existsSync(marker)).toBe(false);
-    withPluginRuntimeGatewayRequestScope({ isWebchatConnect: false }, () =>
+    withPluginRuntimeGatewayRequestScope({ isWebchatConnect: () => false }, () =>
       caller.run(() => {
         const gatewayScope = getPluginRuntimeGatewayRequestScope();
         expect(caller.hasModuleSource(channelPath)).toBe(false);
