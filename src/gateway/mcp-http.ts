@@ -27,6 +27,7 @@ import {
   isAgentHarnessSessionKey,
   isAgentHarnessSessionStoreEntryProtected,
 } from "../sessions/agent-harness-session-key.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import {
   registerMcpLoopbackClientGrantRevocationListener,
   revokeMcpLoopbackClientGrantsForRuntime,
@@ -545,9 +546,26 @@ export async function ensureMcpLoopbackServer(port = 0): Promise<void> {
     return;
   }
   if (!activeMcpLoopbackServerPromise) {
-    activeMcpLoopbackServerPromise = startMcpLoopbackServer(port)
+    // The process-owned listener may start inside a short-lived CLI turn.
+    // Socket callbacks must inherit its own work lifetime, not that starter's.
+    const work = new AsyncWorkScope();
+    activeMcpLoopbackServerPromise = work
+      .track(() => startMcpLoopbackServer(port))
       .then((close) => {
-        closeActiveMcpLoopbackServer = close;
+        closeActiveMcpLoopbackServer = async () => {
+          try {
+            // Revoke grants before cancellation callbacks can reenter the server.
+            const closing = close();
+            work.beginClose();
+            await closing;
+          } finally {
+            await work.drain();
+          }
+        };
+      })
+      .catch(async (error) => {
+        await work.drain();
+        throw error;
       })
       .finally(() => {
         activeMcpLoopbackServerPromise = null;
