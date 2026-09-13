@@ -175,6 +175,7 @@ const repositoryScriptEntries = [
   "scripts/pre-commit/filter-staged-files.mjs!",
   "scripts/print-live-docker-plugin-selection.mjs!",
   // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
   "scripts/proof-app-server-runtime-chooser-bindings.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
