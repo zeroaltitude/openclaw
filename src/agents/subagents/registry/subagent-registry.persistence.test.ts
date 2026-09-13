@@ -13,6 +13,7 @@ import {
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import { callGateway } from "../../../gateway/call.js";
 import { onAgentEvent } from "../../../infra/agent-events.js";
+import { recordGatewayBootStart } from "../../../infra/gateway-boot-lifecycle.js";
 import { getActiveGatewayRootWorkCount } from "../../../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../../../state/openclaw-state-db.js";
 import { resetTaskRegistryMaintenanceRuntimeForTests } from "../../../tasks/task-registry.maintenance.js";
@@ -21,7 +22,9 @@ import {
   resetTaskRegistryForTests,
 } from "../../../tasks/task-runtime.test-helpers.js";
 import { captureEnv, setTestEnvValue, withEnv } from "../../../test-utils/env.js";
+import { expectObjectFields } from "../../../test-utils/mock-call-assertions.js";
 import { createAgentsWaitTool } from "../../tools/agents-wait-tool.js";
+import { loadGatewayBootSegmentsForAttribution } from "./subagent-orphan-attribution.js";
 import { subagentRegistryDeps } from "./subagent-registry-deps.js";
 import { persistSubagentSessionTiming } from "./subagent-registry-helpers.js";
 import { getLatestSubagentRunByChildSessionKey } from "./subagent-registry-read.js";
@@ -62,16 +65,6 @@ const { announceSpy } = vi.hoisted(() => ({
 vi.mock("../announce/subagent-announce.js", () => ({
   runSubagentAnnounceFlow: announceSpy,
 }));
-
-function expectFields(value: unknown, expected: Record<string, unknown>): void {
-  if (!value || typeof value !== "object") {
-    throw new Error("expected fields object");
-  }
-  const record = value as Record<string, unknown>;
-  for (const [key, expectedValue] of Object.entries(expected)) {
-    expect(record[key], key).toEqual(expectedValue);
-  }
-}
 
 describe("subagent registry persistence", () => {
   const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
@@ -509,13 +502,13 @@ describe("subagent registry persistence", () => {
 
     const liveRuns = listSubagentRunsForRequester("agent:main:main");
     expect(liveRuns).toHaveLength(1);
-    expectFields(liveRuns[0], {
+    expectObjectFields(liveRuns[0], {
       runId: "run-live",
       childSessionKey: "agent:main:subagent:live-child",
       controllerSessionKey: "agent:main:subagent:live-controller",
       requesterSessionKey: "agent:main:main",
     });
-    expectFields(getSubagentRunByChildSessionKey("agent:main:subagent:live-child"), {
+    expectObjectFields(getSubagentRunByChildSessionKey("agent:main:subagent:live-child"), {
       runId: "run-live",
     });
   });
@@ -849,6 +842,50 @@ describe("subagent registry persistence", () => {
     await testing.sweepOnceForTests();
   });
 
+  it("preserves stale unended restored runs for attributed sweeper recovery", async () => {
+    const now = Date.now();
+    const runId = "run-stale-unended-restore";
+    const childSessionKey = "agent:main:subagent:stale-unended-restore";
+    await writePersistedRegistry({
+      version: 2,
+      runs: {
+        [runId]: {
+          runId,
+          childSessionKey,
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          task: "stale unended restored work",
+          cleanup: "keep",
+          createdAt: now - 3 * 60 * 60 * 1_000,
+          startedAt: now - 3 * 60 * 60 * 1_000,
+        },
+      },
+    });
+    const priorBootId = recordGatewayBootStart(process.env, now - 4 * 60 * 60 * 1_000);
+    expect(priorBootId).toBeDefined();
+    expect(recordGatewayBootStart(process.env, now - 2 * 60 * 60 * 1_000)).toBeDefined();
+    // Refresh the process-level boot snapshot after writing the two lifecycle
+    // rows so the production sweeper observes this test's persisted state.
+    loadGatewayBootSegmentsForAttribution(Date.now(), { forceRefresh: true });
+
+    restartRegistry();
+    await flushQueuedRegistryWork();
+
+    expect(callGateway).not.toHaveBeenCalled();
+    expect(readPersistedRegistry().runs?.[runId]).toBeDefined();
+
+    await testing.sweepOnceForTests();
+
+    expect(callGateway).not.toHaveBeenCalled();
+    expect(getSubagentRunByChildSessionKey(childSessionKey)?.execution.outcome).toMatchObject({
+      status: "error",
+      // Attribution must name the persisted owning boot on every platform;
+      // exact host/process wording depends on authoritative kernel boot IDs.
+      error: expect.stringContaining(`(previous boot ${priorBootId} ended without a clean stop)`),
+    });
+    expect(announceSpy).toHaveBeenCalled();
+  });
+
   registerSubagentOrphanTaskCases({
     writePersistedRegistry,
     writeChildSessionEntry,
@@ -860,10 +897,10 @@ describe("subagent registry persistence", () => {
     "finalizes restored runs whose restart interruption exceeded the recovery window (wait expired: %s)",
     async (waitExpired) => {
       vi.mocked(callGateway).mockImplementationOnce(async (request) => {
-        expectFields(request, {
+        expectObjectFields(request, {
           method: "agent.wait",
         });
-        expectFields((request as { params?: unknown }).params, {
+        expectObjectFields((request as { params?: unknown }).params, {
           runId: "run-stale-aborted-restore",
         });
         return {
@@ -988,7 +1025,7 @@ describe("subagent registry persistence", () => {
       getSubagentRunByChildSessionKey(childSessionKey),
     );
 
-    expectFields(resolved, {
+    expectObjectFields(resolved, {
       runId: "run-active",
       childSessionKey,
     });
@@ -1034,7 +1071,7 @@ describe("subagent registry persistence", () => {
       getLatestSubagentRunByChildSessionKey(childSessionKey),
     );
 
-    expectFields(resolved, {
+    expectObjectFields(resolved, {
       runId: "run-current-ended",
       childSessionKey,
     });

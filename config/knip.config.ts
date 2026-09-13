@@ -174,6 +174,7 @@ const repositoryScriptEntries = [
   "scripts/proof-126924-provisional-notification-delivery.ts!",
   "scripts/proof-126924-subagent-wait-expiry-not-death.ts!",
   "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
+  "scripts/proof-136476-orphan-owner-binding.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
   "scripts/resolve-frozen-codex-live-suite.mjs!",
