@@ -32,7 +32,7 @@ import { hasCodexAppServerRecoveryRetryBudget } from "./run/codex-app-server-rec
 import { createEmbeddedRunCompactionRuntime } from "./run/compaction-runtime.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
 import type { PreparedEmbeddedRunInput } from "./run/execution-context.js";
-import { resolveRunFailoverDecision } from "./run/failover-policy.js";
+import * as failoverPolicy from "./run/failover-policy.js";
 import { createEmbeddedRunFailoverRetryController } from "./run/failover-retry-controller.js";
 import { buildErrorAgentMeta, resolveMaxRunRetryIterations } from "./run/helpers.js";
 import { createIdleTimeoutBreakerState } from "./run/idle-timeout-breaker.js";
@@ -145,12 +145,8 @@ export async function runPreparedEmbeddedLoop(
     } = preparedRuntime.snapshot());
   };
   const traceAttempts: TraceAttempt[] = [];
-  const resolveRuntimeFallbackReason = (): string | null => {
-    const fallbackAttempt = traceAttempts.findLast(
-      (attempt) => attempt.result === "fallback_model" && typeof attempt.reason === "string",
-    );
-    return fallbackAttempt?.reason ?? lastRetryFailoverReason ?? null;
-  };
+  const resolveRuntimeFallbackReason = () =>
+    failoverPolicy.resolveRunTraceFallbackReason(traceAttempts, lastRetryFailoverReason);
   const { sessionAgentId } = resolveSessionAgentIds({
     sessionKey: params.sessionKey,
     config: params.config,
@@ -287,9 +283,7 @@ export async function runPreparedEmbeddedLoop(
       hookContext: hookCtx,
       sessionPromptState,
     });
-    // Stage names are the literals in EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE (run/attempt-stage-timing.ts),
-    // spelled out here because this file sits one line under its oxlint max-lines cap and an extra
-    // import would push it over. attempt-stage-timing.test.ts pins the two spellings against the constant.
+    // attempt-stage-timing.test.ts pins these literals to EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.
     startupStages.mark("compaction-runtime");
     let authRetryPending = false;
     let accumulatedReplayState = createEmbeddedRunReplayState();
@@ -312,7 +306,7 @@ export async function runPreparedEmbeddedLoop(
             `provider=${provider}/${modelId} attempts=${runRetryBudget.attemptsDispatched} ` +
             `countedAttempts=${runRetryBudget.attemptsCounted} maxAttempts=${runRetryBudget.maxAttempts}`,
         );
-        const retryLimitDecision = resolveRunFailoverDecision({
+        const retryLimitDecision = failoverPolicy.resolveRunFailoverDecision({
           stage: "retry_limit",
           fallbackConfigured,
           failoverReason: lastRetryFailoverReason,
