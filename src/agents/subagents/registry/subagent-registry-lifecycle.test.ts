@@ -5212,7 +5212,13 @@ describe("subagent registry lifecycle hardening", () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const entry = createRunEntry({ generation: 1, waitExpiryObservedAt: 3_000 });
       const before = structuredClone(entry);
-      const controller = createLifecycleController({ entry });
+      const clearPendingLifecycleError = vi.fn();
+      const persistOrThrow = vi.fn();
+      const controller = createLifecycleController({
+        entry,
+        clearPendingLifecycleError,
+        persistOrThrow,
+      });
       orphanBootSegments.current = [
         {
           bootId: "dead",
@@ -5256,8 +5262,8 @@ describe("subagent registry lifecycle hardening", () => {
         unlock();
         await completion;
         expect(entry).toEqual(before);
-        expect(controller.options.clearPendingLifecycleError).not.toHaveBeenCalled();
-        expect(controller.options.persistOrThrow).not.toHaveBeenCalled();
+        expect(clearPendingLifecycleError).not.toHaveBeenCalled();
+        expect(persistOrThrow).not.toHaveBeenCalled();
         expect(controller.options.runSubagentAnnounceFlow).not.toHaveBeenCalled();
         expect(taskExecutorMocks.failTaskRunByRunId).not.toHaveBeenCalled();
         expect(
