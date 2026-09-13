@@ -98,16 +98,48 @@ describe("embedded run stage timing", () => {
     const tracker = createEmbeddedRunStageTracker({ now: () => clock });
 
     clock = 10;
+    tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.compactionRuntime);
+    clock = 20;
+    tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.runtimeSnapshot);
+    clock = 25;
+    tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.attemptEntry);
+    clock = 30;
     tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.workspace);
-    clock = 40;
+    clock = 60;
     tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
-    clock = 90;
+    clock = 110;
     tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.runtimePlan);
-    clock = 91;
+    clock = 111;
     tracker.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.dispatch);
 
     expect(formatEmbeddedRunStageSummary("startup", tracker.snapshot())).toBe(
-      `startup pid=${process.pid} threadId=${threadId} isMainThread=${isMainThread} totalMs=91 stages=attempt-workspace:10ms@10ms,attempt-prompt:30ms@40ms,attempt-runtime-plan:50ms@90ms,attempt-dispatch:1ms@91ms`,
+      `startup pid=${process.pid} threadId=${threadId} isMainThread=${isMainThread} totalMs=111 stages=compaction-runtime:10ms@10ms,runtime-snapshot:10ms@20ms,attempt-entry:5ms@25ms,attempt-workspace:5ms@30ms,attempt-prompt:30ms@60ms,attempt-runtime-plan:50ms@110ms,attempt-dispatch:1ms@111ms`,
     );
+  });
+
+  it("marks a repeated stage only on its first pass", () => {
+    // The run loop re-enters its retry body per attempt but only the first pass
+    // measures the prepared-runtime snapshot refresh.
+    let clock = 0;
+    const tracker = createEmbeddedRunStageTracker({ now: () => clock });
+
+    clock = 5;
+    tracker.markOnce("runtime-snapshot");
+    clock = 40;
+    tracker.markOnce("runtime-snapshot");
+    clock = 50;
+    tracker.mark("attempt-entry");
+
+    expect(formatEmbeddedRunStageSummary("startup", tracker.snapshot())).toBe(
+      `startup pid=${process.pid} threadId=${threadId} isMainThread=${isMainThread} totalMs=50 stages=runtime-snapshot:5ms@5ms,attempt-entry:45ms@50ms`,
+    );
+  });
+
+  it("pins the stage names run-loop.ts spells as literals", () => {
+    // run-loop.ts sits one line under its oxlint max-lines cap, so it marks these
+    // two stages by literal instead of importing the constant. This is the guard
+    // that keeps the two spellings from drifting apart.
+    expect(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.compactionRuntime).toBe("compaction-runtime");
+    expect(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.runtimeSnapshot).toBe("runtime-snapshot");
   });
 });
