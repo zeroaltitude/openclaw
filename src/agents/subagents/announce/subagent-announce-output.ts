@@ -18,7 +18,10 @@ import { extractStoredAssistantText } from "../../tools/chat-history-text.js";
 import { isAnnounceSkip } from "../../tools/sessions-send-tokens.js";
 import { resolveSubagentCompletionResultText } from "../completion/subagent-completion-result.js";
 import { recordLatestSubagentRun } from "../registry/subagent-run-generation.js";
-import { classifySubagentTerminalOutcome } from "../subagent-terminal-outcome.js";
+import {
+  classifySubagentTerminalOutcome,
+  resolveSubagentRunDisposition,
+} from "../subagent-terminal-outcome.js";
 import {
   captureSubagentCompletionReplyUsing,
   readLatestSubagentOutputWithRetryUsing,
@@ -32,6 +35,8 @@ import {
   resolveSessionStorePathCore,
 } from "./subagent-announce.runtime.js";
 import { assistantCallsSessionsYield, isSessionsYieldToolResult } from "./subagent-yield-output.js";
+
+export { resolveSubagentRunDisposition } from "../subagent-terminal-outcome.js";
 
 const FAST_TEST_RETRY_INTERVAL_MS = 8;
 const MAX_CHILD_COMPLETION_RESULT_CHARS = 512;
@@ -89,6 +94,17 @@ type AgentWaitResult = {
   providerStarted?: boolean;
 };
 
+/**
+ * Which of the two events a `timeout` outcome actually records.
+ *
+ * `child-stopped` — the gateway reported the child run itself settled, so the
+ * outcome is terminal and its timing describes the child.
+ * `child-unconfirmed` — only a deadline elapsed (this waiter's budget, or the
+ * stored run deadline). No stop was observed, so the child may still be
+ * running and the outcome describes the end of the WAIT, not of the run.
+ */
+type SubagentTimeoutDisposition = "child-stopped" | "child-unconfirmed";
+
 export type SubagentRunOutcome = {
   status: "ok" | "error" | "timeout" | "unknown";
   /**
@@ -99,19 +115,14 @@ export type SubagentRunOutcome = {
    */
   disposition?: AgentRunDisposition;
   error?: string;
+  /** Legacy persisted timeout evidence. New outcomes write `disposition` only. */
+  timeoutDisposition?: SubagentTimeoutDisposition;
   startedAt?: number;
   endedAt?: number;
   elapsedMs?: number;
 };
 
-/** Total read of a run's disposition; see `SubagentRunOutcome.disposition`. */
-export function resolveSubagentRunDisposition(
-  outcome: SubagentRunOutcome | undefined,
-): AgentRunDisposition {
-  return outcome?.disposition ?? "exited";
-}
-
-/** True when the completion event describes a child that has not stopped. */
+/** True when the observation carries no confirmed child stop. */
 export function isSubagentRunStillRunning(outcome: SubagentRunOutcome | undefined): boolean {
   return resolveSubagentRunDisposition(outcome) === "still-running";
 }
@@ -135,7 +146,12 @@ export function withSubagentOutcomeTiming(
   if (typeof startedAt === "number" && typeof endedAt === "number") {
     nextTiming.elapsedMs = Math.max(0, endedAt - startedAt);
   }
-  return { ...outcome, ...nextTiming };
+  const { timeoutDisposition, ...canonicalOutcome } = outcome;
+  return {
+    ...canonicalOutcome,
+    ...(timeoutDisposition ? { disposition: resolveSubagentRunDisposition(outcome) } : {}),
+    ...nextTiming,
+  };
 }
 
 function countAssistantToolCalls(message: unknown): number {
@@ -375,12 +391,19 @@ export function applySubagentWaitOutcome(params: {
         // expires without new evidence. Only a bare expiry is unconfirmed.
         const pendingErrorText =
           params.wait?.pendingError === true ? (terminalOutcome.error ?? waitError) : undefined;
-        const disposition =
+        const priorDisposition =
+          outcome?.disposition || outcome?.timeoutDisposition
+            ? resolveSubagentRunDisposition(outcome)
+            : undefined;
+        const observedStop =
           terminalOutcome.reason === "hard_timeout" ||
-          asFiniteNumber(next.endedAt) !== undefined ||
-          asFiniteNumber(outcome?.endedAt) !== undefined
-            ? ("exited" as const)
-            : (outcome?.disposition ?? ("still-running" as const));
+          asFiniteNumber(params.wait?.endedAt) !== undefined ||
+          typeof params.wait?.stopReason === "string" ||
+          typeof params.wait?.livenessState === "string" ||
+          (priorDisposition !== "still-running" &&
+            (asFiniteNumber(next.endedAt) !== undefined ||
+              asFiniteNumber(outcome?.endedAt) !== undefined));
+        const disposition = observedStop ? "exited" : (priorDisposition ?? "still-running");
         outcome = pendingErrorText
           ? { status: "timeout", error: pendingErrorText, disposition }
           : { status: "timeout", disposition };

@@ -30,6 +30,7 @@ import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recover
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 import { compareSubagentRunGeneration } from "./subagent-run-generation.js";
 import { resolveSubagentRunDeadlineMs } from "./subagent-run-timeout.js";
+import { isSubagentChildStopUnconfirmed } from "./subagent-session-metrics.js";
 import type { SubagentSessionCompletion } from "./subagent-session-reconciliation.js";
 
 const log = createSubsystemLogger("agents/subagent-registry");
@@ -52,8 +53,15 @@ function resolveCompletionAfterHardRunDeadline(params: {
   entry: SubagentRunRecord;
   observedStartedAt?: number;
   observedEndedAt?: number;
+  observedSuccess?: boolean;
   now: number;
 }): number | undefined {
+  // A prior nonterminal observation is not an irrevocable timeout result.
+  // Let the child's subsequent terminal snapshot reach the lifecycle owner;
+  // explicit timeout snapshots still take completeAsRunTimeout below.
+  if (params.observedSuccess && isSubagentChildStopUnconfirmed(params.entry)) {
+    return undefined;
+  }
   const deadlineMs = resolveSubagentRunDeadlineMs(params.entry, params.observedStartedAt);
   if (deadlineMs === undefined) {
     return undefined;
@@ -443,6 +451,7 @@ export class SubagentWaitManager {
             entry,
             observedStartedAt: completionStartedAt,
             observedEndedAt: completion.endedAt,
+            observedSuccess: completion.outcome.status === "ok",
             now,
           });
           if (completionAfterDeadline !== undefined) {
@@ -488,8 +497,8 @@ export class SubagentWaitManager {
             await this.options.reportSubagentWaitExpiry(waitExpiryForRetry);
             // Do not keep a second long-poll alive after the parent has been
             // notified. The periodic registry sweeper remains the settlement
-            // backstop: once the run context disappears, it reconciles the
-            // persisted terminal session state or records a lost-context error.
+            // backstop: it reconciles persisted terminal session evidence,
+            // retaining this row while the child's stop remains unconfirmed.
             return;
           }
           await completeAsRunTimeout(timeoutEndedAt, observedStartedAt);
@@ -512,6 +521,7 @@ export class SubagentWaitManager {
         entry,
         observedStartedAt,
         observedEndedAt: wait.endedAt,
+        observedSuccess: waitStatus === "ok",
         now: Date.now(),
       });
       if (completionAfterDeadline !== undefined) {

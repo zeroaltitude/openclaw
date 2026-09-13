@@ -341,6 +341,7 @@ export type SubagentRunReadRecord = Pick<
   | "runTimeoutSeconds"
   | "endedReason"
   | "cleanupCompletedAt"
+  | "waitExpiryObservedAt"
   | "delivery"
 > & {
   execution: Pick<SubagentExecutionState, "status" | "startedAt" | "endedAt" | "outcome">;

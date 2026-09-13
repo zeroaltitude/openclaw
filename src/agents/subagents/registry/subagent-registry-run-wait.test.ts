@@ -95,6 +95,22 @@ describe("subagent run wait disposition", () => {
     expect(entry.cleanupCompletedAt).toBeUndefined();
   });
 
+  it("preserves a successful wait result after a prior nonterminal expiry", async () => {
+    const startedAt = Date.now() - 5_000;
+    const endedAt = startedAt + 4_000;
+    const entry = createRunningEntry(startedAt);
+    entry.waitExpiryObservedAt = startedAt + RUN_TIMEOUT_SECONDS * 1_000;
+    const { manager, completions } = createWaitManager({
+      entry,
+      wait: { status: "ok", startedAt, endedAt },
+    });
+
+    await manager.waitForSubagentCompletion(RUN_ID, 50, entry);
+
+    expect(completions).toHaveLength(1);
+    expect(completions[0]).toMatchObject({ endedAt, outcome: { status: "ok" } });
+  });
+
   it("reports an exited child when the wait carried a terminal snapshot", async () => {
     const startedAt = Date.now() - 1_000;
     const entry = createRunningEntry(startedAt);
