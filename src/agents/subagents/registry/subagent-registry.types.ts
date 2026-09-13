@@ -22,6 +22,8 @@ export type SubagentCompletionRequest = {
   startedAt?: number;
   suppressSessionEffects?: boolean;
   recoverInterrupted?: true;
+  /** Revalidate recovery evidence under the terminal lock before claiming effects. */
+  canRecoverInterrupted?: () => boolean;
   completionSnapshot?: { resultText: string | null; capturedAt: number };
   terminalReply?: AgentRunTerminalReplySnapshot;
 };
