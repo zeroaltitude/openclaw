@@ -381,7 +381,9 @@ describe("scripts/test-docker-all scheduler", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
+    // Even a help-only run ends in its terminal marker, so a truncated log
+    // never reads as a clean run; nothing else belongs on stderr.
+    expect(result.stderr.trim()).toBe("[test-docker-all.mts] EXIT 0");
     expect(result.stdout).toContain("--prepare-only=<manifest>");
     expect(result.stdout).toContain("--prepare-plugin-registry");
     expect(result.stdout).toContain("OPENCLAW_DOCKER_ALL_* env vars");
