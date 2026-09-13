@@ -35,6 +35,9 @@ describe("native hook relay CLI import boundary", () => {
       "src/agents/harness/native-hook-relay-bridge-record.ts",
       "src/agents/harness/native-hook-relay-constants.ts",
       "src/agents/harness/native-hook-relay-response-codec.ts",
+      // The terminal transport error is import-free so the cold client can read
+      // it without dragging in the accounting that owns process-global relays.
+      "src/agents/harness/native-hook-relay-transport-error.ts",
       "src/state/openclaw-state-db-schema-version.ts",
     ]
       .map(readSource)
@@ -46,6 +49,7 @@ describe("native hook relay CLI import boundary", () => {
       "native-hook-relay-permissions.js",
       "native-hook-relay-state.js",
       "native-hook-relay-store.js",
+      "native-hook-relay-transport-failure.js",
       "openclaw-state-db.js",
       "openclaw-state-db-maintenance.js",
       "gateway/call.js",

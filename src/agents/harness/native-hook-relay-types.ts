@@ -68,6 +68,20 @@ export type NativeHookRelayProcessResponse = {
   failureDisposition?: Exclude<BeforeToolCallFailureDisposition, "blocked">;
 };
 
+/**
+ * Why a relay invocation failed at the transport rather than at policy.
+ *
+ * `client-disconnected` and `server-deadline` are observed by the parent bridge;
+ * `relay-timeout` and `relay-unavailable` are the child CLI's own fail-closed
+ * paths. A policy deny carries no cause at all, which is what makes "OpenClaw
+ * denied this" distinguishable from "OpenClaw could not be reached".
+ */
+export type NativeHookRelayTransportFailureCause =
+  | "client-disconnected"
+  | "server-deadline"
+  | "relay-timeout"
+  | "relay-unavailable";
+
 export type NativeHookRelayRegistration = {
   relayId: string;
   provider: NativeHookRelayProvider;
@@ -153,6 +167,8 @@ export type InvokeNativeHookRelayParams = {
   event: unknown;
   rawPayload: unknown;
   requireGeneration?: boolean;
+  /** Aborts the invocation when the caller can no longer receive its response. */
+  signal?: AbortSignal;
 };
 
 export type InvokeNativeHookRelayBridgeParams = InvokeNativeHookRelayParams & {
@@ -206,6 +222,15 @@ export type ActiveNativeHookRelayRegistration = NativeHookRelayRegistration & {
   generation: string;
   preToolUseLoopDetection: boolean;
   preToolUseFailureProjections: Map<string, { promise: Promise<void>; settled: boolean }>;
+  /** Consecutive relay-transport failures, latched terminal once the threshold trips. */
+  relayTransportFailures?: {
+    consecutive: number;
+    terminal?: {
+      cause: NativeHookRelayTransportFailureCause;
+      consecutive: number;
+      atMs: number;
+    };
+  };
 };
 
 export type ActiveNativeHookRelayRegistrationHandle = NativeHookRelayRegistrationHandle & {
