@@ -1,6 +1,7 @@
 import type { AgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import type { FailoverReason } from "../../embedded-agent-helpers.js";
 import { isCliTerminalStopCode } from "../../failover-error.js";
+import type { TraceAttempt } from "../types.js";
 
 type ProfileDecision = {
   action: "rotate_profile" | "surface_error";
@@ -238,4 +239,15 @@ export function resolveRunFailoverDecision(params: RunFailoverDecisionParams): R
     action: "surface_error",
     reason: params.failoverReason,
   };
+}
+
+/** Resolve the latest model fallback before the current retry's failure reason. */
+export function resolveRunTraceFallbackReason(
+  traceAttempts: readonly TraceAttempt[],
+  lastRetryFailoverReason: FailoverReason | null,
+): string | null {
+  const fallbackAttempt = traceAttempts.findLast(
+    (attempt) => attempt.result === "fallback_model" && typeof attempt.reason === "string",
+  );
+  return fallbackAttempt?.reason ?? lastRetryFailoverReason ?? null;
 }
