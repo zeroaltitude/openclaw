@@ -41,6 +41,8 @@ export function resolveCliExecutionAuthProfileId(params: {
   config: OpenClawConfig;
   agentDir: string;
   selected?: CliExecutionAuthProfileSelection;
+  /** Background owners may use the agent's saved canonical provider account. */
+  allowCanonicalProfileFallback?: boolean;
   loadAuthProfileStoreForRuntime?: typeof loadAuthProfileStoreForRuntime;
 }): string | undefined {
   const loadStore = params.loadAuthProfileStoreForRuntime ?? loadAuthProfileStoreForRuntime;
@@ -102,6 +104,28 @@ export function resolveCliExecutionAuthProfileId(params: {
   );
   if (cliProfileId) {
     return cliProfileId;
+  }
+
+  if (
+    params.allowCanonicalProfileFallback &&
+    params.cliExecutionProvider === CLAUDE_CLI_PROVIDER_ID
+  ) {
+    const canonicalProvider = resolveCliRuntimeCanonicalProvider({
+      runtime: params.cliExecutionProvider,
+      config: params.config,
+      includeSetupRegistry: true,
+    });
+    if (
+      canonicalProvider &&
+      (params.authProfileProvider === canonicalProvider ||
+        params.authProfileProvider === params.cliExecutionProvider)
+    ) {
+      return resolveAuthProfileOrder({
+        cfg: params.config,
+        store,
+        provider: canonicalProvider,
+      }).find((profileId) => store.profiles[profileId]?.provider === canonicalProvider);
+    }
   }
 
   if (

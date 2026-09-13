@@ -97,6 +97,7 @@ export async function runCliFallbackCandidate(
         config: params.runtimeConfig,
         agentDir: params.candidateRun.agentDir,
         selected: params.candidateRun,
+        allowCanonicalProfileFallback: turn.isHeartbeat,
       })
     : resolveRunAuthProfile(params.candidateRun, params.cliExecutionProvider, {
         config: params.runtimeConfig,
@@ -398,7 +399,14 @@ export async function runCliFallbackCandidate(
             sourceReplyDeliveryMode: turn.followupRun.run.sourceReplyDeliveryMode,
             taskSuggestionDeliveryMode: turn.followupRun.run.taskSuggestionDeliveryMode,
             // Heartbeat ambient routes are never implicit message recipients.
-            ...(turn.isHeartbeat ? { requireExplicitMessageTarget: true } : {}),
+            ...(turn.isHeartbeat
+              ? {
+                  requireExplicitMessageTarget: true,
+                  cleanupCliLiveSessionOnRunEnd: true,
+                  cleanupBundleMcpOnRunEnd: true,
+                  oneShotCliRun: true,
+                }
+              : {}),
             silentReplyPromptMode: turn.followupRun.run.silentReplyPromptMode,
             allowEmptyAssistantReplyAsSilent: turn.followupRun.run.allowEmptyAssistantReplyAsSilent,
             extraSystemPromptStatic: turn.followupRun.run.extraSystemPromptStatic,
