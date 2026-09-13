@@ -122,11 +122,6 @@ export async function maybeAdmitSupervisedRootTask(params: {
   ) {
     return { kind: "ordinary" };
   }
-  if (params.message.length > 4096) {
-    throw new Error(
-      "Request exceeds the supervised input budget; shorten it or attach a scoped task definition",
-    );
-  }
   params.assertCurrent();
   const source = SupervisedTaskSourceSchema.parse(params.source);
   const identity = supervisedInputIdentity(source, params.message);
@@ -167,6 +162,36 @@ export async function maybeAdmitSupervisedRootTask(params: {
   if (!setting?.enabled) {
     return { kind: "ordinary" };
   }
+  const separator = params.model.indexOf("/");
+  if (separator < 1 || separator === params.model.length - 1) {
+    return { kind: "ordinary" };
+  }
+  const provider = params.model.slice(0, separator);
+  const model = params.model.slice(separator + 1);
+  const runtimePolicy = resolveAgentHarnessPolicy({
+    provider,
+    modelId: model,
+    config: params.config,
+    agentId: source.agentId,
+  });
+  const selectedRuntime = runtimePolicy.runtime;
+  if (
+    runtimePolicy.runtimeSource === "implicit" ||
+    !(
+      (selectedRuntime === "codex" && provider === "openai") ||
+      (selectedRuntime === "claude-cli" && provider === "anthropic")
+    )
+  ) {
+    // Unsupported model routes keep ordinary chat. This precedes policy reads
+    // and task-only budgets, but cannot bypass existing custody or host stop.
+    return { kind: "ordinary" };
+  }
+  const runtime = selectedRuntime === "codex" ? "codex" : "claude-cli";
+  if (params.message.length > 4096) {
+    throw new Error(
+      "Request exceeds the supervised input budget; shorten it or attach a scoped task definition",
+    );
+  }
   const acceptedPolicy = await readAdmissionPolicy(setting.policyFile);
   const policy = acceptedPolicy.policy;
   const assertPolicyCurrent = async () => {
@@ -179,26 +204,6 @@ export async function maybeAdmitSupervisedRootTask(params: {
     params.assertCurrent();
   };
   params.assertCurrent();
-  const separator = params.model.indexOf("/");
-  if (separator < 1) {
-    throw new Error("Automatic supervision requires an explicit provider/model");
-  }
-  const provider = params.model.slice(0, separator);
-  const model = params.model.slice(separator + 1);
-  const runtimePolicy = resolveAgentHarnessPolicy({
-    provider,
-    modelId: model,
-    config: params.config,
-    agentId: source.agentId,
-  });
-  const selectedRuntime = runtimePolicy.runtime;
-  if (
-    (selectedRuntime !== "codex" && selectedRuntime !== "claude-cli") ||
-    runtimePolicy.runtimeSource === "implicit"
-  ) {
-    throw new Error("Automatic supervision requires the configured Codex or claude-cli runtime");
-  }
-  const runtime = selectedRuntime === "codex" ? "codex" : "claude-cli";
   const candidates = listSupervisedRootCandidates(source, params.options);
   const classified = await runIsolatedCompletion({
     config: params.config,
