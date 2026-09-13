@@ -150,7 +150,7 @@ export function readNativeHookRelayTransportFailureTerminal(
  * Lives here rather than in the relay entrypoint so the bridge can project a
  * failure for an invocation that never produced a response.
  */
-export function projectNativeHookRelayPreToolUseFailure(
+function projectNativeHookRelayPreToolUseFailure(
   registration: ActiveNativeHookRelayRegistration,
   failure: Parameters<NonNullable<NativeHookRelayRegistration["onPreToolUseFailure"]>>[0],
 ): void {
