@@ -90,10 +90,9 @@ Codex clients remain open while another conversation or native child owns a leas
 a heartbeat never bulk-closes unrelated sessions. Ordinary chat retains its warm
 runtime behavior.
 
-For Claude CLI heartbeats, an explicit account selection still wins. Without one,
-OpenClaw can use an eligible saved Anthropic profile in the agent's normal auth
-order instead of relying only on the CLI's ambient native login. Ordinary chat's
-native-login selection is unchanged.
+Claude CLI heartbeats use the shared CLI account selector: explicit selections
+and existing session accounts retain their meaning, while fresh sessions can use
+eligible saved Anthropic subscription credentials in the configured auth order.
 
 ## What the heartbeat prompt is for
 
