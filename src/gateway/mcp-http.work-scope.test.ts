@@ -157,7 +157,7 @@ describe("MCP loopback work ownership", () => {
     for (const [runId, sessionKey] of [
       ["next-turn", "agent:main:heartbeat"],
       ["other-session", "agent:other:heartbeat"],
-    ]) {
+    ] as const) {
       const turn = await cliTurn(runId, sessionKey);
       expect(turn.runtime).toEqual(first.runtime);
       expect(await turn.call("session_status")).toMatchObject({
