@@ -33,14 +33,16 @@ import { handleChatSend } from "./chat-send-handler.js";
 import type { GatewayClient, RespondFn } from "./types.js";
 
 const classifier = vi.hoisted(() => vi.fn());
+const runtimePolicy = vi.hoisted(() => vi.fn());
 vi.mock("../../agents/isolated-completion.js", () => ({ runIsolatedCompletion: classifier }));
 vi.mock("../../agents/harness/policy.js", () => ({
-  resolveAgentHarnessPolicy: () => ({ runtime: "codex", runtimeSource: "provider" }),
+  resolveAgentHarnessPolicy: runtimePolicy,
 }));
 installGatewayTestHooks();
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 const cleanups: Array<() => void> = [];
 beforeEach(() => {
+  runtimePolicy.mockReset().mockReturnValue({ runtime: "codex", runtimeSource: "provider" });
   classifier
     .mockReset()
     .mockResolvedValue({ text: '{"kind":"task"}', owner: { kind: "harness", id: "codex" } });
@@ -261,6 +263,17 @@ it("preserves ordinary active-run injection when the classifier selects conversa
   expect(classifier).toHaveBeenCalledOnce();
   expect(listSupervisedTasks()).toHaveLength(0);
   expect(f.queueMessage).toHaveBeenCalledOnce();
+});
+
+it("dispatches ordinary chat when its runtime cannot execute supervised tasks", async () => {
+  const f = await fixture();
+  runtimePolicy.mockReturnValue({ runtime: "pi", runtimeSource: "model" });
+  const respond = vi.fn<RespondFn>();
+  await f.send(respond);
+  expect(classifier).not.toHaveBeenCalled();
+  expect(listSupervisedTasks()).toHaveLength(0);
+  expect(f.queueMessage).toHaveBeenCalledOnce();
+  expect(respond.mock.calls.every(([ok]) => ok)).toBe(true);
 });
 
 it("replays consumed collected input after supervision is enabled without classifying it", async () => {

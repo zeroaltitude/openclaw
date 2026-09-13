@@ -133,6 +133,47 @@ it("ordinary conversation retains a replay receipt without creating a task", asy
     readSupervisedInputReceipt(supervisedInputIdentity(f.source, f.message).sourceKey, f.options),
   ).toMatchObject({ disposition: "ordinary", flow_id: null });
 });
+it.each([
+  { model: "zai/glm-fixture", runtime: "pi", runtimeSource: "model" },
+  { model: "openai/fixture", runtime: "codex", runtimeSource: "implicit" },
+  { model: "zai/glm-fixture", runtime: "claude-cli", runtimeSource: "model" },
+  { model: "anthropic/fixture", runtime: "codex", runtimeSource: "model" },
+  { model: "fixture", runtime: "pi", runtimeSource: "implicit" },
+])(
+  "bypasses supervision for unsupported selection $model/$runtime/$runtimeSource",
+  async (selection) => {
+    const f = await fixture();
+    mocks.runtime.mockReturnValue(selection);
+    await fs.unlink(f.config.agents!.entries!.poc!.taskSupervision!.policyFile);
+    for (const namespace of ["gateway", "channel"] as const) {
+      const params = { ...f, model: selection.model, source: { ...f.source, namespace } };
+      expect(await maybeAdmitSupervisedRootTask(params)).toEqual({ kind: "ordinary" });
+      expect(await maybeAdmitSupervisedRootTask({ ...params, message: "x".repeat(4097) })).toEqual({
+        kind: "ordinary",
+      });
+      expect(
+        readSupervisedInputReceipt(
+          supervisedInputIdentity(params.source, params.message).sourceKey,
+          f.options,
+        ),
+      ).toBeUndefined();
+    }
+    expect(mocks.classify).not.toHaveBeenCalled();
+  },
+);
+it("replays committed task custody after switching to an unsupported runtime", async () => {
+  const f = await fixture();
+  const admitted = await maybeAdmitSupervisedRootTask(f);
+  expect(admitted.kind).toBe("admitted");
+  mocks.runtime.mockReturnValue({ runtime: "pi", runtimeSource: "model" });
+  mocks.classify.mockClear();
+  await fs.unlink(f.config.agents!.entries!.poc!.taskSupervision!.policyFile);
+  expect(await maybeAdmitSupervisedRootTask({ ...f, model: "zai/glm-fixture" })).toEqual({
+    ...admitted,
+    replay: true,
+  });
+  expect(mocks.classify).not.toHaveBeenCalled();
+});
 it("refuses a classifier result after source authority is revoked", async () => {
   const f = await fixture();
   let current = true;
@@ -358,7 +399,13 @@ it.each(
         }),
       ).toEqual({ kind: "ordinary" });
     }
-    const stop = { ...f, source: { ...f.source, inputId: "stop-input" }, message };
+    mocks.runtime.mockReturnValue({ runtime: "pi", runtimeSource: "model" });
+    const stop = {
+      ...f,
+      model: "zai/glm-fixture",
+      source: { ...f.source, inputId: "stop-input" },
+      message,
+    };
     expect(await maybeAdmitSupervisedRootTask(stop)).toMatchObject({
       kind: "handled",
       control: "cancel",
