@@ -88,6 +88,35 @@ function isNativeHookRelayApprovalWaitFailure(params: {
   return isNativeHookRelayAwaitingApproval(params.relayId);
 }
 
+/**
+ * Whether this invocation's transport failure decides the tool call's fate.
+ *
+ * A `permission_request` the child abandons is not a failed tool call. The child
+ * treats a missing hook decision as "no decision" and falls through to its own
+ * native approval path (see runNativeHookRelayPermissionRequest's closing noop),
+ * so the person may still approve there and the tool then runs normally. Telling
+ * the run owner the call timed out would be a claim about an outcome the parent
+ * never observed — and the projection wins over the real terminal event, so a
+ * call that actually succeeded would still be reported as failed.
+ *
+ * Every other event keeps projecting. `pre_tool_use` in particular must: when the
+ * child abandons that hook it manufactures its own fail-closed deny, so the tool
+ * call genuinely did not run and the run owner has to hear about it.
+ *
+ * An unreadable event is treated as projectable, which is the pre-existing
+ * behavior. It cannot mask an approval in practice: the bridge parses the event
+ * before it parses the payload the tool call id comes from, so a request that
+ * produced a tool call id always produced its event too.
+ *
+ * Both projection sites consult this. The bridge records a transport failure for
+ * an invocation that never produced a response, and the relay entrypoint projects
+ * for the same invocation when the bridge's abort unwinds it; whichever lands
+ * first wins the per-tool-call dedupe, so gating only one leaves the bug intact.
+ */
+function transportFailureDecidesToolCallFate(event: NativeHookRelayEvent | undefined): boolean {
+  return event !== "permission_request";
+}
+
 export type NativeHookRelayTransportFailureState = {
   consecutive: number;
   terminal?: {
@@ -159,9 +188,10 @@ export function recordNativeHookRelayTransportFailure(params: {
       threshold: NATIVE_HOOK_RELAY_TRANSPORT_FAILURE_THRESHOLD,
     },
   );
-  // The tool call itself still failed closed for the child, so the run owner is
-  // told either way; only the relay's own health verdict is withheld.
-  if (params.toolCallId) {
+  // An excused wait still tells the run owner when the tool call itself failed
+  // closed for the child; only the relay's own health verdict is withheld. An
+  // abandoned approval is the one invocation whose failure decides nothing.
+  if (params.toolCallId && transportFailureDecidesToolCallFate(params.event)) {
     projectNativeHookRelayPreToolUseFailure(registration, {
       toolName: params.toolName ?? "",
       toolCallId: params.toolCallId,
@@ -262,8 +292,12 @@ export function createNativeHookRelayPreToolUseFailureProjector(
   normalized: NativeHookRelayInvocation,
   startedAt: number,
 ): (disposition: NonNullable<NativeHookRelayProcessResponse["failureDisposition"]>) => void {
+  // A permission_request response never carries a failureDisposition — only
+  // renderPreToolUseBlockResponse takes one — so the event test bites on exactly
+  // the transport-abort path the entrypoint shares with the bridge.
   const shouldProjectFailure =
     Boolean(normalized.toolUseId) &&
+    transportFailureDecidesToolCallFate(normalized.event) &&
     readNativeHookRelayApprovalMode(normalized.rawPayload) !== "report";
   return (disposition: NonNullable<NativeHookRelayProcessResponse["failureDisposition"]>) => {
     if (!shouldProjectFailure || !normalized.toolUseId) {

@@ -323,6 +323,145 @@ describe("native hook relay failure disposition attribution", () => {
     expect(response.failureDisposition).toBeUndefined();
     expect(onPreToolUseFailure).not.toHaveBeenCalled();
   });
+
+  it("says nothing to the run owner when the child abandons an approval", async () => {
+    const onPreToolUseFailure = vi.fn();
+    const relayId = `codex-approval-projection-${randomUUID()}`;
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_tool_call", handler: async () => ({}) }]),
+    );
+    let approvalEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      approvalEntered = resolve;
+    });
+    testing.setNativeHookRelayPermissionApprovalRequesterForTests(async () => {
+      approvalEntered();
+      await new Promise(() => {});
+      return "deny";
+    });
+    const relay = registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      agentId: "agent-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      onPreToolUseFailure,
+    });
+    let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
+    await vi.waitFor(async () => {
+      record = await readNativeHookRelayBridgeRecord({ relayId });
+      expect(record?.relayId).toBe(relayId);
+    });
+    if (!record) {
+      throw new Error(`Expected a bridge record for ${relayId}`);
+    }
+
+    const request = openNativeHookRelayBridgeRequest(record, {
+      provider: "codex",
+      relayId,
+      generation: relay.generation,
+      event: "permission_request",
+      rawPayload: {
+        hook_event_name: "PermissionRequest",
+        cwd: "/repo",
+        tool_name: "Bash",
+        tool_use_id: "native-approval-projection-1",
+        tool_input: { command: "git status" },
+      },
+    });
+    // Exactly how the child's own hook budget gives up: mid-approval, with the
+    // person still free to answer Codex's native prompt afterwards.
+    await entered;
+    request.destroy();
+    await request.failed;
+    await vi.waitFor(() => {
+      expect(loggedMessages(subsystemLogger.warn)).toContain(
+        "native hook relay approval wait outlived its transport budget",
+      );
+    });
+
+    // A later invocation is a second settling point: anything the disconnect
+    // scheduled has run by the time this resolves.
+    await expect(
+      invokeNativeHookRelay({
+        provider: "codex",
+        relayId: relay.relayId,
+        event: "pre_tool_use",
+        rawPayload: preToolUsePayload("native-after-abandoned-approval"),
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+    expect(onPreToolUseFailure).not.toHaveBeenCalled();
+  });
+
+  it("says nothing for an abandoned approval's server deadline either", async () => {
+    const onPreToolUseFailure = vi.fn();
+    const relayId = `codex-approval-deadline-projection-${randomUUID()}`;
+    registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      agentId: "agent-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      onPreToolUseFailure,
+    });
+
+    for (const event of ["permission_request", "pre_tool_use"] as const) {
+      recordNativeHookRelayTransportFailure({
+        relayId,
+        cause: "server-deadline",
+        event,
+        elapsedMs: NATIVE_HOOK_RELAY_BRIDGE_INVOCATION_DEADLINE_MS,
+        toolName: "shell",
+        toolCallId: `native-deadline-${event}`,
+      });
+    }
+
+    // Projection is scheduled, not immediate, so the pre-tool-use call recorded
+    // second is the settling point: once it has landed, anything the approval
+    // scheduled first would already have landed too.
+    await vi.waitFor(() => {
+      expect(onPreToolUseFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ toolCallId: "native-deadline-pre_tool_use" }),
+      );
+    });
+    expect(onPreToolUseFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("still projects a pre-tool-use failure the child fail-closed denied", async () => {
+    const onPreToolUseFailure = vi.fn();
+    const relayId = `codex-pre-tool-projection-${randomUUID()}`;
+    registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      agentId: "agent-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      onPreToolUseFailure,
+    });
+
+    // The contrast that makes the approval exemption safe: an abandoned
+    // pre-tool-use hook really did stop the tool call, on both causes.
+    for (const cause of ["client-disconnected", "server-deadline"] as const) {
+      recordNativeHookRelayTransportFailure({
+        relayId,
+        cause,
+        event: "pre_tool_use",
+        elapsedMs: 9_000,
+        toolName: "exec",
+        toolCallId: `native-pre-tool-${cause}`,
+      });
+    }
+
+    await vi.waitFor(() => {
+      expect(onPreToolUseFailure).toHaveBeenCalledTimes(2);
+    });
+    expect(onPreToolUseFailure).toHaveBeenCalledWith({
+      toolName: "exec",
+      toolCallId: "native-pre-tool-client-disconnected",
+      disposition: "timed_out",
+      durationMs: 9_000,
+    });
+  });
 });
 
 describe("native hook relay transport failure escalation", () => {
@@ -587,6 +726,40 @@ describe("native hook relay transport failure escalation", () => {
       request.destroy();
       await request.failed;
     }
+  });
+
+  it("keeps the streak accounting the withheld projection does not own", () => {
+    const relayId = `codex-approval-streak-${randomUUID()}`;
+    registerEscalationRelay(relayId);
+    const approvalKey = `${relayId}-pending`;
+    nativeHookRelayState.pendingPermissionApprovals.set(approvalKey, {
+      relayId,
+      controller: new AbortController(),
+      waiters: 1,
+      cancelWhenUnobserved: false,
+      promise: new Promise(() => {}),
+    });
+
+    // Withholding the projection must not also withhold — or fabricate — the
+    // relay's health verdict. An excused approval wait still costs nothing.
+    recordNativeHookRelayTransportFailure({
+      relayId,
+      cause: "client-disconnected",
+      event: "permission_request",
+      elapsedMs: 9_000,
+      toolName: "shell",
+      toolCallId: "native-approval-streak-1",
+    });
+    expect(readTransportFailureCount(relayId)).toBe(0);
+
+    // Once nobody is deciding, a genuine failure still latches at the threshold.
+    nativeHookRelayState.pendingPermissionApprovals.delete(approvalKey);
+    failTransport(relayId, TRANSPORT_FAILURE_THRESHOLD);
+    expect(readTransportFailureCount(relayId)).toBe(TRANSPORT_FAILURE_THRESHOLD);
+    expect(loggedMeta(subsystemLogger.error, "native hook relay transport failed")).toMatchObject({
+      relayId,
+      consecutiveFailures: TRANSPORT_FAILURE_THRESHOLD,
+    });
   });
 
   it("ignores transport failures reported for a relay that is already gone", () => {
