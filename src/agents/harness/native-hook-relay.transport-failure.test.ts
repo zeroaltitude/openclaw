@@ -33,7 +33,7 @@ vi.mock("../../logging/subsystem.js", async (importOriginal) => ({
 }));
 
 const { readNativeHookRelayBridgeRecord } = await import("./native-hook-relay-store.js");
-const { NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR, isNativeHookRelayTransportFailedError } =
+const { isNativeHookRelayTransportFailedError } =
   await import("./native-hook-relay-transport-error.js");
 const { recordNativeHookRelayTransportFailure } =
   await import("./native-hook-relay-transport-failure.js");
@@ -263,17 +263,21 @@ describe("native hook relay failure disposition attribution", () => {
       onPreToolUseFailure,
     });
     const controller = new AbortController();
-    const invocation = invokeNativeHookRelay({
-      provider: "codex",
-      relayId: relay.relayId,
-      event: "pre_tool_use",
-      rawPayload: preToolUsePayload("native-abandoned-1"),
-      signal: controller.signal,
-    });
+    const invocation = invokeNativeHookRelay(
+      {
+        provider: "codex",
+        relayId: relay.relayId,
+        event: "pre_tool_use",
+        rawPayload: preToolUsePayload("native-abandoned-1"),
+      },
+      controller.signal,
+    );
     await hookEntered;
     controller.abort();
 
-    await expect(invocation).rejects.toThrow(NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR);
+    // The abort itself keeps the shared relay contract; the transport verdict is
+    // what the bridge names for a still-connected child, not this rejection.
+    await expect(invocation).rejects.toThrow(/abort/i);
     expect(onPreToolUseFailure).toHaveBeenCalledWith({
       toolName: "exec",
       toolCallId: "native-abandoned-1",
