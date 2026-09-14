@@ -35,10 +35,11 @@ vi.mock("../../logging/subsystem.js", async (importOriginal) => ({
 const { readNativeHookRelayBridgeRecord } = await import("./native-hook-relay-store.js");
 const { isNativeHookRelayTransportFailedError } =
   await import("./native-hook-relay-transport-error.js");
-const { recordNativeHookRelayTransportFailure } =
+const { NATIVE_HOOK_RELAY_BRIDGE_INVOCATION_DEADLINE_MS, recordNativeHookRelayTransportFailure } =
   await import("./native-hook-relay-transport-failure.js");
 const { invokeNativeHookRelay, registerNativeHookRelay, testing } =
   await import("./native-hook-relay.js");
+const { nativeHookRelayState } = await import("./native-hook-relay-state.js");
 
 /**
  * The escalation threshold, pinned here by behavior rather than imported.
@@ -415,6 +416,177 @@ describe("native hook relay transport failure escalation", () => {
         rawPayload: preToolUsePayload("native-reset-2"),
       }),
     ).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it("does not latch the relay terminal while a person is still deciding", async () => {
+    const relayId = `codex-approval-wait-${randomUUID()}`;
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_tool_call", handler: async () => ({}) }]),
+    );
+    // The approval a person owns: entered, then never answered inside any
+    // transport budget. Codex's hookTimeoutSec is what runs out first.
+    const approvalEntered: (() => void)[] = [];
+    testing.setNativeHookRelayPermissionApprovalRequesterForTests(async () => {
+      approvalEntered.shift()?.();
+      await new Promise(() => {});
+      return "deny";
+    });
+    const relay = registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      agentId: "agent-1",
+      sessionId: "session-1",
+      runId: "run-1",
+    });
+    let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
+    await vi.waitFor(async () => {
+      record = await readNativeHookRelayBridgeRecord({ relayId });
+      expect(record?.relayId).toBe(relayId);
+    });
+    if (!record) {
+      throw new Error(`Expected a bridge record for ${relayId}`);
+    }
+
+    for (let attempt = 1; attempt <= TRANSPORT_FAILURE_THRESHOLD; attempt += 1) {
+      const entered = new Promise<void>((resolve) => {
+        approvalEntered.push(resolve);
+      });
+      const request = openNativeHookRelayBridgeRequest(record, {
+        provider: "codex",
+        relayId,
+        generation: relay.generation,
+        event: "permission_request",
+        rawPayload: {
+          hook_event_name: "PermissionRequest",
+          cwd: "/repo",
+          tool_name: "Bash",
+          tool_use_id: `native-approval-${attempt}`,
+          tool_input: { command: "git status" },
+        },
+      });
+      // Give up exactly the way the child's own hook budget does: mid-approval.
+      await entered;
+      request.destroy();
+      await request.failed;
+      // The parent logs the disconnect before it decides what the disconnect
+      // means, so this is the settling point for both the charged and the
+      // excused verdict.
+      await vi.waitFor(() => {
+        expect(
+          loggedMessages(subsystemLogger.warn).filter(
+            (message) => message === "native hook relay bridge client disconnected",
+          ),
+        ).toHaveLength(attempt);
+      });
+      expect(readTransportFailureCount(relayId)).toBe(0);
+      expect(loggedMessages(subsystemLogger.warn)).toContain(
+        "native hook relay approval wait outlived its transport budget",
+      );
+    }
+    expect(loggedMessages(subsystemLogger.error)).not.toContain(
+      "native hook relay transport failed",
+    );
+    // The relay is the side that held the prompt open, so it still serves.
+    await expect(
+      invokeNativeHookRelay({
+        provider: "codex",
+        relayId: relay.relayId,
+        event: "pre_tool_use",
+        rawPayload: preToolUsePayload("native-after-approval-waits"),
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it("still counts a failure cause the outstanding approval cannot explain", () => {
+    const relayId = `codex-approval-cause-${randomUUID()}`;
+    registerEscalationRelay(relayId);
+    nativeHookRelayState.pendingPermissionApprovals.set(`${relayId}-pending`, {
+      relayId,
+      controller: new AbortController(),
+      waiters: 1,
+      cancelWhenUnobserved: false,
+      promise: new Promise(() => {}),
+    });
+
+    // The child's own fail-closed verdicts are not observations of a parent that
+    // is still serving the invocation, so a pending approval never excuses them.
+    for (const cause of ["relay-timeout", "relay-unavailable"] as const) {
+      recordNativeHookRelayTransportFailure({
+        relayId,
+        cause,
+        event: "permission_request",
+        elapsedMs: 5,
+      });
+    }
+    expect(readTransportFailureCount(relayId)).toBe(2);
+
+    // The two the parent raises while it holds the prompt open are excused.
+    for (const cause of ["client-disconnected", "server-deadline"] as const) {
+      recordNativeHookRelayTransportFailure({
+        relayId,
+        cause,
+        event: "permission_request",
+        elapsedMs: 30_000,
+      });
+    }
+    expect(readTransportFailureCount(relayId)).toBe(2);
+  });
+
+  it("re-arms the server deadline instead of tripping it on an outstanding approval", async () => {
+    const relayId = `codex-approval-deadline-${randomUUID()}`;
+    const relay = registerEscalationRelay(relayId);
+    let approvalEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      approvalEntered = resolve;
+    });
+    testing.setNativeHookRelayPermissionApprovalRequesterForTests(async () => {
+      approvalEntered();
+      await new Promise(() => {});
+      return "deny";
+    });
+    let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
+    await vi.waitFor(async () => {
+      record = await readNativeHookRelayBridgeRecord({ relayId });
+      expect(record?.relayId).toBe(relayId);
+    });
+    if (!record) {
+      throw new Error(`Expected a bridge record for ${relayId}`);
+    }
+    // Installed before the request so the invocation's own deadline timer is
+    // the fake one this test advances.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const request = openNativeHookRelayBridgeRequest(record, {
+      provider: "codex",
+      relayId,
+      generation: relay.generation,
+      event: "permission_request",
+      rawPayload: {
+        hook_event_name: "PermissionRequest",
+        cwd: "/repo",
+        tool_name: "Bash",
+        tool_use_id: "native-slow-approval",
+        tool_input: { command: "git status" },
+      },
+    });
+    try {
+      await entered;
+      // Two full ceilings of a person reading the prompt. An operator who raises
+      // Codex's hookTimeoutSec past this window must still get their answer.
+      await vi.advanceTimersByTimeAsync(
+        NATIVE_HOOK_RELAY_BRIDGE_INVOCATION_DEADLINE_MS * 2 + 1_000,
+      );
+      vi.useRealTimers();
+
+      expect(loggedMessages(subsystemLogger.warn)).not.toContain(
+        "native hook relay bridge invocation deadline exceeded",
+      );
+      expect(readTransportFailureCount(relayId)).toBe(0);
+      expect(nativeHookRelayState.pendingPermissionApprovals.size).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      request.destroy();
+      await request.failed;
+    }
   });
 
   it("ignores transport failures reported for a relay that is already gone", () => {

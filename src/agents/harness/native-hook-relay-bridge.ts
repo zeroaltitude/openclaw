@@ -25,6 +25,7 @@ import {
 } from "./native-hook-relay-store.js";
 import { NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR } from "./native-hook-relay-transport-error.js";
 import {
+  isNativeHookRelayAwaitingApproval,
   NATIVE_HOOK_RELAY_BRIDGE_INVOCATION_DEADLINE_MS,
   recordNativeHookRelayTransportFailure,
 } from "./native-hook-relay-transport-failure.js";
@@ -342,10 +343,23 @@ function trackNativeHookRelayBridgeRequest(
   const onClientDisconnected = () => {
     fail("client-disconnected", "native hook relay bridge client disconnected");
   };
-  const deadline = setTimeout(() => {
-    fail("server-deadline", "native hook relay bridge invocation deadline exceeded");
-  }, NATIVE_HOOK_RELAY_BRIDGE_INVOCATION_DEADLINE_MS);
-  deadline.unref();
+  // Re-arm rather than fire while the parent is holding an approval prompt open:
+  // Codex's hookTimeoutSec has no upper bound and the approval owns its own
+  // budget, so this ceiling only bounds a parent that stopped making progress.
+  // The pending approval is removed on decision, expiry, or relay teardown, so
+  // the window after that is the one that trips.
+  let deadline: ReturnType<typeof setTimeout>;
+  const armDeadline = () => {
+    deadline = setTimeout(() => {
+      if (isNativeHookRelayAwaitingApproval(auth.relayId)) {
+        armDeadline();
+        return;
+      }
+      fail("server-deadline", "native hook relay bridge invocation deadline exceeded");
+    }, NATIVE_HOOK_RELAY_BRIDGE_INVOCATION_DEADLINE_MS);
+    deadline.unref();
+  };
+  armDeadline();
   requestAbort.addEventListener("abort", onClientDisconnected, { once: true });
   if (requestAbort.aborted) {
     onClientDisconnected();

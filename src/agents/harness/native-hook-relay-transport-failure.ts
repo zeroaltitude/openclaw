@@ -19,7 +19,29 @@ import type {
 
 const log = createSubsystemLogger("agents/harness/native-hook-relay");
 
-const { relays } = nativeHookRelayState;
+const { pendingPermissionApprovals, relays } = nativeHookRelayState;
+
+/**
+ * Whether a relay is still parked inside an approval it asked a human for.
+ *
+ * Only `permission_request` blocks a relay invocation on a person, and it does so
+ * for DEFAULT_PERMISSION_TIMEOUT_MS — far longer than any transport ceiling. The
+ * pre-tool-use deferred approvals are handed to the app-server and resolved by a
+ * later call, so they are not an in-flight wait and deliberately do not appear here.
+ *
+ * The scope is the relay, not the tool call: the pending entry is keyed by the
+ * approval's own content fingerprint, and an entry lives only until the decision,
+ * its expiry, or relay teardown. A concurrent sibling call therefore delays a
+ * genuine terminal verdict by at most one approval, and never suppresses it.
+ */
+export function isNativeHookRelayAwaitingApproval(relayId: string): boolean {
+  for (const approval of pendingPermissionApprovals.values()) {
+    if (approval.relayId === relayId) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Consecutive relay-transport failures tolerated before the relay refuses every
@@ -36,8 +58,35 @@ const { relays } = nativeHookRelayState;
  */
 const NATIVE_HOOK_RELAY_TRANSPORT_FAILURE_THRESHOLD = 3;
 
-/** Server-side ceiling on one bridge invocation, independent of the client budget. */
+/**
+ * Server-side ceiling on one bridge invocation, independent of the client budget.
+ *
+ * This bounds a parent that stopped making progress, so it is deliberately short.
+ * An invocation parked on a human approval is still making progress and re-arms
+ * the ceiling instead of tripping it; see isNativeHookRelayAwaitingApproval.
+ */
 export const NATIVE_HOOK_RELAY_BRIDGE_INVOCATION_DEADLINE_MS = 30_000;
+
+/**
+ * Whether a bridge-observed timeout landed on an invocation that is waiting for a person.
+ *
+ * `client-disconnected` and `server-deadline` are the two causes the parent can
+ * raise while it is still serving the invocation. A relay parked in an approval
+ * outlives both budgets by design — Codex's hookTimeoutSec has no upper bound and
+ * the approval itself is allowed DEFAULT_PERMISSION_TIMEOUT_MS — so counting that
+ * wait toward the consecutive-failure streak would latch a healthy relay terminal
+ * after three slow approvals. The transport is demonstrably alive: the parent is
+ * the side holding the prompt open.
+ */
+function isNativeHookRelayApprovalWaitFailure(params: {
+  relayId: string;
+  cause: NativeHookRelayTransportFailureCause;
+}): boolean {
+  if (params.cause !== "client-disconnected" && params.cause !== "server-deadline") {
+    return false;
+  }
+  return isNativeHookRelayAwaitingApproval(params.relayId);
+}
 
 export type NativeHookRelayTransportFailureState = {
   consecutive: number;
@@ -86,19 +135,32 @@ export function recordNativeHookRelayTransportFailure(params: {
     return undefined;
   }
   const state = readTransportFailureState(registration);
-  state.consecutive += 1;
   const disposition = nativeHookRelayTransportFailureDisposition(params.cause);
-  log.warn("native hook relay transport failure", {
+  const approvalWait = isNativeHookRelayApprovalWaitFailure({
     relayId: params.relayId,
-    runId: registration.runId,
-    sessionId: registration.sessionId,
     cause: params.cause,
-    disposition,
-    ...(params.event ? { event: params.event } : {}),
-    ...(typeof params.elapsedMs === "number" ? { elapsedMs: params.elapsedMs } : {}),
-    consecutiveFailures: state.consecutive,
-    threshold: NATIVE_HOOK_RELAY_TRANSPORT_FAILURE_THRESHOLD,
   });
+  if (!approvalWait) {
+    state.consecutive += 1;
+  }
+  log.warn(
+    approvalWait
+      ? "native hook relay approval wait outlived its transport budget"
+      : "native hook relay transport failure",
+    {
+      relayId: params.relayId,
+      runId: registration.runId,
+      sessionId: registration.sessionId,
+      cause: params.cause,
+      disposition,
+      ...(params.event ? { event: params.event } : {}),
+      ...(typeof params.elapsedMs === "number" ? { elapsedMs: params.elapsedMs } : {}),
+      consecutiveFailures: state.consecutive,
+      threshold: NATIVE_HOOK_RELAY_TRANSPORT_FAILURE_THRESHOLD,
+    },
+  );
+  // The tool call itself still failed closed for the child, so the run owner is
+  // told either way; only the relay's own health verdict is withheld.
   if (params.toolCallId) {
     projectNativeHookRelayPreToolUseFailure(registration, {
       toolName: params.toolName ?? "",
@@ -107,6 +169,7 @@ export function recordNativeHookRelayTransportFailure(params: {
       durationMs: params.elapsedMs ?? 0,
     });
   }
+  // An excused wait left `consecutive` alone, so it cannot reach the threshold here.
   if (state.consecutive >= NATIVE_HOOK_RELAY_TRANSPORT_FAILURE_THRESHOLD && !state.terminal) {
     state.terminal = {
       cause: params.cause,
