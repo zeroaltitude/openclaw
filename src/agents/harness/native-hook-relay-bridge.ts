@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { hasErrnoCode } from "../../infra/errno.js";
+import { createHttpRequestAbortSignal } from "../../infra/http-request-lifecycle.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { isPidDefinitelyDead } from "../../shared/pid-alive.js";
@@ -57,6 +58,7 @@ const { relays, relayBridges, pendingOperations } = nativeHookRelayState;
 
 type InvokeNativeHookRelay = (
   params: InvokeNativeHookRelayParams,
+  signal?: AbortSignal,
 ) => Promise<NativeHookRelayProcessResponse>;
 
 type NativeHookRelayBridgeRenewalResult = "renewed" | "unavailable" | "ownership-changed";
@@ -288,33 +290,32 @@ export function unregisterNativeHookRelayBridge(
 }
 
 /**
- * Tracks one bridge request so a client that walks away is not a non-event.
+ * Accounts for one bridge request so a client that walks away, or an invocation
+ * that outlives the server deadline, is not a non-event.
  *
  * Before this existed, a child whose socket died mid-invocation left the parent
  * awaiting a promise nobody would ever read, wrote the eventual response into a
  * closed socket, and logged nothing — so the dispatcher never learned that a
- * child hook had been attempted at all.
+ * child hook had been attempted at all. Disconnect detection itself belongs to
+ * the request abort signal; this only attributes and records the failure.
  */
 type NativeHookRelayBridgeRequestTracker = {
-  controller: AbortController;
   signal: AbortSignal;
-  markResponded: () => void;
   observe: (payload: InvokeNativeHookRelayParams) => void;
   dispose: () => void;
 };
 
 function trackNativeHookRelayBridgeRequest(
-  res: ServerResponse,
+  requestAbort: AbortSignal,
   auth: NativeHookRelayBridgeRequestAuth,
 ): NativeHookRelayBridgeRequestTracker {
   const startedAt = Date.now();
   const controller = new AbortController();
-  let responded = false;
   let event: NativeHookRelayEvent | undefined;
   let toolName: string | undefined;
   let toolCallId: string | undefined;
   const fail = (cause: NativeHookRelayTransportFailureCause, message: string) => {
-    if (responded || controller.signal.aborted) {
+    if (controller.signal.aborted) {
       return;
     }
     if (!isCurrentNativeHookRelayBridgeRequest(auth)) {
@@ -338,26 +339,19 @@ function trackNativeHookRelayBridgeRequest(
     });
     controller.abort(new Error(NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR));
   };
-  const onResponseClose = () => {
-    // `res` close also fires on a completed response, and `req` close fires as
-    // soon as the request body is fully read. Only an unfinished writable side
-    // means the peer went away while this invocation was still in flight.
-    if (res.writableFinished) {
-      return;
-    }
+  const onClientDisconnected = () => {
     fail("client-disconnected", "native hook relay bridge client disconnected");
   };
   const deadline = setTimeout(() => {
     fail("server-deadline", "native hook relay bridge invocation deadline exceeded");
   }, NATIVE_HOOK_RELAY_BRIDGE_INVOCATION_DEADLINE_MS);
   deadline.unref();
-  res.on("close", onResponseClose);
+  requestAbort.addEventListener("abort", onClientDisconnected, { once: true });
+  if (requestAbort.aborted) {
+    onClientDisconnected();
+  }
   return {
-    controller,
     signal: controller.signal,
-    markResponded: () => {
-      responded = true;
-    },
     observe: (payload) => {
       try {
         event = readNativeHookRelayEvent(payload.event);
@@ -379,7 +373,7 @@ function trackNativeHookRelayBridgeRequest(
     },
     dispose: () => {
       clearTimeout(deadline);
-      res.off("close", onResponseClose);
+      requestAbort.removeEventListener("abort", onClientDisconnected);
     },
   };
 }
@@ -389,22 +383,19 @@ async function handleNativeHookRelayBridgeRequest(
   res: ServerResponse,
   auth: NativeHookRelayBridgeRequestAuth,
 ): Promise<void> {
-  const tracker = trackNativeHookRelayBridgeRequest(res, auth);
-  const respond = (statusCode: number, payload: unknown) => {
-    tracker.markResponded();
-    writeNativeHookRelayBridgeJson(res, statusCode, payload);
-  };
+  const requestAbort = createHttpRequestAbortSignal(req, res);
+  const tracker = trackNativeHookRelayBridgeRequest(requestAbort.signal, auth);
   try {
     if (req.method !== "POST" || req.url !== "/invoke") {
-      respond(404, { ok: false, error: "not found" });
+      writeNativeHookRelayBridgeJson(res, 404, { ok: false, error: "not found" });
       return;
     }
     if (req.headers.authorization !== `Bearer ${auth.token}`) {
-      respond(403, { ok: false, error: "forbidden" });
+      writeNativeHookRelayBridgeJson(res, 403, { ok: false, error: "forbidden" });
       return;
     }
     if (!isCurrentNativeHookRelayBridgeRequest(auth)) {
-      respond(410, {
+      writeNativeHookRelayBridgeJson(res, 410, {
         ok: false,
         error: NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR,
       });
@@ -414,32 +405,40 @@ async function handleNativeHookRelayBridgeRequest(
     const payload = readNativeHookRelayBridgePayload(JSON.parse(body));
     tracker.observe(payload);
     if (payload.provider !== auth.provider || payload.relayId !== auth.relayId) {
-      respond(403, {
+      writeNativeHookRelayBridgeJson(res, 403, {
         ok: false,
         error: "native hook relay bridge target mismatch",
       });
       return;
     }
     if (!isCurrentNativeHookRelayBridgeRequest(auth)) {
-      respond(410, {
+      writeNativeHookRelayBridgeJson(res, 410, {
         ok: false,
         error: NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR,
       });
       return;
     }
-    const result = await auth.invokeRelay({
-      ...payload,
-      requireGeneration: true,
-      signal: tracker.signal,
-    });
-    respond(200, { ok: true, result });
+    const result = await auth.invokeRelay({ ...payload, requireGeneration: true }, tracker.signal);
+    writeNativeHookRelayBridgeJson(res, 200, { ok: true, result });
   } catch (error) {
-    respond(isNativeHookRelayBridgeStaleRegistrationError(error) ? 410 : 500, {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    if (requestAbort.signal.aborted) {
+      return;
+    }
+    // A deadline abort is this bridge's own transport verdict on a still-connected
+    // child; name it so the child escalates instead of fail-closed denying.
+    const message = tracker.signal.aborted
+      ? NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    writeNativeHookRelayBridgeJson(
+      res,
+      isNativeHookRelayBridgeStaleRegistrationError(error) ? 410 : 500,
+      { ok: false, error: message },
+    );
   } finally {
     tracker.dispose();
+    requestAbort.cleanup();
   }
 }
 
@@ -481,11 +480,6 @@ function writeNativeHookRelayBridgeJson(
   statusCode: number,
   payload: unknown,
 ): void {
-  if (res.headersSent || res.writableEnded || res.destroyed) {
-    // The client is already gone (or already answered); the disconnect handler
-    // owns the failure accounting, so dropping this write is the whole point.
-    return;
-  }
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
     "content-type": "application/json",
