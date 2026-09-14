@@ -8,7 +8,6 @@ import {
   MAX_NATIVE_HOOK_RELAY_INVOCATIONS,
   nativeHookRelayState,
 } from "./native-hook-relay-state.js";
-import { NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR } from "./native-hook-relay-transport-error.js";
 import type {
   ActiveNativeHookRelayRegistration,
   NativeHookRelayEvent,
@@ -192,55 +191,6 @@ function projectNativeHookRelayPreToolUseFailure(
       registration.preToolUseFailureProjections.delete(oldestToolCallId);
     }
   }
-}
-
-/**
- * Reject as soon as the caller can no longer receive the response.
- *
- * The underlying work may still settle later; the point is that the handler
- * awaiting it does not stay pinned to a client that has gone away.
- */
-export async function withNativeHookRelayInvocationAbort<T>(
-  signal: AbortSignal | undefined,
-  work: Promise<T>,
-): Promise<T> {
-  if (!signal) {
-    return await work;
-  }
-  if (signal.aborted) {
-    void work.catch(() => {});
-    throw new Error(NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR);
-  }
-  return await new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      void work.catch(() => {});
-      reject(new Error(NATIVE_HOOK_RELAY_TRANSPORT_FAILED_ERROR));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    work.then(
-      (value) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
-  });
 }
 
 /** Bind one invocation’s failure projection before awaiting policy or transport work. */
