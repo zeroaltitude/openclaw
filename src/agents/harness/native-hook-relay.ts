@@ -456,13 +456,15 @@ async function resolveNativeHookRelayInvocationBinding(
         throw new Error("native hook relay retained invocation not allowed");
       }
     };
-    if (lifetime.foregroundOpen && retention.awaitForegroundAdmission) {
+    const awaitForegroundAdmission = retention.awaitForegroundAdmission;
+    if (lifetime.foregroundOpen && awaitForegroundAdmission) {
       const admissionStartedAtMs = Date.now();
       try {
-        assertAdmission = await awaitBoundedNativeHookRelayChildAdmission(
-          racePromiseWithAbortSignal(retention.awaitForegroundAdmission(claim, signal), signal),
-          lifetime.childAdmissionTimeoutMs,
-        );
+        assertAdmission = await awaitBoundedNativeHookRelayChildAdmission({
+          admit: (admissionSignal) => awaitForegroundAdmission(claim, admissionSignal),
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          ...(signal ? { signal } : {}),
+        });
       } catch (error) {
         log.debug("native hook relay child admission failed", {
           relayId: registration.relayId,

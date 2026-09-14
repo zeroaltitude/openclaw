@@ -197,6 +197,81 @@ describe("native hook relay child admission bound", () => {
     relay.unregister();
   });
 
+  it("releases the retention owner's wait when the bound expires", async () => {
+    const runId = `run-admission-release-${randomUUID()}`;
+    const { admittedRunContext, hostCapabilities } = await createAdmittedHostCapabilityTestFixture({
+      runId,
+    });
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_tool_call", handler: async () => undefined }]),
+    );
+    // Mirrors the codex retention owner: a live-waiter count, and a separate
+    // record of which children still expect a claim.
+    let waiters = 0;
+    const admissionRequests = new Set<string>();
+    const relay = registerOwnedNativeHookRelay({
+      provider: "codex",
+      relayId: `codex-admission-release-${randomUUID()}`,
+      sessionId: "session-admission-release",
+      runId,
+      allowedEvents: ["pre_tool_use"],
+      runBeforeToolCall: hostCapabilities.runBeforeToolCall,
+      assertActive: hostCapabilities.assertActive,
+      command: { timeoutMs: COMMAND_TIMEOUT_MS },
+      retention: {
+        readClaim: readTestNativeAgentId,
+        shouldRetainAfterForegroundClose: () => admissionRequests.size > 0,
+        allowPreToolUse: () => false,
+        awaitForegroundAdmission: (childThreadId, signal) => {
+          admissionRequests.add(childThreadId);
+          waiters++;
+          return new Promise<(() => boolean) | undefined>((_resolve, reject) => {
+            signal?.addEventListener(
+              "abort",
+              () => reject(new Error("native hook relay admission aborted")),
+              { once: true },
+            );
+          }).finally(() => {
+            waiters--;
+          });
+        },
+        onDispose: () => {
+          admissionRequests.clear();
+        },
+      },
+    });
+
+    const invokeChild = async (toolUseId: string) => {
+      await expect(
+        invokeNativeHookRelay({
+          provider: "codex",
+          relayId: relay.relayId,
+          event: "pre_tool_use",
+          rawPayload: {
+            ...childPreToolUsePayload("child-release"),
+            tool_use_id: toolUseId,
+          },
+        }),
+      ).rejects.toThrow("native hook relay child admission timed out");
+    };
+
+    await invokeChild("child-release-call-1");
+    // The bridge answers this invocation before the child's request closes, so
+    // nothing outside the bound will ever release the wait.
+    expect(waiters).toBe(0);
+
+    // A retry must not stack a second permanently pending waiter on the first.
+    await invokeChild("child-release-call-2");
+    expect(waiters).toBe(0);
+
+    // Retention across foreground close survives on the owner's request record,
+    // which has its own release paths, not on a wait nobody can settle.
+    expect(admissionRequests.has("child-release")).toBe(true);
+
+    closeAdmittedRunDelegatedAuthority(admittedRunContext);
+    relay.unregister();
+  });
+
   it("leaves a rejected admission's own error intact", async () => {
     const runId = `run-admission-rejected-${randomUUID()}`;
     const { admittedRunContext, hostCapabilities } = await createAdmittedHostCapabilityTestFixture({

@@ -154,6 +154,22 @@ describe("Codex native hook relay direct-child retention", () => {
     ).toBeDefined();
   });
 
+  it("drops retention once the monitor settles a child whose admission expired", async () => {
+    const { relay } = await createRelayFixture("expired-then-settled");
+    await startUnclaimedChildAdmission(relay.relayId, "child-settled");
+    relay.authorizeRetentionAfterSuccessfulYield();
+
+    // The subagent monitor observes the child's turn end. The expired admission
+    // left no waiter behind, so this is the only release for its retention
+    // record short of the relay's TTL.
+    relay.rejectPendingDirectChild("child-settled", "Codex child turn completed");
+    relay.unregister();
+
+    expect(
+      nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relay.relayId),
+    ).toBeUndefined();
+  });
+
   it("admits a later tool call once the provisional claim lands", async () => {
     const { relay } = await createRelayFixture("late-claim");
     await startUnclaimedChildAdmission(relay.relayId, "child-late");

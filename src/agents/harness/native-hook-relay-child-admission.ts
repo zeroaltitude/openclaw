@@ -7,6 +7,7 @@
  * here, the child's own CLI deadline is the only clock: losing that race spends
  * the child's whole budget and surfaces as an ordinary fail-closed policy deny.
  */
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { DEFAULT_RELAY_TIMEOUT_MS } from "./native-hook-relay-constants.js";
 import { normalizePositiveInteger } from "./native-hook-relay-utils.js";
 
@@ -32,25 +33,40 @@ export function resolveNativeHookRelayChildAdmissionTimeoutMs(
   return Math.max(1, Math.floor(budgetMs * CHILD_ADMISSION_TIMEOUT_RATIO));
 }
 
+/** Releases the retention owner's wait once this attempt can no longer consume it. */
+const CHILD_ADMISSION_RELEASED_ERROR = "native hook relay child admission attempt released";
+
 /**
- * Races child admission against the relay-side bound. The pending admission is
- * deliberately left in place on expiry: the codex retention predicate keeps the
- * relay registered while an admission is pending, so a claim that lands late
- * still admits the child's next tool call instead of finding a dead relay.
+ * Races child admission against the relay-side bound, on a per-attempt signal
+ * the caller cannot see.
+ *
+ * The attempt signal is aborted on every exit path, including expiry. Nothing
+ * else would release the wait: the bridge answers this invocation before the
+ * child's HTTP request closes, and `createHttpRequestAbortSignal` deliberately
+ * does not abort a completed response, so an expiry that left the wait alive
+ * would pin it until the relay's TTL and inflate the retention owner's waiter
+ * count once per retry. Retention across foreground close is the retention
+ * owner's own record of the request, not this wait.
  */
-export async function awaitBoundedNativeHookRelayChildAdmission(
-  admission: Promise<(() => boolean) | undefined>,
-  timeoutMs: number,
-): Promise<(() => boolean) | undefined> {
+export async function awaitBoundedNativeHookRelayChildAdmission(params: {
+  admit: (signal: AbortSignal) => Promise<(() => boolean) | undefined>;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}): Promise<(() => boolean) | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  // The admission outlives this race by design; adopt its rejection here so a
-  // later settlement cannot surface as an unhandled rejection.
+  const attempt = new AbortController();
+  const admission = params.admit(attempt.signal);
+  // The admission settles after this race by design; adopt its rejection here
+  // so the release below cannot surface as an unhandled rejection.
   admission.catch(() => {});
   try {
     return await Promise.race([
-      admission,
+      racePromiseWithAbortSignal(admission, params.signal),
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(CHILD_ADMISSION_TIMEOUT_ERROR)), timeoutMs);
+        timer = setTimeout(
+          () => reject(new Error(CHILD_ADMISSION_TIMEOUT_ERROR)),
+          params.timeoutMs,
+        );
         timer.unref?.();
       }),
     ]);
@@ -58,5 +74,6 @@ export async function awaitBoundedNativeHookRelayChildAdmission(
     if (timer) {
       clearTimeout(timer);
     }
+    attempt.abort(new Error(CHILD_ADMISSION_RELEASED_ERROR));
   }
 }
