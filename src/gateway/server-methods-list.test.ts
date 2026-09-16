@@ -209,6 +209,10 @@ describe("listGatewayMethods", () => {
       "computer.status",
       "computer.invoke",
       "sessions.activitySummary.ensure",
+      "tasks.supervision.list",
+      "tasks.supervision.artifact",
+      "tasks.supervision.get",
+      "tasks.supervision.control",
       "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
     ];
@@ -247,6 +251,10 @@ describe("listGatewayMethods", () => {
       "computer.status",
       "computer.invoke",
       "sessions.activitySummary.ensure",
+      "tasks.supervision.list",
+      "tasks.supervision.artifact",
+      "tasks.supervision.get",
+      "tasks.supervision.control",
       "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
     ]);
@@ -414,6 +422,10 @@ describe("listGatewayMethods", () => {
       "computer.status",
       "computer.invoke",
       "sessions.activitySummary.ensure",
+      "tasks.supervision.list",
+      "tasks.supervision.artifact",
+      "tasks.supervision.get",
+      "tasks.supervision.control",
       "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
     ];

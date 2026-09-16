@@ -24,6 +24,7 @@ import { startSessionUpstreamMonitor } from "../sessions/session-upstream-monito
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { startGatewayTaskSupervision } from "../tasks/supervised-task.gateway.js";
 import { assertQueuedConversationDeliveryAttemptAuthorized } from "./conversation-route-ownership.js";
 import {
   fenceScheduledGatewayContextResolver,
@@ -479,8 +480,20 @@ export function activateGatewayScheduledServices(params: {
     cfg: params.cfgAtStart,
     log: params.log,
   });
+  const taskSupervision = startGatewayTaskSupervision({
+    onError: () =>
+      params.log
+        .child("taskflow")
+        .warn("Supervised TaskFlow owner unavailable; inspect task supervision status"),
+    runWithContext: (run) =>
+      runWithScheduledGatewayContext({
+        resolveGatewayContext: heartbeatGatewayContextResolver,
+        run,
+      }),
+  });
   let deliveryRecoveryStopPromise: Promise<void> | undefined;
   const stopDeliveryRecovery = () => {
+    taskSupervision.stop();
     // Both owners fence synchronously before the close prelude awaits either.
     deliveryRecoveryStopPromise ??= Promise.all([
       stopOutboundDeliveryRecovery(),

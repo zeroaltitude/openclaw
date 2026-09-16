@@ -5098,6 +5098,7 @@ describe("prepareCliRunContext", () => {
       executionMode: "side-question",
       isolatedCompletion: true,
       extraSystemPrompt: "Return only valid JSON.",
+      outputJsonSchema: { type: "object", required: ["accepted"] },
       cliToolAvailability: { native: [], openClaw: [] },
     });
 
@@ -5107,6 +5108,7 @@ describe("prepareCliRunContext", () => {
         isolatedCompletionModelId: "test-model",
         isolatedCompletionPrompt: "latest ask",
         isolatedCompletionSystemPrompt: "Return only valid JSON.",
+        isolatedCompletionOutputJsonSchema: { type: "object", required: ["accepted"] },
       }),
     );
   });
