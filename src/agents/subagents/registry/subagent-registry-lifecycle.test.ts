@@ -14,6 +14,7 @@ import {
 } from "../../../context-engine/registry.js";
 import { resetContextEngineRuntimeQuarantineForTests } from "../../../context-engine/registry.test-support.js";
 import type { CallGatewayOptions } from "../../../gateway/call.js";
+import { createWorkerSessionPlacementStore } from "../../../gateway/worker-environments/placement-store.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import {
   claimAgentRunDelegatedAuthority,
@@ -44,6 +45,7 @@ import {
 } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-contract.js";
+import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
 import {
   buildAnnounceIdFromChildRun,
@@ -5701,6 +5703,77 @@ describe("subagent registry lifecycle hardening", () => {
       }
     },
   );
+
+  it("defers host-reboot recovery when a remote owner appears while waiting for the terminal lock", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const entry = createRunEntry({ generation: 1, waitExpiryObservedAt: 3_000 });
+      const before = structuredClone(entry);
+      const clearPendingLifecycleError = vi.fn();
+      const persistOrThrow = vi.fn();
+      const controller = createLifecycleController({
+        entry,
+        clearPendingLifecycleError,
+        persistOrThrow,
+      });
+      orphanBootSegments.current = [
+        {
+          bootId: "dead",
+          pid: 101,
+          startedAtMs: 0,
+          completedAtMs: null,
+          outcome: null,
+          hostBootId: "kernel:prior",
+        },
+        {
+          bootId: "live",
+          pid: process.pid,
+          startedAtMs: 4_000,
+          completedAtMs: null,
+          outcome: null,
+          hostBootId: "kernel:successor",
+        },
+      ];
+      sessionReconciliationMocks.loadSubagentSessionEntry.mockReturnValue(undefined);
+      const unlock = await controller.acquireTerminalCompletionLock(entry.runId);
+      const queued = createDeferredCore();
+      const acquireLock = controller.acquireTerminalCompletionLock.bind(controller);
+      vi.spyOn(controller, "acquireTerminalCompletionLock").mockImplementation((runId) => {
+        const result = acquireLock(runId);
+        queued.resolve();
+        return result;
+      });
+      const completion = reconcileStaleActiveSubagentRun({
+        runId: entry.runId,
+        entry,
+        now: 6_000,
+        completeSubagentRunWithRecovery: controller.completeSubagentRun,
+      });
+      try {
+        await queued.promise;
+        createWorkerSessionPlacementStore().startDispatch({
+          sessionId: "remote-child",
+          sessionKey: entry.childSessionKey,
+          agentId: "main",
+        });
+        unlock();
+        await completion;
+        expect(entry).toEqual(before);
+        expect(clearPendingLifecycleError).not.toHaveBeenCalled();
+        expect(persistOrThrow).not.toHaveBeenCalled();
+        expect(controller.options.runSubagentAnnounceFlow).not.toHaveBeenCalled();
+        expect(taskExecutorMocks.failTaskRunByRunId).not.toHaveBeenCalled();
+        expect(
+          browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd,
+        ).not.toHaveBeenCalled();
+      } finally {
+        unlock();
+        await completion;
+        controller.clearScheduledResumeTimers();
+        orphanBootSegments.current = [];
+        vi.restoreAllMocks();
+      }
+    });
+  });
 
   it("does not reopen successor cleanup after orphan persistence fails twice", async () => {
     const entry = createRunEntry({ generation: 1 });

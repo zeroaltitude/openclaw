@@ -142,6 +142,9 @@ export async function completeSubagentRunAttempt(
     if (completeParams.expectedEntry && entry !== completeParams.expectedEntry) {
       return;
     }
+    if (completeParams.recoverInterrupted && completeParams.canRecoverInterrupted?.() === false) {
+      return;
+    }
     suppressSessionEffects ||= shouldSuppressSubagentRecoverySessionEffects(entry);
     params.clearPendingLifecycleError(completeParams.runId);
     const currentEntry = entry;

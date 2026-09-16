@@ -2,7 +2,11 @@ import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { patchSessionEntryCore } from "../../../config/sessions/session-accessor.js";
 import { callGateway } from "../../../gateway/call.js";
+import { createWorkerSessionPlacementStore } from "../../../gateway/worker-environments/placement-store.js";
 import { recordGatewayBootStart } from "../../../infra/gateway-boot-lifecycle.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../../infra/kysely-sync.js";
+import type { DB } from "../../../state/openclaw-state-db.generated.js";
+import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import { createRunningTaskRun } from "../../../tasks/detached-task-runtime.js";
 import { createSubagentTaskBackingDetail } from "../../../tasks/task-backing-authority.js";
 import { listTaskRecordPage } from "../../../tasks/task-registry-query.js";
@@ -93,6 +97,138 @@ export function registerSubagentOrphanTaskCases({
     });
     expect(announceSpy).toHaveBeenCalled();
   });
+  it.each([
+    "host reboot",
+    "remote worker",
+    "same host",
+    "unknown host",
+    "inferred host",
+    "clean stop",
+    "current boot",
+    "later activity",
+    "no history",
+  ] as const)(
+    "recovers an unconfirmed wait only with authoritative death: %s",
+    async (evidence) => {
+      const now = Date.now();
+      const startedAt = now - 10_000;
+      const successorAt = now - 2_000;
+      const runId = `run-wait-boot-${evidence.replaceAll(" ", "-")}`;
+      const childSessionKey = `agent:main:subagent:${runId}`;
+      await writePersistedRegistry(
+        {
+          runs: {
+            [runId]: {
+              runId,
+              taskRunId: runId,
+              generation: 1,
+              childSessionKey,
+              requesterSessionKey: "agent:main:main",
+              requesterDisplayKey: "main",
+              task: "recover only a child stopped by host reboot",
+              cleanup: "keep",
+              expectsCompletionMessage: false,
+              createdAt: startedAt,
+              execution: { status: "running", startedAt },
+              waitExpiryObservedAt: now - 5_000,
+              ...(evidence === "later activity"
+                ? {
+                    completion: {
+                      required: false,
+                      capturedAt: successorAt + 1,
+                      resultText: "still working",
+                    },
+                  }
+                : {}),
+            },
+          },
+        },
+        { seedChildSessions: false },
+      );
+      const { db } = openOpenClawStateDatabase();
+      const kysely = getNodeSqliteKysely<Pick<DB, "gateway_boot_lifecycle">>(db);
+      if (evidence !== "no history") {
+        executeSqliteQuerySync(
+          db,
+          kysely.insertInto("gateway_boot_lifecycle").values([
+            {
+              boot_id: "prior",
+              pid: evidence === "current boot" ? process.pid : 1,
+              started_at_ms: startedAt - 1_000,
+              completed_at_ms: evidence === "clean stop" ? successorAt - 1 : null,
+              outcome: evidence === "clean stop" ? "clean" : null,
+              host_boot_id:
+                evidence === "unknown host"
+                  ? null
+                  : evidence === "inferred host"
+                    ? "uptime:100"
+                    : "kernel:prior",
+            },
+            {
+              boot_id: "successor",
+              pid: evidence === "current boot" ? 2 : process.pid,
+              started_at_ms: successorAt,
+              completed_at_ms: null,
+              outcome: null,
+              host_boot_id: evidence === "same host" ? "kernel:prior" : "kernel:successor",
+            },
+          ]),
+        );
+      }
+      if (evidence === "remote worker") {
+        createWorkerSessionPlacementStore().startDispatch({
+          sessionId: "remote-child",
+          sessionKey: childSessionKey,
+          agentId: "main",
+        });
+      }
+      loadGatewayBootSegmentsForAttribution(now, { forceRefresh: true });
+      expect(
+        createRunningTaskRun({
+          runtime: "subagent",
+          runId,
+          childSessionKey,
+          ownerKey: "agent:main:main",
+          scopeKind: "session",
+          task: "recover only a child stopped by host reboot",
+          startedAt,
+          deliveryStatus: "not_applicable",
+          detail: createSubagentTaskBackingDetail(1),
+        }),
+      ).not.toBeNull();
+      const childResult = createDeferred<{ status: "ok"; startedAt: number; endedAt: number }>();
+      vi.mocked(callGateway).mockImplementation(async (request) =>
+        request.method === "agent.wait" ? await childResult.promise : {},
+      );
+      try {
+        restartRegistry();
+        await waitForRegistryWork(() =>
+          vi.mocked(callGateway).mock.calls.some(([request]) => request.method === "agent.wait"),
+        );
+        await testing.sweepOnceForTests();
+        await settleSubagentRegistryPersistenceWork();
+        if (evidence === "host reboot") {
+          expect(findTaskByRunIdForStatus(runId)).toMatchObject({
+            status: "failed",
+            endedAt: successorAt,
+            error: expect.stringContaining("host rebooted under the gateway"),
+          });
+          expect(loadSubagentRegistryFromSqlite().get(runId)).toMatchObject({
+            execution: { status: "terminal", endedAt: successorAt },
+            cleanupCompletedAt: expect.any(Number),
+          });
+        } else {
+          expect(findTaskByRunIdForStatus(runId)?.status).toBe("running");
+          const retained = loadSubagentRegistryFromSqlite().get(runId);
+          expect(retained?.execution.endedAt).toBeUndefined();
+          expect(retained?.cleanupCompletedAt).toBeUndefined();
+        }
+      } finally {
+        childResult.resolve({ status: "ok", startedAt, endedAt: now });
+        await settleSubagentRegistryPersistenceWork();
+      }
+    },
+  );
 
   it.each(["observation-only", "ordinary"] as const)(
     "handles a missing-session restored %s run without inventing child stop evidence",
@@ -143,6 +279,7 @@ export function registerSubagentOrphanTaskCases({
         vi.mocked(callGateway).mock.calls.some(([request]) => request.method === "agent.wait");
       try {
         restartRegistry();
+        await testing.sweepOnceForTests();
         // Reach either the legitimate re-wait or the erroneous terminal path;
         // do not use a sleep to infer absence of asynchronous completion.
         await waitForRegistryWork(
@@ -219,7 +356,7 @@ export function registerSubagentOrphanTaskCases({
     await waitForRegistryWork(() => findTaskByRunIdForStatus(runId)?.status === "failed");
     expect(findTaskByRunIdForStatus(runId)).toMatchObject({
       status: "failed",
-      error: expect.stringContaining("orphan"),
+      error: "subagent run lost active execution context",
       endedAt: expect.any(Number),
     });
     const activePage = await listTaskRecordPage({
