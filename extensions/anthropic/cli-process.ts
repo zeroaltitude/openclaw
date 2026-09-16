@@ -19,7 +19,11 @@ type ClaudeCliSpawnOptions = Pick<
   signal?: AbortSignal;
 };
 
-export type ClaudeCliSecretInput = { fd: 3; createData: () => Buffer };
+export type ClaudeCliSecretInput = {
+  fd: 3;
+  createData: () => Buffer;
+  envName?: "ANTHROPIC_AUTH_TOKEN";
+};
 
 const STDERR_CAPTURE_CHARS = 8_192;
 const STDERR_PREVIEW_CHARS = 2_000;
@@ -31,15 +35,27 @@ const BANNER_CARRY_CHARS = Math.max(CRASH_BANNER.length, OUT_OF_MEMORY_BANNER.le
 function spawnClaudeCliProcess(
   options: ClaudeCliSpawnOptions,
   secretInput: ClaudeCliSecretInput | undefined,
+  credential: Buffer | undefined,
   observeStderr: (child: ChildProcessWithoutNullStreams) => void,
 ): ChildProcessWithoutNullStreams {
   const stdio: ["pipe", "pipe", "pipe", ...SpawnStdioEntry[]] = ["pipe", "pipe", "pipe"];
-  using secretDelivery = prepareSecretInputStdio(stdio, secretInput);
+  const descriptorInput = secretInput?.envName ? undefined : secretInput;
+  using secretDelivery = prepareSecretInputStdio(stdio, descriptorInput);
+  const env =
+    secretInput?.envName && credential
+      ? {
+          ...options.env,
+          [secretInput.envName]: credential.toString("utf8"),
+          // Claude keeps host-managed credentials out of native tool and MCP children.
+          CLAUDE_CODE_HOST_AUTH_ENV_VAR: secretInput.envName,
+          CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "1",
+        }
+      : options.env;
   const child = spawn(options.command, options.args, {
     argv0: options.argv0,
     cwd: options.cwd,
     detached: process.platform !== "win32",
-    env: options.env,
+    env,
     signal: options.signal,
     stdio,
     windowsHide: true,
@@ -145,7 +161,7 @@ export function createClaudeCliProcessOwner(
     spawn: (options: ClaudeCliSpawnOptions) => {
       assertCurrent();
       environment = options.env;
-      return spawnClaudeCliProcess(options, secretInput, observeStderr);
+      return spawnClaudeCliProcess(options, secretInput, credential, observeStderr);
     },
     async withDiagnostics(error: unknown): Promise<unknown> {
       const context = currentContext();
