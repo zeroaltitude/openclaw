@@ -594,6 +594,33 @@ export function findJsonSchemaShapeError(schema: JsonSchemaValue): string | unde
   return findJsonSchemaNodeError(schema, "<schema>", schema, schema, undefined);
 }
 
+/** Union keywords native tool schemas reject at the root of a tool input schema. */
+export const TOOL_INPUT_SCHEMA_TOP_LEVEL_UNION_KEYWORDS = ["allOf", "anyOf", "oneOf"] as const;
+
+/**
+ * Return an error when a tool input schema declares a union at its root.
+ *
+ * The Anthropic Messages API rejects such a tool definition outright
+ * (`tools.<n>.custom.input_schema: input_schema does not support oneOf, allOf,
+ * or anyOf at the top level`). That failure arrives as a request-wide 400 naming
+ * a tool index rather than a tool, so publish boundaries call this to name the
+ * offending schema where it is produced. Nested unions are legal and unreported.
+ */
+export function findToolInputSchemaTopLevelUnionError(
+  schema: JsonSchemaValue,
+  toolName: string,
+): string | undefined {
+  if (!isRecord(schema)) {
+    return undefined;
+  }
+  const keyword = TOOL_INPUT_SCHEMA_TOP_LEVEL_UNION_KEYWORDS.find((entry) =>
+    Object.hasOwn(schema, entry),
+  );
+  return keyword
+    ? `tool "${toolName}" input schema declares "${keyword}" at the top level; native tool schemas accept only a single object schema there`
+    : undefined;
+}
+
 function cloneDefault<T>(value: T): T {
   if (value === undefined || value === null) {
     return value;

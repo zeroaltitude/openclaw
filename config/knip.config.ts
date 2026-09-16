@@ -194,6 +194,7 @@ const repositoryScriptEntries = [
   "scripts/proof-136474-blocked-hook-registrations.ts!",
   "scripts/proof-app-server-runtime-chooser-bindings.ts!",
   "scripts/proof-136554-timeout-notification-boundaries.ts!",
+  "scripts/proof-tool-schema-top-level-union.ts!",
   "scripts/proof-w91n-followup-drain-terminal.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
