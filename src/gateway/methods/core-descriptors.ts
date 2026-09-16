@@ -679,6 +679,8 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["sessions.activitySummary.ensure", "session-activity-summary", "operator.write", "2026.9"],
   ["controlUi.sessionPullRequests.checks", "control-ui", "operator.read", "2026.9"],
   ["diagnostics.cpuProfile", "diagnostics", "operator.admin", "2026.9"],
+  // Cross-agent, cross-session TaskFlow visibility; gated in-handler like usage.cost/transcripts.*.
+  ["taskFlows.listAll", "task-flows", "operator.read", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];
 
 export type CoreGatewayHandlerFamily = Exclude<(typeof CORE_GATEWAY_METHOD_SPECS)[number][1], null>;
