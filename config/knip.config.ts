@@ -171,7 +171,8 @@ const repositoryScriptEntries = [
   "scripts/pr-lib/process-group-runner.mjs!",
   "scripts/pre-commit/filter-staged-files.mjs!",
   "scripts/print-live-docker-plugin-selection.mjs!",
-  // Maintainer runtime proof invoked manually from PR evidence.
+  // Maintainer runtime proofs invoked manually from PR evidence.
+  "scripts/proof-117074-tombstone-shared-owners.ts!",
   "scripts/proof-117734-conversation-burst-replay.ts!",
   "scripts/proof-117734-slack-gateway-isolation.ts!",
   "scripts/qa-coverage-report.ts!",
