@@ -4,6 +4,7 @@ import { isMainThread, threadId, Worker } from "node:worker_threads";
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import { traceWorkerThreadEntrypoint } from "../../infra/worker-thread-entrypoint-trace.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
@@ -41,10 +42,12 @@ function resolveSourceWorkerExecArgv(): string[] {
 
 export function createSqliteTranscriptArchiveWorker(workerData: object): Worker {
   const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionTranscriptArchive);
-  return new Worker(workerUrl, {
+  const created = new Worker(workerUrl, {
     workerData,
     execArgv: workerUrl.pathname.endsWith(".ts") ? resolveSourceWorkerExecArgv() : undefined,
   });
+  traceWorkerThreadEntrypoint(created, `session-accessor.sqlite-archive:${workerUrl}`);
+  return created;
 }
 
 type TranscriptArchiveWorkerOperation<Result> =

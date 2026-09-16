@@ -5,6 +5,7 @@ import { Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { CliSessionReseedReceipt } from "../config/sessions.js";
 import { normalizeCliSessionReseedReceipt } from "../config/sessions/cli-session-binding.js";
+import { traceWorkerThreadEntrypoint } from "../infra/worker-thread-entrypoint-trace.js";
 import {
   appendCoalescedClaudeCliToolMessage,
   createClaudeReseedImportState,
@@ -107,6 +108,7 @@ async function decodeOversizedClaudeEntry(line: string): Promise<ClaudeCliProjec
   let worker: Worker;
   try {
     worker = new Worker(OVERSIZED_ENTRY_WORKER_SOURCE, { eval: true, workerData: line });
+    traceWorkerThreadEntrypoint(worker, "cli-session-history.claude-snapshot:oversized-entry");
   } catch {
     return null;
   }

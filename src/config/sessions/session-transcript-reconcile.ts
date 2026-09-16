@@ -10,6 +10,7 @@ import { isGatewayExternallySupervised } from "../../infra/gateway-supervision.j
 import { isPathInside } from "../../infra/path-guards.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import { traceWorkerThreadEntrypoint } from "../../infra/worker-thread-entrypoint-trace.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
@@ -342,6 +343,7 @@ async function reconcilePreparedTranscriptIndexes(
     } catch (error) {
       throw toStringifiedError(error);
     }
+    traceWorkerThreadEntrypoint(worker, `session-transcript-reconcile:${databasePath}`);
 
     const leaseRelease = observeWorkerLeaseRelease(worker);
     let handlingMessage: Promise<void> | undefined;

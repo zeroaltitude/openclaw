@@ -14,6 +14,7 @@ import {
   getWorkerComputeCapacity,
 } from "./worker-task-capacity.js";
 import type { Slot, Task, WorkerTaskInput, WorkerTaskOptions } from "./worker-task-pool.types.js";
+import { traceWorkerThreadEntrypoint } from "./worker-thread-entrypoint-trace.js";
 
 export type { WorkerTaskRequestContext, WorkerTaskResponse } from "./worker-task-pool.types.js";
 
@@ -263,7 +264,9 @@ export class WorkerTaskPool<Input, Output> {
       if (slot.retiring) {
         throw new WorkerTaskError("worker creation closed during preparation", "unavailable");
       }
-      return new Worker(workerUrl, workerOptions);
+      const created = new Worker(workerUrl, workerOptions);
+      traceWorkerThreadEntrypoint(created, `worker-task-pool:${workerUrl}`);
+      return created;
     });
     slot.worker = worker;
     worker.on("message", (message: unknown) => {
