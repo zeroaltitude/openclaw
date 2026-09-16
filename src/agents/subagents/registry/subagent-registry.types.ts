@@ -254,7 +254,7 @@ export type SubagentRunRecord = {
   runTimeoutSeconds?: number;
   /** First clock-derived wait expiry observed without terminalizing the child. */
   waitExpiryObservedAt?: number;
-  /** Set after provisional notification settlement; not a visible-delivery receipt. */
+  /** Notification attempt settled; not proof of delivery or of child completion. */
   waitExpiryAnnouncedAt?: number;
   spawnMode?: SpawnSubagentMode;
   /** Monotonic ownership generation within one child session. */
@@ -347,6 +347,7 @@ export type SubagentRunReadRecord = Pick<
   | "endedReason"
   | "pauseReason"
   | "cleanupCompletedAt"
+  | "waitExpiryObservedAt"
   | "delivery"
 > & {
   execution: Pick<SubagentExecutionState, "status" | "startedAt" | "endedAt" | "outcome">;

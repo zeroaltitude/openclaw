@@ -89,10 +89,14 @@ describe("PR #136554 production registry lifecycle proof", () => {
       expect(provisional?.execution.endedAt).toBeUndefined();
       await expect(fs.stat(resourcePath)).resolves.toBeDefined();
       expect(cleanupBrowserSessionsForLifecycleEnd).not.toHaveBeenCalled();
-      expect(announcements).toContainEqual({
-        status: "timeout",
-        disposition: "still-running",
-      });
+      // The observation is persisted before the announcement grace begins.
+      // Wait for notification separately rather than treating persistence as delivery.
+      await expect
+        .poll(() => announcements, { timeout: 5_000, interval: 25 })
+        .toContainEqual({
+          status: "timeout",
+          disposition: "still-running",
+        });
 
       lifecycleHandler?.({
         runId,
