@@ -47,6 +47,9 @@ const repositoryScriptEntries = [
   "scripts/dev/computer-use-gateway-live-proof.ts!",
   "scripts/dev/computer-use-macos-live-proof.ts!",
   "scripts/dev/ios-node-e2e.ts!",
+  // Maintainer prompt proofs are invoked directly rather than imported.
+  "scripts/dev/message-tool-only-codex-app-server-proof.ts!",
+  "scripts/dev/message-tool-only-prompt-live-proof.ts!",
   // Documented real-process supervised TaskFlow failure proof.
   "scripts/dev/supervised-task-coding-proof.ts!",
   "scripts/dev/supervised-task-mutation-proof.ts!",
