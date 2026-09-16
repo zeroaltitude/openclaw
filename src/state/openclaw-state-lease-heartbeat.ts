@@ -5,6 +5,7 @@ import {
   acquireStateDatabaseHandleLease,
   retainHeldStateDatabaseCoordinator,
 } from "../infra/state-database-coordinator.js";
+import { traceWorkerThreadEntrypoint } from "../infra/worker-thread-entrypoint-trace.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   leaseHeartbeatState as state,
@@ -68,6 +69,7 @@ export function startOpenClawStateLeaseHeartbeat(
     release();
     throw error;
   }
+  traceWorkerThreadEntrypoint(worker, `state-lease-heartbeat:${params.path}`);
   let handleReleaseError: Error | undefined;
   worker.once("exit", () => {
     try {

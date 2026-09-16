@@ -48,6 +48,7 @@ import {
   type SqliteWorkerStore,
 } from "./sqlite-worker-contract.js";
 import type { SqliteWorkerStateContext } from "./sqlite-worker-state-context.js";
+import { traceWorkerThreadEntrypoint } from "./worker-thread-entrypoint-trace.js";
 
 const MAX_WORKERS = 4;
 const MAX_STORES = 64;
@@ -371,14 +372,13 @@ export class SqliteWorkerBroker {
       ensureSqliteLibrarySelected();
     }
     const url = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sqliteStore);
-    const worker = runOutsideCaller(
-      () =>
-        new Worker(url, {
-          execArgv: url.pathname.endsWith(".ts")
-            ? ["--import", import.meta.resolve("tsx/esm")]
-            : [],
-        }),
-    );
+    const worker = runOutsideCaller(() => {
+      const created = new Worker(url, {
+        execArgv: url.pathname.endsWith(".ts") ? ["--import", import.meta.resolve("tsx/esm")] : [],
+      });
+      traceWorkerThreadEntrypoint(created, `sqlite-worker-broker:${url}`);
+      return created;
+    });
     const exited = createDeferredCore();
     const slot: Slot = {
       worker,
