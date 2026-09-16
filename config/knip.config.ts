@@ -187,6 +187,7 @@ const repositoryScriptEntries = [
   "scripts/proof-117734-conversation-burst-replay.ts!",
   "scripts/proof-117734-slack-gateway-isolation.ts!",
   "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
+  "scripts/proof-136476-orphan-owner-binding.ts!",
   "scripts/proof-app-server-runtime-chooser-bindings.ts!",
   "scripts/proof-w91n-followup-drain-terminal.ts!",
   "scripts/qa-coverage-report.ts!",
