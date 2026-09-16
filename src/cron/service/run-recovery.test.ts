@@ -618,7 +618,9 @@ describe("atomic cron run recovery", () => {
     const job = makeJob("interrupted-auto-disable", startedAtMs);
     job.delivery = { mode: "announce", channel: "last" };
     job.failureAlert = { after: 10, cooldownMs: 0 };
-    job.state.consecutiveErrors = 9;
+    // Ten genuine run failures already spent the budget; the interruption adds
+    // to the raw streak but never to the job's own failure count.
+    job.state.consecutiveErrors = 10;
     await writeCronStoreSnapshot({ storePath, jobs: [job] });
     const enqueueSystemEvent = vi.fn();
     const sendCronFailureAlert = vi.fn(async () => undefined);
@@ -637,7 +639,9 @@ describe("atomic cron run recovery", () => {
     expect((await loadCronStore(storePath)).jobs[0]).toMatchObject({
       enabled: false,
       state: {
-        consecutiveErrors: 10,
+        consecutiveErrors: 11,
+        consecutiveRestartInterruptions: 1,
+        lastRunInterruptionReason: "gateway-restart",
         lastFailureNotificationDeliveryStatus: "not-requested",
         autoDisabled: { reason: "consecutive-failures", consecutiveErrors: 10 },
       },

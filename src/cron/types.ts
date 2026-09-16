@@ -449,6 +449,8 @@ type CronJobStateInput = Partial<
     | "streamSourceIdentity"
     | "runningReceiptId"
     | "runningScheduleChangeId"
+    | "lastRunInterruptionReason"
+    | "consecutiveRestartInterruptions"
   >
 >;
 

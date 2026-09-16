@@ -17,78 +17,164 @@ import * as cronSchedule from "../schedule.js";
 import type { CronJob } from "../types.js";
 import { markInterruptedStartupRun, restoreFinalizedStartupRun } from "./startup-run-repair.js";
 import { createCronServiceState } from "./state.js";
+import { applyJobResult } from "./timer-outcomes.js";
+
+function createRepairState(storePath: string, nowMs: number) {
+  return createCronServiceState({
+    storePath,
+    cronEnabled: true,
+    log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    nowMs: () => nowMs,
+    enqueueSystemEvent: vi.fn(),
+    requestHeartbeat: vi.fn(),
+    runIsolatedAgentJob: vi.fn(),
+  });
+}
+
+function createRecurringJob(id: string, runningAtMs: number, state: CronJob["state"]): CronJob {
+  return {
+    id,
+    name: id,
+    enabled: true,
+    createdAtMs: runningAtMs - 60_000,
+    updatedAtMs: runningAtMs,
+    schedule: { kind: "every", everyMs: 60_000, anchorMs: runningAtMs - 60_000 },
+    sessionTarget: "main",
+    wakeMode: "next-heartbeat",
+    payload: { kind: "systemEvent", text: "do not replay" },
+    state,
+  };
+}
 
 describe("startup run repair auto-disable", () => {
-  it("records the tenth restart-interrupted recurring failure before notification", () => {
+  it("never spends the run-failure budget on restart interruptions alone", () => {
     const runningAtMs = Date.parse("2026-08-01T16:00:00.000Z");
     const nowMs = runningAtMs + 30_000;
-    const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
-    const state = createCronServiceState({
-      storePath: "/tmp/startup-run-repair-auto-disable.json",
-      cronEnabled: true,
-      log: {
-        debug: vi.fn(),
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-      },
-      nowMs: () => nowMs,
-      enqueueSystemEvent,
-      requestHeartbeat,
-      runIsolatedAgentJob: vi.fn(),
+    const state = createRepairState("/tmp/startup-run-repair-restart-only.json", nowMs);
+    const job = createRecurringJob("restart-only", runningAtMs, {
+      nextRunAtMs: runningAtMs,
+      runningAtMs,
     });
-    const job: CronJob = {
-      id: "restart-auto-disable",
-      name: "restart auto-disable",
-      enabled: true,
-      createdAtMs: runningAtMs - 60_000,
-      updatedAtMs: runningAtMs,
-      schedule: { kind: "every", everyMs: 60_000, anchorMs: runningAtMs - 60_000 },
-      sessionTarget: "main",
-      wakeMode: "next-heartbeat",
-      payload: { kind: "systemEvent", text: "do not replay" },
-      state: {
-        nextRunAtMs: runningAtMs,
-        runningAtMs,
-        consecutiveErrors: 9,
-        lastErrorReason: "timeout",
-        deliverySuppressionReason: "silent",
-      },
-    };
     const deferredNotifications: Array<() => void> = [];
 
-    markInterruptedStartupRun({
+    // Well past MAX_CONSECUTIVE_RUN_FAILURES: a healthy schedule that keeps
+    // getting caught mid-run by gateway restarts must survive all of them.
+    for (let restart = 0; restart < 12; restart += 1) {
+      job.state.runningAtMs = runningAtMs;
+      markInterruptedStartupRun({ state, job, runningAtMs, nowMs, deferredNotifications });
+    }
+
+    expect(job.enabled).toBe(true);
+    expect(job.state.autoDisabled).toBeUndefined();
+    expect(job.state.consecutiveErrors).toBe(12);
+    expect(job.state.consecutiveRestartInterruptions).toBe(12);
+    expect(job.state.lastRunInterruptionReason).toBe("gateway-restart");
+    expect(job.state.lastError).toBe("cron: job interrupted by gateway restart");
+    expect(deferredNotifications).toEqual([]);
+  });
+
+  it("still auto-disables on the tenth genuine failure when restarts inflate the streak", () => {
+    const runningAtMs = Date.parse("2026-08-01T16:00:00.000Z");
+    const nowMs = runningAtMs + 30_000;
+    const state = createRepairState("/tmp/startup-run-repair-mixed-streak.json", nowMs);
+    // Nine genuine run failures already recorded, none of them infrastructure.
+    const job = createRecurringJob("mixed-streak", runningAtMs, {
+      nextRunAtMs: runningAtMs,
+      runningAtMs,
+      consecutiveErrors: 9,
+      lastErrorReason: "timeout",
+      deliverySuppressionReason: "silent",
+    });
+    const deferredNotifications: Array<() => void> = [];
+
+    markInterruptedStartupRun({ state, job, runningAtMs, nowMs, deferredNotifications });
+
+    // The restart raised consecutiveErrors to ten, but only nine failures are
+    // the job's own, so the budget is untouched.
+    expect(job.enabled).toBe(true);
+    expect(job.state.autoDisabled).toBeUndefined();
+    expect(job.state.consecutiveErrors).toBe(10);
+    expect(job.state.consecutiveRestartInterruptions).toBe(1);
+    expect(job.state.lastErrorReason).toBeUndefined();
+    expect(job.state.lastRunInterruptionReason).toBe("gateway-restart");
+
+    const startedAt = nowMs + 60_000;
+    applyJobResult(
       state,
       job,
-      runningAtMs,
-      nowMs,
-      deferredNotifications,
-    });
-
-    expect(job).toMatchObject({
-      enabled: false,
-      state: {
-        consecutiveErrors: 10,
-        autoDisabled: {
-          reason: "consecutive-failures",
-          atMs: nowMs,
-          consecutiveErrors: 10,
-        },
+      {
+        status: "error",
+        error: "provider refused the request",
+        executionStarted: true,
+        startedAt,
+        endedAt: startedAt + 500,
       },
-    });
-    expect(enqueueSystemEvent).not.toHaveBeenCalled();
-    expect(job.state.deliverySuppressionReason).toBeUndefined();
-    expect(requestHeartbeat).not.toHaveBeenCalled();
-    expect(deferredNotifications).toHaveLength(1);
-
-    deferredNotifications[0]?.();
-    expect(enqueueSystemEvent).toHaveBeenCalledOnce();
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).toContain(
-      "Check automation history for details.",
+      { deferredNotifications },
     );
-    expect(enqueueSystemEvent.mock.calls[0]?.[0]).not.toContain("timeout");
-    expect(requestHeartbeat).toHaveBeenCalledOnce();
+
+    expect(job.state.consecutiveErrors).toBe(11);
+    expect(job.state.consecutiveRestartInterruptions).toBe(1);
+    expect(job.state.lastRunInterruptionReason).toBeUndefined();
+    expect(job.enabled).toBe(false);
+    expect(job.state.autoDisabled).toMatchObject({
+      reason: "consecutive-failures",
+      consecutiveErrors: 10,
+    });
+  });
+
+  it("auto-disables an uninterrupted job on its tenth genuine failure", () => {
+    const runningAtMs = Date.parse("2026-08-01T16:00:00.000Z");
+    const startedAt = runningAtMs + 60_000;
+    const state = createRepairState("/tmp/startup-run-repair-genuine-streak.json", startedAt + 500);
+    const job = createRecurringJob("genuine-streak", runningAtMs, {
+      nextRunAtMs: startedAt,
+      runningAtMs: startedAt,
+      consecutiveErrors: 9,
+    });
+    const deferredNotifications: Array<() => void> = [];
+
+    applyJobResult(
+      state,
+      job,
+      {
+        status: "error",
+        error: "provider refused the request",
+        executionStarted: true,
+        startedAt,
+        endedAt: startedAt + 500,
+      },
+      { deferredNotifications },
+    );
+
+    expect(job.state.consecutiveErrors).toBe(10);
+    expect(job.enabled).toBe(false);
+    expect(job.state.autoDisabled).toMatchObject({
+      reason: "consecutive-failures",
+      consecutiveErrors: 10,
+    });
+  });
+
+  it("clears the restart-interruption streak once a run reports its own outcome", () => {
+    const runningAtMs = Date.parse("2026-08-01T16:00:00.000Z");
+    const nowMs = runningAtMs + 30_000;
+    const state = createRepairState("/tmp/startup-run-repair-recovery.json", nowMs);
+    const job = createRecurringJob("restart-recovery", runningAtMs, {
+      nextRunAtMs: runningAtMs,
+      runningAtMs,
+      consecutiveErrors: 4,
+      consecutiveRestartInterruptions: 4,
+    });
+
+    const startedAt = nowMs + 60_000;
+    applyJobResult(state, job, {
+      status: "ok",
+      startedAt,
+      endedAt: startedAt + 500,
+    });
+
+    expect(job.state.consecutiveErrors).toBe(0);
+    expect(job.state.consecutiveRestartInterruptions).toBe(0);
+    expect(job.state.lastRunInterruptionReason).toBeUndefined();
   });
 
   it.each([
@@ -173,7 +259,9 @@ describe("startup run repair auto-disable", () => {
         ...(testCase.creatorSessionKey ? { sessionKey: testCase.creatorSessionKey } : {}),
         wakeMode: "next-heartbeat",
         payload: { kind: "agentTurn", message: "check important report" },
-        state: { runningAtMs: nowMs, consecutiveErrors: 9 },
+        // Ten genuine run failures are already on the streak, so the budget is
+        // spent before this restart; the restart only re-evaluates it.
+        state: { runningAtMs: nowMs, consecutiveErrors: 10 },
       };
       const deferredNotifications: Array<() => void> = [];
 
