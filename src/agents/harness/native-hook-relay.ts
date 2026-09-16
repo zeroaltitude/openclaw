@@ -21,6 +21,10 @@ import {
   isRetryableNativeHookRelayBridgeLookupError,
 } from "./native-hook-relay-bridge.js";
 import {
+  awaitBoundedNativeHookRelayChildAdmission,
+  resolveNativeHookRelayChildAdmissionTimeoutMs,
+} from "./native-hook-relay-child-admission.js";
+import {
   getNativeHookRelayProviderAdapter,
   normalizeNativeHookInvocation,
   normalizeNativeHookToolName,
@@ -43,6 +47,7 @@ import {
   MAX_NATIVE_HOOK_RELAY_INVOCATIONS,
   nativeHookRelayState,
 } from "./native-hook-relay-state.js";
+import { projectNativeHookRelayPreToolUseFailure } from "./native-hook-relay-transport-failure.js";
 import type {
   ActiveNativeHookRelayRegistration,
   ActiveNativeHookRelayRegistrationHandle,
@@ -227,6 +232,9 @@ function registerNativeHookRelayInternal(
     setRelayLifetime(registration, {
       foregroundOpen: true,
       foregroundToken: Symbol("native-hook-relay-foreground"),
+      childAdmissionTimeoutMs: resolveNativeHookRelayChildAdmissionTimeoutMs(
+        params.command?.timeoutMs,
+      ),
       policyReady,
       ...(retained ? { retained } : {}),
       ...(retention ? { retention } : {}),
@@ -448,11 +456,25 @@ async function resolveNativeHookRelayInvocationBinding(
         throw new Error("native hook relay retained invocation not allowed");
       }
     };
-    if (lifetime.foregroundOpen && retention.awaitForegroundAdmission) {
-      assertAdmission = await racePromiseWithAbortSignal(
-        retention.awaitForegroundAdmission(claim, signal),
-        signal,
-      );
+    const awaitForegroundAdmission = retention.awaitForegroundAdmission;
+    if (lifetime.foregroundOpen && awaitForegroundAdmission) {
+      const admissionStartedAtMs = Date.now();
+      try {
+        assertAdmission = await awaitBoundedNativeHookRelayChildAdmission({
+          admit: (admissionSignal) => awaitForegroundAdmission(claim, admissionSignal),
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          ...(signal ? { signal } : {}),
+        });
+      } catch (error) {
+        log.debug("native hook relay child admission failed", {
+          relayId: registration.relayId,
+          childThreadId: claim,
+          admissionWaitMs: Date.now() - admissionStartedAtMs,
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          error,
+        });
+        throw error;
+      }
       if (!assertAdmission) {
         throw new Error("native hook relay retained invocation not allowed");
       }
@@ -578,50 +600,6 @@ export async function invokeNativeHookRelay(
     });
   }
   return response;
-}
-
-function projectNativeHookRelayPreToolUseFailure(
-  registration: ActiveNativeHookRelayRegistration,
-  failure: Parameters<NonNullable<NativeHookRelayRegistration["onPreToolUseFailure"]>>[0],
-): void {
-  const callback = registration.onPreToolUseFailure;
-  if (!callback || registration.preToolUseFailureProjections.has(failure.toolCallId)) {
-    return;
-  }
-  const record = {
-    promise: Promise.resolve().then(() => callback(failure)),
-    settled: false,
-  };
-  registration.preToolUseFailureProjections.set(failure.toolCallId, record);
-  void record.promise.then(
-    () => {
-      record.settled = true;
-    },
-    (error: unknown) => {
-      record.settled = true;
-      if (registration.preToolUseFailureProjections.get(failure.toolCallId) === record) {
-        registration.preToolUseFailureProjections.delete(failure.toolCallId);
-      }
-      log.debug("native pre-tool failure projection failed", {
-        error,
-        relayId: registration.relayId,
-        toolCallId: failure.toolCallId,
-      });
-    },
-  );
-  if (registration.preToolUseFailureProjections.size > MAX_NATIVE_HOOK_RELAY_INVOCATIONS) {
-    let oldestToolCallId: string | undefined;
-    for (const [toolCallId, candidate] of registration.preToolUseFailureProjections) {
-      oldestToolCallId ??= toolCallId;
-      if (candidate.settled) {
-        registration.preToolUseFailureProjections.delete(toolCallId);
-        return;
-      }
-    }
-    if (oldestToolCallId) {
-      registration.preToolUseFailureProjections.delete(oldestToolCallId);
-    }
-  }
 }
 
 export function hasNativeHookRelayInvocation(params: {

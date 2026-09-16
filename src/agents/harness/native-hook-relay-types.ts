@@ -306,6 +306,7 @@ export type NativeHookRelayRetention = Readonly<{
 export type RelayLifetime = {
   foregroundOpen: boolean;
   foregroundToken: symbol;
+  childAdmissionTimeoutMs: number;
   policyReady: Promise<void>;
   retained?: ReturnType<typeof retainBeforeToolCallForNativeHookRelay>;
   retention?: NativeHookRelayRetention;

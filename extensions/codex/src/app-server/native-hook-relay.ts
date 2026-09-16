@@ -46,6 +46,7 @@ const CODEX_NATIVE_HOOK_RELAY_DEFAULT_TIMEOUT_SEC = 10;
 const CODEX_NATIVE_HOOK_RELAY_UNREGISTER_GRACE_MS = 10_000;
 const CODEX_NATIVE_HOOK_RELAY_UNREGISTER_EXTRA_GRACE_MS = 5_000;
 const MAX_PENDING_DIRECT_CHILD_ADMISSIONS = 32;
+const MAX_RETAINED_DIRECT_CHILD_ADMISSION_REQUESTS = 32;
 const nativeHookPolicyByClient = new WeakMap<object, Promise<void>>();
 
 const CODEX_HOOK_MATCHER_NAMES_BY_TOOL_ID: Readonly<Record<string, readonly string[]>> = {
@@ -227,6 +228,15 @@ export function createCodexNativeHookRelay(params: {
       waiters: number;
     }
   >();
+  // Retention record, deliberately separate from the live-waiter map above: a
+  // child's wait ends with its own hook invocation, but the child stays alive
+  // and unclaimed after that, so only this set can answer "is a claim still
+  // expected?" across foreground close. One abandoned request is not that
+  // answer, which is why a released waiter does not clear this; the subagent
+  // monitor's terminal-turn reject and the arriving claim are, and registration
+  // teardown clears the rest. The relay TTL bounds a child that reaches none of
+  // them.
+  const directChildAdmissionRequests = new Set<string>();
   let foregroundClosed = false;
   let successfulYieldRetentionAuthorized = false;
   const assertClaim = (threadId: string, claim: symbol) => () =>
@@ -276,9 +286,13 @@ export function createCodexNativeHookRelay(params: {
     retention: {
       readClaim: readCodexNativeChildThreadId,
       // A child claim identifies the subject; successful parent finalization
-      // separately authorizes its lifetime beyond foreground closure.
+      // separately authorizes its lifetime beyond foreground closure. A child
+      // that asked for admission is alive and still awaiting its claim, so
+      // unregistering here would convert one lost admission race into a
+      // permanent session-wide deny for the rest of that child's run.
       shouldRetainAfterForegroundClose: () =>
-        successfulYieldRetentionAuthorized && directChildClaims.size > 0,
+        successfulYieldRetentionAuthorized &&
+        (directChildClaims.size > 0 || directChildAdmissionRequests.size > 0),
       allowPreToolUse: (childThreadId) => directChildClaims.has(childThreadId),
       awaitForegroundAdmission: (childThreadId, signal) => {
         if (foregroundClosed) {
@@ -297,6 +311,13 @@ export function createCodexNativeHookRelay(params: {
           }
           pending = { ...createDeferred<symbol>(), waiters: 0 };
           pendingDirectChildAdmissions.set(childThreadId, pending);
+        }
+        // Retention is recorded only while there is room for it. Overflow costs
+        // the child its relay at foreground close, which is the behavior before
+        // retention existed — cheaper than denying an admission that can still
+        // be claimed inside the foreground turn.
+        if (directChildAdmissionRequests.size < MAX_RETAINED_DIRECT_CHILD_ADMISSION_REQUESTS) {
+          directChildAdmissionRequests.add(childThreadId);
         }
         const admission = pending;
         admission.waiters++;
@@ -317,7 +338,8 @@ export function createCodexNativeHookRelay(params: {
               signal?.removeEventListener("abort", onAbort);
             }
             // Duplicate callbacks share admission, but each owns its wait. A
-            // disconnected last waiter releases capacity without revoking a child.
+            // released last waiter drops the wait without revoking the child:
+            // directChildAdmissionRequests still expects its claim.
             admission.waiters--;
             if (
               admission.waiters === 0 &&
@@ -329,6 +351,7 @@ export function createCodexNativeHookRelay(params: {
       },
       onDispose: () => {
         foregroundClosed = true;
+        directChildAdmissionRequests.clear();
         rejectPendingAdmissions("native hook relay registration closed");
       },
     },
@@ -342,7 +365,10 @@ export function createCodexNativeHookRelay(params: {
   });
   const unregister = () => {
     foregroundClosed = true;
-    rejectPendingAdmissions("native hook relay foreground closed");
+    // Do not clear admission requests or reject pending admissions here:
+    // shouldRetainAfterForegroundClose is evaluated inside relay.unregister()
+    // and must still see them. onDispose clears and rejects them if the
+    // registration is actually torn down.
     relay.unregister();
   };
   return {
@@ -354,7 +380,13 @@ export function createCodexNativeHookRelay(params: {
     hasClaimedDirectChild: () => directChildClaims.size > 0,
     rejectPendingDirectChild: (threadIdInput, reason) => {
       const threadId = threadIdInput.trim();
-      const pending = threadId ? pendingDirectChildAdmissions.get(threadId) : undefined;
+      if (!threadId) {
+        return;
+      }
+      // The monitor calls this once the child's turn is terminal, which is the
+      // release for a request whose wait already expired and left nothing here.
+      directChildAdmissionRequests.delete(threadId);
+      const pending = pendingDirectChildAdmissions.get(threadId);
       if (!pending) {
         return;
       }
@@ -372,6 +404,8 @@ export function createCodexNativeHookRelay(params: {
       }
       const claim = Symbol(threadId);
       directChildClaims.set(threadId, claim);
+      // The claim this request was waiting for: retention is the claim's now.
+      directChildAdmissionRequests.delete(threadId);
       const pending = pendingDirectChildAdmissions.get(threadId);
       pendingDirectChildAdmissions.delete(threadId);
       pending?.resolve(claim);
@@ -385,6 +419,10 @@ export function createCodexNativeHookRelay(params: {
           return;
         }
         directChildClaims.delete(threadId);
+        // No pending-admission check here on purpose: relay.unregister()
+        // re-evaluates shouldRetainAfterForegroundClose, so a sibling pending
+        // admission already keeps the relay alive, and short-circuiting would
+        // also retain it when retention was never authorized.
         if (foregroundClosed && directChildClaims.size === 0) {
           relay.unregister();
           nativeHookRelayUnregisterQueue.track(relay.drain());
