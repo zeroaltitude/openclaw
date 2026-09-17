@@ -8,6 +8,7 @@ import { createWorkerSessionPlacementStore } from "../../../gateway/worker-envir
  * history and about who still needs to be told, reads as one thing.
  */
 import { getAgentRunContext } from "../../../infra/agent-run-registry.js";
+import { formatDurationCompact } from "../../../infra/format-time/format-duration.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import {
   formatSubagentOrphanErrorMessage,
@@ -26,6 +27,14 @@ import {
 
 const LOST_CONTEXT_ERROR = "subagent run lost active execution context";
 const ORPHAN_COMPLETION_SOURCE = "sweeper-orphaned-by-gateway-death";
+// Without a host reboot, an unconfirmed child stop is deferred every sweep
+// forever — correct while evidence could still arrive, but a run that has
+// carried that ambiguity this long is not waiting on evidence anymore; it is
+// stuck. This is the one place ambiguity is allowed to expire on age alone,
+// deliberately generous (a legitimate long-running task must never lose to
+// this clock) and only reached after the real-time liveness recheck below
+// still finds nothing claiming the child.
+export const MAX_UNCONFIRMED_ORPHAN_AGE_MS = 24 * 60 * 60_000;
 
 /**
  * Settles one stale active run through the canonical completion owner.
@@ -89,7 +98,18 @@ export async function reconcileStaleActiveSubagentRun(params: {
   // A missing process-local context is not child-stop evidence. Only an
   // authoritative host reboot (not a Gateway-only restart or inferred host
   // identity) can promote an unconfirmed wait without child terminal metadata.
-  if (isSubagentChildStopUnconfirmed(entry) && attribution?.cause !== "host_reboot") {
+  // Past MAX_UNCONFIRMED_ORPHAN_AGE_MS, stop deferring on that alone and fall
+  // through to the real-time liveness recheck below instead — evidence of a
+  // still-live child still wins there regardless of how long this has aged.
+  const unconfirmedSinceMs =
+    entry.waitExpiryObservedAt ?? resolveSubagentRunLastActivityMs(entry) ?? runStartedAtMs;
+  const unconfirmedForMs = now - unconfirmedSinceMs;
+  const unconfirmedAgedOut = unconfirmedForMs >= MAX_UNCONFIRMED_ORPHAN_AGE_MS;
+  if (
+    isSubagentChildStopUnconfirmed(entry) &&
+    attribution?.cause !== "host_reboot" &&
+    !unconfirmedAgedOut
+  ) {
     return;
   }
   const canRecoverInterrupted = isSubagentChildStopUnconfirmed(entry)
@@ -115,6 +135,12 @@ export async function reconcileStaleActiveSubagentRun(params: {
   const attributedError = attribution ? formatSubagentOrphanErrorMessage(attribution) : undefined;
 
   const orphanReason = resolveSubagentRunOrphanReason({ entry });
+  // Reached only when there was never a host-reboot attribution to explain the
+  // gap: the ceiling expired before any attribution did. Name that plainly so
+  // it reads as "we gave up waiting," not as a confirmed death.
+  const agedOutError = unconfirmedAgedOut
+    ? `subagent run's child stop could not be confirmed after ${formatDurationCompact(unconfirmedForMs) ?? "under 1s"}; treating as orphaned to avoid an indefinite stuck state`
+    : undefined;
   // Main now requires canonical task settlement for every orphan; missing
   // session metadata no longer permits direct row or attachment pruning.
 
@@ -128,6 +154,7 @@ export async function reconcileStaleActiveSubagentRun(params: {
         status: "error",
         error:
           attributedError ??
+          agedOutError ??
           (orphanReason ? `subagent run orphaned: ${orphanReason}` : LOST_CONTEXT_ERROR),
       },
       reason: SUBAGENT_ENDED_REASON_ERROR,
