@@ -28,7 +28,9 @@ import {
 } from "../sessions/agent-harness-session-key.js";
 import {
   registerMcpLoopbackClientGrantRevocationListener,
+  resolveMcpLoopbackClientGrant,
   revokeMcpLoopbackClientGrantsForRuntime,
+  waitForMcpLoopbackClientGrantNativeToolAllowlist,
 } from "./mcp-grant-store.js";
 import { handleMcpJsonRpc } from "./mcp-http.handlers.js";
 import {
@@ -47,6 +49,7 @@ import { jsonRpcError, type JsonRpcRequest } from "./mcp-http.protocol.js";
 import {
   resolveMcpCliCaptureKey,
   resolveMcpHttpBodyTimeoutMs,
+  resolveMcpNativeToolAllowlistWaitTimeoutMs,
   resolveMcpRequestContext,
   validateMcpLoopbackRequest,
 } from "./mcp-http.request.js";
@@ -216,15 +219,15 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
           });
         });
         markMcpLoopbackRequestClassified(cliRequestCaptureHandle);
-        const { boundGrantToken, boundClientGrant } = auth;
+        const { boundGrantToken } = auth;
+        let boundClientGrant = auth.boundClientGrant;
         if (boundClientGrant && !boundClientGrant.isCurrent()) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "unauthorized" }));
           return;
         }
         const cfg = getRuntimeConfig();
-        const requestContext = resolveMcpRequestContext(req, cfg, auth);
-        const authorizeToolCall = boundClientGrant?.isCurrent;
+        let requestContext = resolveMcpRequestContext(req, cfg, auth);
         const harnessEntry = isAgentHarnessSessionKey(requestContext.sessionKey)
           ? resolveSessionEntryAccessTarget({ cfg, sessionKey: requestContext.sessionKey }).entry
           : undefined;
@@ -252,6 +255,55 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
           res.end(payload);
           return;
         }
+        // A batched `tools/call` can arrive while a native CLI backend's tool
+        // authority is still mid-handshake (nativeCronCreatorToolAllowlist ===
+        // null): the gateway genuinely cannot know the real allowlist yet, so
+        // this is not a bug to route around by guessing. But rejecting it
+        // outright forces every caller to notice and retry by hand, which an
+        // automated caller (heartbeat, courier) silently never does. Wait,
+        // bounded, before resolving tool scope below — scopedTools is built
+        // from requestContext, so waiting first (rather than only at the
+        // per-message gate later in this handler) ensures both the tool
+        // schema and the gate see the same, live value instead of the null
+        // snapshot frozen at auth time. Only requests that actually carry a
+        // tools/call pay this cost; tools/list keeps working immediately.
+        if (
+          boundGrantToken &&
+          boundClientGrant &&
+          requestContext.nativeCronCreatorToolAllowlist === null &&
+          messages.some((message) => isJsonRpcRequest(message) && message.method === "tools/call")
+        ) {
+          await waitForMcpLoopbackClientGrantNativeToolAllowlist({
+            token: boundGrantToken,
+            timeoutMs: resolveMcpNativeToolAllowlistWaitTimeoutMs(),
+          });
+          // Re-resolve rather than trust anything captured before the wait
+          // began. This matters for two separate reasons: (1) the allowlist
+          // itself may have changed, and (2) waiting is itself what makes a
+          // capture landing (and therefore replacing the grant row) likely
+          // to happen mid-request — and this codebase already treats any
+          // grant-row replacement observed after an async gap as making an
+          // earlier-resolved `isCurrent` stale ("fencing even same-reference
+          // reuse", see isMcpLoopbackClientGrantCurrent). Re-resolving here
+          // picks up that same fresh row — a live `isCurrent` bound to it,
+          // and its live (possibly still-null, if the wait timed out)
+          // allowlist — instead of the wait's own success getting rejected
+          // moments later by the pre-existing liveness re-check below.
+          const refreshedGrant = resolveMcpLoopbackClientGrant({
+            token: boundGrantToken,
+            runtimeOwnerToken: ownerToken,
+            captureKey: boundClientGrant.captureKey,
+          });
+          if (!refreshedGrant) {
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          boundClientGrant = refreshedGrant;
+          requestContext = refreshedGrant.context;
+        }
+        const authorizeToolCall = boundClientGrant?.isCurrent;
+
         const yieldContext = resolveMcpLoopbackYieldContext(cliRequestCaptureHandle);
         // Tools capture their creator at construction, not the later HTTP execution scope.
         const scopedTools = await withAgentQuestionAnswerAuthority(
