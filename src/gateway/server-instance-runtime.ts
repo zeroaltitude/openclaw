@@ -12,6 +12,15 @@ import type {
 } from "../infra/approval-gateway-runtime.types.js";
 import { createApprovalNativeRouteCoordinator } from "../infra/approval-native-route-coordinator.js";
 import type { ChannelApprovalKind } from "../infra/approval-types.js";
+import { createBackgroundActivityIndicator } from "../infra/background-activity-indicator.js";
+import {
+  isBackgroundActivityTypingEnabled,
+  listArmedCronWakeSessionKeys,
+  listArmedSubagentWaitSessionKeys,
+  listRunningTaskFlowSessionKeys,
+  resolveBackgroundActivitySessionDelivery,
+  resolveHeartbeatTypingIntervalSeconds,
+} from "../infra/background-activity-sources.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { createInternalAgentTurnFacade } from "./agent-turn/internal-facade.js";
 import type { InternalAgentTurnPrincipalOptions } from "./agent-turn/internal-facade.types.js";
@@ -73,6 +82,39 @@ export function createGatewayInstanceRuntime(
       (await loadRecoveryTypingAdapter()).getLoadedChannelPlugin(channel)?.heartbeat,
     onError: () => options.logError?.("recovery typing unavailable; final delivery continues"),
   });
+  // Second, independent typing-style signal for background work that
+  // continues *after* a turn ends (running TaskFlow / armed subagent wait /
+  // armed cron wake) -- see src/infra/background-activity-indicator.ts for
+  // why this never touches the turn-bound TypingController.
+  const backgroundActivity = createBackgroundActivityIndicator({
+    isAvailable: () => !closed && options.isDispatchAvailable(),
+    sources: {
+      listRunningTaskFlowSessionKeys,
+      listArmedSubagentWaitSessionKeys,
+      listArmedCronWakeSessionKeys: () =>
+        listArmedCronWakeSessionKeys({
+          cron: options.getContext().cron,
+          cfg: options.getContext().getRuntimeConfig(),
+        }),
+    },
+    target: {
+      getConfig: () => options.getContext().getRuntimeConfig(),
+      resolveDelivery: (sessionKey) =>
+        resolveBackgroundActivitySessionDelivery(
+          sessionKey,
+          options.getContext().getRuntimeConfig(),
+        ),
+      resolveChannelPlugin: async (channel) =>
+        (await loadRecoveryTypingAdapter()).getLoadedChannelPlugin(channel),
+      isTypingEnabled: (sessionKey) =>
+        isBackgroundActivityTypingEnabled(sessionKey, options.getContext().getRuntimeConfig()),
+      typingIntervalSeconds: () =>
+        resolveHeartbeatTypingIntervalSeconds(options.getContext().getRuntimeConfig()),
+    },
+    onError: () =>
+      options.logError?.("background activity indicator unavailable; no operator-visible effect"),
+  });
+  backgroundActivity.start();
 
   const assertDispatchAvailable = (method: string) => {
     if (closed || !options.isDispatchAvailable()) {
@@ -359,6 +401,7 @@ export function createGatewayInstanceRuntime(
     close: () => {
       closed = true;
       recoveryTyping.close();
+      backgroundActivity.stop();
       releaseRecoveryRuntime();
       approvalSubscribers.clear();
       routeCoordinator.close();
