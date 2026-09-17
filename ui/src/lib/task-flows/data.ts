@@ -3,7 +3,9 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString as optionalString } from "@openclaw/normalization-core/string-coerce";
 import { t } from "../../i18n/index.ts";
 
-export const TASK_FLOW_STATUSES = [
+// Mirrors TASK_FLOW_STATUSES in src/tasks/task-flow-registry.types.ts; the UI cannot import
+// core directly, so this list is kept in sync by hand.
+const TASK_FLOW_STATUSES = [
   "queued",
   "running",
   "waiting",
@@ -16,6 +18,8 @@ export const TASK_FLOW_STATUSES = [
 export type TaskFlowStatus = (typeof TASK_FLOW_STATUSES)[number];
 
 function isTaskFlowStatus(value: unknown): value is TaskFlowStatus {
+  // Widening the literal tuple only loosens the element type so `includes` takes any string.
+  // SAFETY: a true result still proves `value` is one of TASK_FLOW_STATUSES.
   return typeof value === "string" && (TASK_FLOW_STATUSES as readonly string[]).includes(value);
 }
 
@@ -90,6 +94,9 @@ function normalizeTaskFlowListAllEntry(value: unknown): TaskFlowListAllEntry | n
     ...(typeof value.endedAt === "number" ? { endedAt: value.endedAt } : {}),
     ...(value.wait !== undefined ? { wait: value.wait } : {}),
     ...(typeof value.waitingForMs === "number" ? { waitingForMs: value.waitingForMs } : {}),
+    // Every required field is narrowed by the guard above, and each optional field is
+    // spread in only when its own type check passes.
+    // SAFETY: the assertion only discards `optionalString`'s `| undefined` on present keys.
   } as TaskFlowListAllEntry;
 }
 

@@ -116,8 +116,9 @@ describe("taskFlows.listAll cross-agent visibility", () => {
       const [ok, payload] = await request(cfg, caller);
       expect(ok).toBe(true);
       const flows = (payload as { flows: Array<Record<string, unknown>> }).flows;
-      expect(flows.map((flow) => flow.flowId).toSorted()).toEqual(
-        [opsFlow!.flowId, mainFlow!.flowId].toSorted(),
+      const byFlowId = (left: string, right: string) => left.localeCompare(right);
+      expect(flows.map((flow) => String(flow.flowId)).toSorted(byFlowId)).toEqual(
+        [opsFlow!.flowId, mainFlow!.flowId].toSorted(byFlowId),
       );
       const ops = flows.find((flow) => flow.flowId === opsFlow!.flowId)!;
       expect(ops.agentId).toBe("ops");
