@@ -164,7 +164,7 @@ async function main(): Promise<void> {
     rolesConfig("view"),
     callerClient(viewerProfile.id, ["operator.read"]),
   );
-  check("authorized caller is allowed", allowed.ok === true, allowed.error);
+  check("authorized caller is allowed", allowed.ok, allowed.error);
   const listedFlows = (allowed.payload as { flows?: Array<Record<string, unknown>> } | undefined)
     ?.flows;
   check("payload carries a flows array", Array.isArray(listedFlows));
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
     rolesConfig("none"),
     callerClient(deniedProfile.id, ["operator.read"]),
   );
-  check("capped caller is refused", denied.ok === false);
+  check("capped caller is refused", !denied.ok);
   check("refusal uses FORBIDDEN", denied.error?.code === "FORBIDDEN", denied.error);
   check("refusal leaks no flow payload", denied.payload === undefined, denied.payload);
 
@@ -243,7 +243,7 @@ async function main(): Promise<void> {
     rolesConfig("none"),
     callerClient(adminProfile.id, ["operator.admin"]),
   );
-  check("admin caller is allowed", admin.ok === true, admin.error);
+  check("admin caller is allowed", admin.ok, admin.error);
   const adminIds = (
     (admin.payload as { flows?: Array<Record<string, unknown>> } | undefined)?.flows ?? []
   ).map((flow) => String(flow.flowId));
@@ -251,7 +251,7 @@ async function main(): Promise<void> {
 
   console.log("scenario 5: dispatcher rejects a caller lacking operator.read");
   const unscoped = await listAll({}, callerClient(undefined, ["operator.questions"]));
-  check("unscoped caller is rejected", unscoped.ok === false);
+  check("unscoped caller is rejected", !unscoped.ok);
   check("rejection leaks no flow payload", unscoped.payload === undefined, unscoped.payload);
 }
 
