@@ -1,0 +1,235 @@
+/**
+ * Background activity indicator: a periodic, session-scoped signal for
+ * genuine background work that continues *after* a turn has ended -- a
+ * TaskFlow/Lobster pipeline still running, a subagent dispatch the parent
+ * is genuinely still waiting on, or an automation/cron wake that is armed
+ * and will fire.
+ *
+ * This is deliberately independent of the turn-bound `TypingController`
+ * (../auto-reply/reply/typing.ts). That controller seals itself once a
+ * turn's run and dispatch both settle, specifically so late/stray events
+ * after a finished turn cannot restart it forever -- correct behavior for
+ * "this turn is over", but it leaves no signal at all for legitimate work
+ * that outlives the turn. This module is that second signal. It reuses the
+ * same reusable channel typing primitive (`createTypingCallbacks` via
+ * `createHeartbeatTypingCallbacks`) but always through a *fresh* instance
+ * per activation, never the turn-bound controller's instance, so the two
+ * can never observe or fight each other: each session key here owns its own
+ * independent start/stop lifecycle, keyed apart from any turn-bound state.
+ */
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { DeliveryContext } from "../utils/delivery-context.types.js";
+import { createHeartbeatTypingCallbacks } from "./heartbeat-typing.js";
+
+/** Poll cadence for re-evaluating which sessions still have armed background work.
+ * Deliberately looser than the ~3-6s active-typing keepalive cadence
+ * (createTypingKeepaliveLoop's default / DEFAULT_HEARTBEAT_TYPING_INTERVAL_SECONDS):
+ * this indicator answers "is anything still happening at all", not "render every
+ * keystroke", so a per-session indicator can lag reality by up to one interval
+ * without materially misleading the operator. */
+export const DEFAULT_BACKGROUND_ACTIVITY_POLL_MS = 20_000;
+
+export type BackgroundActivitySources = {
+  /** Session (owner) keys with a currently-running TaskFlow. */
+  listRunningTaskFlowSessionKeys: () => readonly string[] | Promise<readonly string[]>;
+  /** Session (requester) keys with a live subagent run their parent is genuinely awaiting. */
+  listArmedSubagentWaitSessionKeys: () => readonly string[] | Promise<readonly string[]>;
+  /** Session keys bound to an enabled automation/cron job with a pending scheduled fire. */
+  listArmedCronWakeSessionKeys: () => readonly string[] | Promise<readonly string[]>;
+};
+
+export type BackgroundActivityChannelTarget = {
+  getConfig: () => OpenClawConfig;
+  /** Resolve a session's current outbound delivery target, if it is routable at all. */
+  resolveDelivery: (sessionKey: string) => DeliveryContext | undefined;
+  /** Resolve the loaded channel plugin providing `heartbeat.sendTyping`/`clearTyping`. */
+  resolveChannelPlugin: (
+    channel: string,
+  ) =>
+    | Parameters<typeof createHeartbeatTypingCallbacks>[0]["plugin"]
+    | Promise<Parameters<typeof createHeartbeatTypingCallbacks>[0]["plugin"]>;
+  /** Per-session/agent typing gate (e.g. `typingMode: "never"`); default true when omitted. */
+  isTypingEnabled?: (sessionKey: string) => boolean;
+  /** Per-session keepalive cadence override; channel default applies when omitted/undefined. */
+  typingIntervalSeconds?: (sessionKey: string) => number | undefined;
+  log?: (message: string) => void;
+};
+
+export type BackgroundActivityIndicatorOptions = {
+  sources: BackgroundActivitySources;
+  target: BackgroundActivityChannelTarget;
+  isAvailable: () => boolean;
+  /** Poll cadence for re-evaluating armed sessions. Default: DEFAULT_BACKGROUND_ACTIVITY_POLL_MS. */
+  pollIntervalMs?: number;
+  onError?: (error: unknown, context: { sessionKey?: string }) => void;
+};
+
+export type BackgroundActivityIndicator = {
+  start: () => void;
+  stop: () => void;
+  /** Runs one evaluation pass immediately; exposed for tests and manual pokes. */
+  tick: () => Promise<void>;
+  isActiveForSession: (sessionKey: string) => boolean;
+};
+
+async function resolveList(
+  value: readonly string[] | Promise<readonly string[]>,
+): Promise<readonly string[]> {
+  return await value;
+}
+
+/** Creates the periodic engine. Call `start()` to begin polling. */
+export function createBackgroundActivityIndicator(
+  options: BackgroundActivityIndicatorOptions,
+): BackgroundActivityIndicator {
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_BACKGROUND_ACTIVITY_POLL_MS;
+  const active = new Map<string, { onCleanup?: () => void }>();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let tickInFlight: Promise<void> | undefined;
+
+  const stopSession = (sessionKey: string) => {
+    const callbacks = active.get(sessionKey);
+    if (!callbacks) {
+      return;
+    }
+    active.delete(sessionKey);
+    try {
+      callbacks.onCleanup?.();
+    } catch (error) {
+      options.onError?.(error, { sessionKey });
+    }
+  };
+
+  const startSession = async (sessionKey: string): Promise<void> => {
+    if (active.has(sessionKey)) {
+      return;
+    }
+    if (options.target.isTypingEnabled && !options.target.isTypingEnabled(sessionKey)) {
+      return;
+    }
+    const delivery = options.target.resolveDelivery(sessionKey);
+    const channel = delivery?.channel?.trim();
+    const to = delivery?.to?.trim();
+    if (!channel || !to) {
+      return;
+    }
+    const plugin = await options.target.resolveChannelPlugin(channel);
+    if (active.has(sessionKey)) {
+      // A concurrent tick already started this session while the plugin
+      // resolved; never register a second, orphaned TypingCallbacks instance.
+      return;
+    }
+    if (!plugin?.heartbeat?.sendTyping) {
+      // No channel-level typing primitive to drive; this session cannot show
+      // a background-activity signal at all. Not an error -- most channels
+      // (and some accounts) simply do not implement typing.
+      return;
+    }
+    const callbacks = createHeartbeatTypingCallbacks({
+      cfg: options.target.getConfig(),
+      target: {
+        channel,
+        to,
+        accountId: delivery?.accountId,
+        threadId: delivery?.threadId,
+      },
+      plugin,
+      typingIntervalSeconds: options.target.typingIntervalSeconds?.(sessionKey),
+      log: options.target.log
+        ? { debug: (message: string) => options.target.log?.(message) }
+        : undefined,
+    });
+    if (!callbacks) {
+      return;
+    }
+    active.set(sessionKey, callbacks);
+    try {
+      await callbacks.onReplyStart();
+    } catch (error) {
+      options.onError?.(error, { sessionKey });
+    }
+  };
+
+  const runTick = async () => {
+    if (!options.isAvailable()) {
+      for (const sessionKey of active.keys()) {
+        stopSession(sessionKey);
+      }
+      return;
+    }
+    const [taskFlowKeys, subagentKeys, cronKeys] = await Promise.all([
+      resolveList(options.sources.listRunningTaskFlowSessionKeys()),
+      resolveList(options.sources.listArmedSubagentWaitSessionKeys()),
+      resolveList(options.sources.listArmedCronWakeSessionKeys()),
+    ]);
+    const armed = new Set<string>();
+    for (const sessionKey of taskFlowKeys) {
+      if (sessionKey.trim()) {
+        armed.add(sessionKey.trim());
+      }
+    }
+    for (const sessionKey of subagentKeys) {
+      if (sessionKey.trim()) {
+        armed.add(sessionKey.trim());
+      }
+    }
+    for (const sessionKey of cronKeys) {
+      if (sessionKey.trim()) {
+        armed.add(sessionKey.trim());
+      }
+    }
+    for (const sessionKey of active.keys()) {
+      if (!armed.has(sessionKey)) {
+        stopSession(sessionKey);
+      }
+    }
+    await Promise.all(
+      [...armed].map((sessionKey) =>
+        startSession(sessionKey).catch((error: unknown) => {
+          // One session's resolution failure (e.g. a throwing plugin lookup)
+          // must never block or fail the others in the same batch.
+          options.onError?.(error, { sessionKey });
+        }),
+      ),
+    );
+  };
+
+  const tick = async (): Promise<void> => {
+    if (tickInFlight) {
+      return tickInFlight;
+    }
+    // Avoid overlapping evaluation passes if one tick's source queries stall
+    // past the next poll -- mirrors createTypingKeepaliveLoop's tick guard.
+    tickInFlight = runTick().finally(() => {
+      tickInFlight = undefined;
+    });
+    return tickInFlight;
+  };
+
+  const start = () => {
+    if (timer || pollIntervalMs <= 0) {
+      return;
+    }
+    timer = setInterval(() => {
+      void tick().catch((error: unknown) => options.onError?.(error, {}));
+    }, pollIntervalMs);
+    timer.unref?.();
+  };
+
+  const stop = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = undefined;
+    }
+    for (const sessionKey of active.keys()) {
+      stopSession(sessionKey);
+    }
+  };
+
+  return {
+    start,
+    stop,
+    tick,
+    isActiveForSession: (sessionKey: string) => active.has(sessionKey),
+  };
+}
