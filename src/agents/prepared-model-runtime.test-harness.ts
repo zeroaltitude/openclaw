@@ -39,6 +39,7 @@ const preparedModelRuntimeMocks = vi.hoisted(() => ({
     },
   },
   preparedAuthStore: undefined as import("./auth-profiles/types.js").AuthProfileStore | undefined,
+  providerExpiries: new Map<string, number>(),
   credentialsRevision: 0,
   preparedAuthMaterializations:
     [] as import("./auth-profiles/runtime-materializations.js").RuntimeAuthMaterialization[],
@@ -141,7 +142,7 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
         return {
           modelCatalog: catalog,
           runtimeModels: new Map(),
-          providerExpiries: new Map(),
+          providerExpiries: new Map(preparedModelRuntimeMocks.providerExpiries),
           configuredProviderModelIds: new Map(),
           configuredRuntimeModels: factoryArgs[0].agentFacts.configuredRuntimeModels,
         };
@@ -438,6 +439,7 @@ export async function resetPreparedModelRuntimeHarness(state: OpenClawTestState)
   });
   preparedModelRuntimeMocks.authStorage.getOAuthProviders.mockReset().mockReturnValue([]);
   preparedModelRuntimeMocks.preparedAuthStore = undefined;
+  preparedModelRuntimeMocks.providerExpiries = new Map();
   preparedModelRuntimeMocks.credentialsRevision = 0;
   preparedModelRuntimeMocks.preparedAuthMaterializations = [];
   preparedModelRuntimeMocks.modelRegistry.fork
