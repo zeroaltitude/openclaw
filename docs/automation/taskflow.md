@@ -71,12 +71,30 @@ finished.
 
 For a managed flow, the controller sets `endedAt` when it finishes. For a
 mirrored flow, `blocked` means the backing task succeeded but its completion
-delivery could not be handed to the requester. That delivery stays redrivable
-(`openclaw tasks flow retry`, or `openclaw tasks retry <taskId>`), and a
-successful redrive clears the blocked outcome, so the flow keeps no `endedAt`
-and stays resumable. The one genuinely finished case is an operator dismissal
-(`openclaw tasks dismiss <taskId>`), which stamps `endedAt` and makes the flow
-terminal, prunable, and deletable.
+delivery was not handed to the requester — and whether that is recoverable is
+recorded on the task's `deliveryStatus`:
+
+| Task `deliveryStatus` | Recoverable?                                          | Mirrored flow |
+| --------------------- | ----------------------------------------------------- | ------------- |
+| `failed`              | Yes — delivery is suspended; retry or dismiss it       | Not terminal  |
+| `dismissed`           | No — the operator gave up on it                        | Terminal      |
+| `suppressed`          | No — delivery was deliberately and terminally not made | Terminal      |
+
+A suspended (`failed`) delivery stays redrivable (`openclaw tasks flow retry`,
+or `openclaw tasks retry <taskId>`), and a successful redrive clears the blocked
+outcome, so the flow keeps no `endedAt` and stays resumable.
+
+The two unrecoverable cases stamp `endedAt` and make the flow terminal,
+prunable, and deletable. That matters for `suppressed` in particular: retry and
+dismiss both require the suspended state and refuse a suppressed delivery, so a
+suppressed flow left non-terminal would have no exit at all — not retryable, not
+dismissable, and not removable either, because a non-terminal flow is neither
+deletable nor prunable.
+
+`failed` needs no equivalent qualification. A task *run* has no redrive
+anywhere: terminal task statuses are absorbing, and `openclaw tasks retry`
+redrives a completion delivery rather than a run. A run that might still
+recover is never projected as a `failed` flow in the first place.
 
 ## Durable state and revision tracking
 

@@ -87,8 +87,12 @@ function renderTask(
   const title = taskTitle(task);
   const cancelling = props.cancellingTaskIds.has(task.id);
   const retainedResult = task.terminalOutcome === "blocked";
+  // Only a suspended (`failed`) delivery can be redriven. A `suppressed` one was
+  // deliberately and terminally never made, so it offers no retry action and
+  // must not claim it is still blocked on something.
   const recoverableDelivery = retainedResult && task.deliveryStatus === "failed";
   const dismissedDelivery = retainedResult && task.deliveryStatus === "dismissed";
+  const suppressedDelivery = retainedResult && task.deliveryStatus === "suppressed";
   const showActions =
     (active && props.canCancel) ||
     (retainedResult && props.canCopy) ||
@@ -113,7 +117,11 @@ function renderTask(
             ? html`<div class="task-row__warning">
                 <span
                   >${t(
-                    dismissedDelivery ? "tasksPage.deliveryDismissed" : "tasksPage.deliveryBlocked",
+                    dismissedDelivery
+                      ? "tasksPage.deliveryDismissed"
+                      : suppressedDelivery
+                        ? "tasksPage.deliverySuppressed"
+                        : "tasksPage.deliveryBlocked",
                   )}</span
                 >
                 ${

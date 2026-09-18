@@ -38,11 +38,31 @@ export function isTerminalTaskStatus(status: TaskStatus): boolean {
   );
 }
 
+/**
+ * Completion-delivery state projected onto a task.
+ *
+ * `failed` and `suppressed` both describe a completion that never reached the
+ * requester, and the difference between them is whether anything can still be
+ * done about it:
+ *
+ * - `failed` — the delivery is SUSPENDED on the backing subagent run. It is
+ *   redrivable (`openclaw tasks retry`) and abandonable (`openclaw tasks
+ *   dismiss`); both `retrySubagentCompletionDelivery` and
+ *   `dismissSubagentCompletionDelivery` require exactly that suspended state.
+ * - `suppressed` — the delivery was deliberately and terminally not made
+ *   (`disposition: "intentional_non_delivery"` with the run's own delivery
+ *   status already `failed`). Retry and dismiss both refuse it, so nothing can
+ *   recover it and nothing needs to.
+ *
+ * Keeping these apart is what lets a mirrored TaskFlow decide whether a
+ * `blocked` projection is still resumable; see `isTerminalTaskMirroredFlowStatus`.
+ */
 export type TaskDeliveryStatus =
   | "pending"
   | "delivered"
   | "session_queued"
   | "failed"
+  | "suppressed"
   | "dismissed"
   | "parent_missing"
   | "not_applicable";
@@ -74,6 +94,7 @@ const TASK_DELIVERY_STATUSES = new Set<TaskDeliveryStatus>([
   "delivered",
   "session_queued",
   "failed",
+  "suppressed",
   "dismissed",
   "parent_missing",
   "not_applicable",

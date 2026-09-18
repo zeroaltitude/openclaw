@@ -167,12 +167,17 @@ that takes a `<lookup>` accepts a flow ID or its stable owner key.
 `flow retry` redrives the blocked completion delivery recorded on a `blocked`
 flow, without the operator having to look up the underlying task ID first; it
 is the by-flow equivalent of `openclaw tasks retry <taskId>` and needs a live
-Gateway.
+Gateway. It refuses a `blocked` flow that has already finished — one whose
+delivery was dismissed or terminally suppressed — because neither can be
+redriven; delete those instead.
 
 `flow delete` removes one terminal flow record immediately, ahead of the
 retention window. It refuses any flow that is still resumable. A `blocked` flow
 whose completion delivery can still be redriven is _not_ terminal: retry it, or
-dismiss it with `openclaw tasks dismiss <taskId>`, and only then delete it.
+dismiss it with `openclaw tasks dismiss <taskId>`, and only then delete it. A
+`blocked` flow whose delivery was _suppressed_ (deliberately and terminally
+never made) is terminal from the start and deletable immediately — it was never
+redrivable, so there is nothing to retry or dismiss first.
 
 `flow list --status` accepts `queued`, `running`, `waiting`, `blocked`,
 `succeeded`, `failed`, `cancelled`, or `lost`. See [Task Flow](/automation/taskflow)
