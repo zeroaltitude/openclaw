@@ -741,6 +741,54 @@ describe("subagent registry lifecycle hardening", () => {
     });
   });
 
+  it("projects a terminally suppressed delivery onto the task as suppressed, not failed", async () => {
+    // On a TASK, `failed` means a SUSPENDED delivery: something retry or
+    // dismiss can still act on. A delivery that already failed and is then
+    // explicitly, terminally not delivered is neither — both
+    // `retrySubagentCompletionDelivery` and `dismissSubagentCompletionDelivery`
+    // require the suspended state and refuse it. Projecting it as `failed`
+    // would tell the mirrored TaskFlow it is still redrivable and strand it
+    // non-terminal with no exit at all.
+    const entry = createRunEntry({
+      endedAt: 4_000,
+      outcome: { status: "ok" },
+      expectsCompletionMessage: true,
+      retainAttachmentsOnKeep: true,
+      delivery: {
+        status: "failed",
+        disposition: "intentional_non_delivery",
+        lastError: "requester transcript was closed",
+      },
+    });
+    const runSubagentAnnounceFlow = vi.fn(async () => "intentional_non_delivery" as const);
+    const controller = createLifecycleController({
+      entry,
+      runSubagentAnnounceFlow,
+      maybeWakeRequesterAfterAllChildrenSettled: async () => false,
+    });
+    try {
+      controller.startSubagentAnnounceCleanupFlow(entry.runId, entry);
+      await waitForLifecycleState(() =>
+        expect(taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId).toHaveBeenCalled(),
+      );
+
+      // The RUN keeps `failed`; only the task projection changes.
+      expect(entry.delivery).toMatchObject({
+        status: "failed",
+        disposition: "intentional_non_delivery",
+      });
+      expect(taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: entry.runId,
+          deliveryStatus: "suppressed",
+          error: "requester transcript was closed",
+        }),
+      );
+    } finally {
+      controller.clearScheduledResumeTimers();
+    }
+  });
+
   it("keeps message-tool-required missing output on the requester delivery path", async () => {
     const entry = createRunEntry({ expectsCompletionMessage: true });
     const runSubagentAnnounceFlow: LifecycleControllerParams["runSubagentAnnounceFlow"] = vi.fn(
@@ -5921,9 +5969,12 @@ describe("requester settle wake trigger", () => {
     });
     expect(entry.delivery?.deliveredAt).toBeUndefined();
     expect(entry.delivery?.nextAttemptAt).toBeUndefined();
+    // The run keeps `failed`, but the TASK records `suppressed`: this delivery
+    // is terminal and neither retry nor dismiss will act on it, so projecting
+    // it as `failed` would advertise a redrive that does not exist.
     expect(taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId).toHaveBeenCalledWith(
       expect.objectContaining({
-        deliveryStatus: "failed",
+        deliveryStatus: "suppressed",
         error: "cancelled_by_message_sending_hook; delivery_suppressed",
       }),
     );

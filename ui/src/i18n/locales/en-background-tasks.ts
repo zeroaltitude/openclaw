@@ -37,6 +37,7 @@ const enBackgroundTasks = {
       deliveryQueued: "Queued for parent",
       deliveryDelivered: "Delivered to parent",
       deliveryFailed: "Delivery failed · result retained",
+      deliverySuppressed: "Delivery not made · result retained",
       deliveryDismissed: "Delivery dismissed · result retained",
       deliveryParentMissing: "Parent unavailable · result retained",
       deliveryNotApplicable: "No delivery required",

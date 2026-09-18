@@ -68,10 +68,12 @@ export type TaskFlowRecord = {
 // `blocked` is never terminal on its own: in either sync mode a blocked flow
 // stays resumable until `endedAt` is set. Managed flows set it when the
 // controller finishes. Mirrored flows set it only once the projected
-// completion delivery is genuinely done (operator-dismissed) — until then the
-// delivery can still be redriven, which clears the blocked outcome, so the
-// flow must be able to leave `blocked` again. See
-// `isTerminalTaskMirroredFlowStatus` in ./task-flow-registry.records.ts.
+// completion delivery can no longer be acted on — either the operator
+// dismissed it, or it was terminally suppressed and was never redrivable at
+// all. While the delivery is merely suspended it can still be redriven, which
+// clears the blocked outcome, so the flow must be able to leave `blocked`
+// again. See `isTerminalTaskMirroredFlowStatus` in
+// ./task-flow-registry.records.ts.
 export function isTerminalTaskFlow(flow: Pick<TaskFlowRecord, "status" | "endedAt">): boolean {
   return (
     flow.status === "succeeded" ||

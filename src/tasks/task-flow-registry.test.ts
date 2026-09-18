@@ -913,6 +913,57 @@ describe("task-flow-registry", () => {
     });
   });
 
+  it("buries a suppressed blocked delivery, which retry and dismiss both refuse", async () => {
+    await withFlowRegistryTempDir(async () => {
+      // A terminally suppressed completion delivery (`intentional_non_delivery`
+      // once the run's own delivery already failed) is projected onto the task
+      // as `suppressed`, NOT `failed`. Both `retrySubagentCompletionDelivery`
+      // and `dismissSubagentCompletionDelivery` require the suspended state and
+      // refuse this one, so treating it as resumable would leave the flow with
+      // no exit at all: unretryable, undismissable, and — being non-terminal —
+      // neither deletable nor prunable.
+      const suppressed = {
+        ownerKey: "agent:main:main",
+        taskId: "task-suppressed",
+        notifyPolicy: "done_only",
+        status: "succeeded",
+        terminalOutcome: "blocked",
+        deliveryStatus: "suppressed",
+        label: "Deliver result",
+        task: "Deliver result",
+        createdAt: 100,
+        lastEventAt: 200,
+        endedAt: 200,
+        terminalSummary: "Completion delivery was intentionally not made.",
+      } as const;
+
+      const created = createTaskFlowForTask({ task: suppressed });
+      expect(created.status).toBe("blocked");
+      expect(created.endedAt).toBe(200);
+      expect(isTerminalTaskFlow(created)).toBe(true);
+
+      // Resync keeps it terminal rather than reviving it.
+      const resynced = syncFlowFromTaskForTest({
+        ...suppressed,
+        parentFlowId: created.flowId,
+        lastEventAt: 300,
+        endedAt: 300,
+      });
+      expect(resynced?.status).toBe("blocked");
+      expect(resynced?.endedAt).toBe(300);
+      expect(isTerminalTaskFlow(resynced!)).toBe(true);
+
+      // A suspended delivery on an otherwise identical task stays resumable,
+      // which is the distinction `suppressed` exists to draw.
+      const suspendedFlow = createTaskFlowForTask({
+        task: { ...suppressed, taskId: "task-suspended", deliveryStatus: "failed" },
+      });
+      expect(suspendedFlow.status).toBe("blocked");
+      expect(suspendedFlow.endedAt).toBeUndefined();
+      expect(isTerminalTaskFlow(suspendedFlow)).toBe(false);
+    });
+  });
+
   it("preserves explicit json null in state and wait payloads", async () => {
     await withFlowRegistryTempDir(async () => {
       const created = createManagedTaskFlow({

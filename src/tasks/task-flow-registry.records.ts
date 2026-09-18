@@ -305,13 +305,30 @@ function deriveTaskFlowStatusFromTask(
  * `succeeded`, `failed`, `cancelled` and `lost` are unconditionally terminal:
  * the underlying run is over and nothing can move it.
  *
- * `blocked` is NOT. A mirrored `blocked` flow means the run itself succeeded
- * but its completion delivery could not be handed to the requester, and that
- * delivery stays redrivable through `openclaw tasks retry` (see
- * `retrySubagentCompletionDelivery`). A successful redrive clears
- * `terminalOutcome: "blocked"`, so the flow must be able to leave `blocked`
- * again. The one genuinely finished case is an operator dismissal, which
- * records `deliveryStatus: "dismissed"` and never retries.
+ * `failed` is terminal without qualification, and that is not an oversight: a
+ * task run has no redrive anywhere. Terminal task statuses are absorbing
+ * (`shouldApplyRunScopedStatusUpdate` refuses terminal -> non-terminal), and
+ * `openclaw tasks retry` redrives a completion DELIVERY, never a run — its
+ * redrive projects `status: "succeeded"`, so a failed run can never enter it.
+ * The orphan sweeper's retry and tombstone paths both leave the task `running`
+ * rather than writing a failure, so "might still recover" never reaches a
+ * mirrored flow as `failed` in the first place.
+ *
+ * `blocked` is the status whose terminality genuinely varies. A mirrored
+ * `blocked` flow means the run itself succeeded but its completion delivery was
+ * not handed to the requester, and only the task's `deliveryStatus` says
+ * whether anything can still act on that:
+ *
+ * - `failed` — the delivery is suspended. `openclaw tasks retry` redrives it
+ *   and `openclaw tasks dismiss` abandons it, and a successful redrive clears
+ *   `terminalOutcome: "blocked"`, so the flow must be able to leave `blocked`.
+ *   NOT terminal.
+ * - `dismissed` — the operator gave up on it. Terminal.
+ * - `suppressed` — the delivery was deliberately and terminally never made.
+ *   Retry and dismiss both refuse it (each requires the suspended state), so
+ *   treating it as resumable would strand the flow with no exit at all: not
+ *   retryable, not dismissable, and — because a non-terminal flow is neither
+ *   deletable nor prunable — not removable either. Terminal.
  *
  * Returning false here leaves `endedAt` unset, which is exactly what keeps
  * `isTerminalTaskFlow` false and the flow resumable rather than buried. A
@@ -324,7 +341,7 @@ export function isTerminalTaskMirroredFlowStatus(
   deliveryStatus: TaskRecord["deliveryStatus"] | undefined,
 ): boolean {
   if (status === "blocked") {
-    return deliveryStatus === "dismissed";
+    return deliveryStatus === "dismissed" || deliveryStatus === "suppressed";
   }
   return (
     status === "succeeded" || status === "failed" || status === "cancelled" || status === "lost"

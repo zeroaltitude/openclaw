@@ -345,6 +345,19 @@ export async function flowsRetryCommand(opts: { lookup: string }, runtime: Runti
     runtime.exit(1);
     return;
   }
+  // A blocked flow that is already terminal has a delivery the retry path
+  // refuses outright — dismissed or terminally suppressed. Say so here instead
+  // of making the operator read "completion delivery is not blocked" back from
+  // the gateway, which reads like a lookup error rather than a finished state.
+  if (isTerminalTaskFlow(flow)) {
+    runtime.error(
+      sanitizeTerminalText(
+        `Flow ${flow.flowId} is blocked but already finished; its completion delivery was dismissed or never deliverable and cannot be redriven. Remove it with ${formatCliCommand("openclaw tasks flow delete")}.`,
+      ),
+    );
+    runtime.exit(1);
+    return;
+  }
   try {
     const { callGateway } = await import("../gateway/call.js");
     const response = await callGateway<GatewayTaskRetryResult>({

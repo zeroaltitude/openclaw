@@ -28,6 +28,10 @@ const TaskDeliveryStatusSchema = Type.Union([
   Type.Literal("delivered"),
   Type.Literal("session_queued"),
   Type.Literal("failed"),
+  // A terminally suppressed completion delivery: never made, never redrivable.
+  // Distinct from `failed`, which is a suspended delivery awaiting retry or
+  // dismissal. See TaskDeliveryStatus in src/tasks/task-registry.types.ts.
+  Type.Literal("suppressed"),
   Type.Literal("dismissed"),
   Type.Literal("parent_missing"),
   Type.Literal("not_applicable"),
