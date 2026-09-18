@@ -679,4 +679,9 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["diagnostics.heapProfile", "diagnostics", "operator.admin", "2026.9"],
   ["desktop.release", "environments", "operator.admin", "2026.9", { startup: true }],
   ["mcp.authLogin", "mcp-auth-login", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
+  // Cross-agent, cross-session TaskFlow visibility; gated in-handler like usage.cost/transcripts.*.
+  ["taskFlows.listAll", "task-flows", "operator.read", "2026.9"],
+  // Operator-governed manual cleanup of terminal TaskFlow records; admin-only,
+  // same scope tier as "diagnostics.cpuProfile" above.
+  ["taskFlows.clearTerminal", "task-flows", "operator.admin", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

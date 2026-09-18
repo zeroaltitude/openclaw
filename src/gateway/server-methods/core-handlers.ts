@@ -152,6 +152,7 @@ const CORE_GATEWAY_HANDLER_MODULES = {
   tasks: () => import("./tasks.js").then((module) => module.tasksHandlers),
   "task-suggestions": () =>
     import("./task-suggestions.js").then((module) => module.taskSuggestionsHandlers),
+  "task-flows": () => import("./task-flows.js").then((module) => module.taskFlowsHandlers),
   "tools-catalog": () => import("./tools-catalog.js").then((module) => module.toolsCatalogHandlers),
   "tools-github": () => import("./tools-github.js").then((module) => module.toolsGitHubHandlers),
   "tools-effective": () =>
