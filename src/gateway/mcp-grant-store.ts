@@ -20,6 +20,7 @@ import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-polic
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
 import type { PluginHookChannelContext } from "../plugins/hook-types.js";
+import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
 import type { SkillWorkshopRunOptions } from "../skills/workshop/types.js";
@@ -173,6 +174,27 @@ const clientGrantsByToken = resolveGlobalMap<string, StoredMcpLoopbackClientGran
   Symbol.for("openclaw.mcpLoopbackClientGrants"),
   "close-and-restart",
 );
+
+/**
+ * Deferreds for requests waiting on a grant's `nativeCronCreatorToolAllowlist`
+ * to resolve away from its `null` placeholder. Keyed by the same token used in
+ * `clientGrantsByToken`, so a grant that is transferred, deactivated, or
+ * revoked can find (and settle) its own waiter rather than leaking one.
+ */
+const nativeToolAllowlistWaitersByToken = resolveGlobalMap<string, Deferred<void>>(
+  Symbol.for("openclaw.mcpNativeToolAllowlistWaiters"),
+  "close-and-restart",
+);
+
+/** Settles and removes a token's pending native-allowlist waiter, if any. */
+function settleNativeToolAllowlistWaiter(token: string): void {
+  const waiter = nativeToolAllowlistWaitersByToken.get(token);
+  if (!waiter) {
+    return;
+  }
+  nativeToolAllowlistWaitersByToken.delete(token);
+  waiter.resolve();
+}
 
 function clampTtlMs(ttlMs: number | undefined): number {
   if (!Number.isFinite(ttlMs) || (ttlMs as number) <= 0) {
@@ -388,15 +410,24 @@ export function activateMcpLoopbackClientGrantCapture(params: {
       ) {
         return false;
       }
+      const resolvedAllowlist = toolNames === null ? null : [...toolNames];
       activeGrant = {
         ...activeGrant,
         context: {
           ...activeGrant.context,
-          nativeCronCreatorToolAllowlist: toolNames === null ? null : [...toolNames],
+          nativeCronCreatorToolAllowlist: resolvedAllowlist,
         },
       };
       // Discovery can precede native initialization; discard its earlier cap snapshot.
       replaceMcpLoopbackClientGrant(activeGrant);
+      if (resolvedAllowlist !== null) {
+        // A real (possibly empty) allowlist landed. Wake anything waiting on
+        // this token so it re-reads the live grant instead of the null
+        // snapshot it started with. A caller that merely re-armed the null
+        // placeholder (toolNames === null, used as a liveness probe above)
+        // must not wake waiters — there is nothing new to observe yet.
+        settleNativeToolAllowlistWaiter(params.token);
+      }
       return true;
     },
   };
@@ -422,6 +453,11 @@ export function deactivateMcpLoopbackClientGrantCapture(params: {
     ...inactiveGrant
   } = grant;
   replaceMcpLoopbackClientGrant(inactiveGrant);
+  // This capture attempt is over; no further captureNativeToolAuthority call
+  // will land for it. Wake anything still waiting on it now rather than
+  // stranding it until its own timeout — a re-activation later lazily creates
+  // a fresh waiter under the same token if a new request needs one.
+  settleNativeToolAllowlistWaiter(params.token);
   return true;
 }
 
@@ -456,6 +492,20 @@ export function transferMcpLoopbackClientGrant(params: {
     token: params.targetToken,
   });
   clientGrantsByToken.delete(params.sourceToken);
+  // A request may be waiting on the source token for a native capture that
+  // will now land under the target token instead. Move the waiter so it still
+  // gets woken; if the target already has its own waiter (e.g. a second
+  // request arrived after the transfer), settle the source one immediately
+  // rather than leave it stranded on a token that no longer receives captures.
+  const migratedWaiter = nativeToolAllowlistWaitersByToken.get(params.sourceToken);
+  if (migratedWaiter) {
+    nativeToolAllowlistWaitersByToken.delete(params.sourceToken);
+    if (nativeToolAllowlistWaitersByToken.has(params.targetToken)) {
+      migratedWaiter.resolve();
+    } else {
+      nativeToolAllowlistWaitersByToken.set(params.targetToken, migratedWaiter);
+    }
+  }
   // Both tokens may own cached server projections. Evict them only after the
   // map swap so a request can observe either the old grant or the new grant,
   // never a partially updated authority.
@@ -543,6 +593,59 @@ export function resolveMcpLoopbackClientGrant(params: {
   };
 }
 
+/**
+ * Live (non-snapshot) read of a grant's current native-tool allowlist. Unlike
+ * `resolveMcpLoopbackClientGrant`'s `structuredClone`d `context`, this always
+ * reflects the grant row as it stands right now — callers that waited via
+ * `waitForMcpLoopbackClientGrantNativeToolAllowlist` must re-read through this
+ * function rather than reuse a context snapshot taken before the wait began.
+ */
+export function peekMcpLoopbackClientGrantNativeToolAllowlist(
+  token: string,
+): string[] | null | undefined {
+  return clientGrantsByToken.get(token)?.context.nativeCronCreatorToolAllowlist;
+}
+
+/**
+ * Waits, bounded by `timeoutMs`, for a grant's native-tool allowlist to
+ * resolve away from its initial `null` placeholder (set while a native CLI
+ * backend's tool-capture handshake is still in flight; see
+ * `activateMcpLoopbackClientGrantCapture`). Returns as soon as any of these
+ * happens, whichever is first:
+ *   - `captureNativeToolAuthority` lands a real (possibly empty) allowlist;
+ *   - the grant is revoked, deactivated, or transferred away with no capture;
+ *   - `timeoutMs` elapses with nothing resolved.
+ * This function intentionally returns no value. Callers must re-read the
+ * grant's live state afterward via `peekMcpLoopbackClientGrantNativeToolAllowlist`
+ * — returning a value here would invite exactly the stale-snapshot bug this
+ * primitive exists to avoid.
+ */
+export async function waitForMcpLoopbackClientGrantNativeToolAllowlist(params: {
+  token: string;
+  timeoutMs: number;
+}): Promise<void> {
+  const grant = clientGrantsByToken.get(params.token);
+  if (!grant || grant.context.nativeCronCreatorToolAllowlist !== null) {
+    // No grant to wait on, or it never gated on this field (non-native
+    // backend), or it already resolved before we got here. Nothing to wait for.
+    return;
+  }
+  let waiter = nativeToolAllowlistWaitersByToken.get(params.token);
+  if (!waiter) {
+    waiter = createDeferredCore<void>();
+    nativeToolAllowlistWaitersByToken.set(params.token, waiter);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, params.timeoutMs);
+  });
+  try {
+    await Promise.race([waiter.promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Registers cleanup tied to the exact lifetime of loopback client grants. */
 export function registerMcpLoopbackClientGrantRevocationListener(
   listener: (event: McpLoopbackClientGrantRevocation) => void,
@@ -559,6 +662,10 @@ export function revokeMcpLoopbackClientGrant(token: string): boolean {
   // Revocation must also release server-owned projections whose closures retain
   // this grant's prepared credentials.
   notifyMcpLoopbackClientGrantRevoked({ token, runtimeOwnerToken: grant.runtimeOwnerToken });
+  // The grant is gone; no capture will ever land for it. Wake anything still
+  // waiting on its native-tool allowlist instead of leaving it pending until
+  // its own bounded timeout.
+  settleNativeToolAllowlistWaiter(token);
   return true;
 }
 
