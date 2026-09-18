@@ -53,6 +53,20 @@
   font-weight: 700;
 }
 
+.task-flows-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.task-flows-filter input[type="checkbox"] {
+  margin: 0;
+}
+
 .settings-row.task-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

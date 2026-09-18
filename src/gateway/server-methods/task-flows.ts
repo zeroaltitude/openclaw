@@ -11,11 +11,28 @@
 // Gateway owner/admin scope always passes.
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
+import {
+  clearTerminalTaskFlowsByStatus,
+  type ClearableTerminalTaskFlowStatus,
+} from "../../tasks/task-flow-registry.maintenance.js";
 import type { JsonValue, TaskFlowRecord } from "../../tasks/task-flow-registry.types.js";
 import { listTaskFlowRecords } from "../../tasks/task-flow-runtime-internal.js";
 import { operatorSessionCap } from "../operator-role-policy.js";
 import { isGatewayAdmin } from "../session-sharing.js";
 import type { GatewayRequestHandlers } from "./types.js";
+
+const CLEARABLE_TERMINAL_STATUSES: readonly ClearableTerminalTaskFlowStatus[] = [
+  "succeeded",
+  "failed",
+];
+
+function isClearableTerminalTaskFlowStatus(
+  value: unknown,
+): value is ClearableTerminalTaskFlowStatus {
+  return (
+    typeof value === "string" && (CLEARABLE_TERMINAL_STATUSES as readonly string[]).includes(value)
+  );
+}
 
 export type TaskFlowListAllEntry = {
   flowId: string;
@@ -84,5 +101,26 @@ export const taskFlowsHandlers: GatewayRequestHandlers = {
     const now = Date.now();
     const flows = listTaskFlowRecords().map((flow) => mapTaskFlowListAllEntry(flow, now));
     respond(true, { flows }, undefined);
+  },
+  // Operator-governed manual cleanup: bypasses TASK_FLOW_RETENTION_MS on demand
+  // for one terminal status at a time. Scoped to operator.admin in
+  // core-descriptors.ts (see the "diagnostics.cpuProfile" row for the same
+  // pattern) — the framework refuses non-admin callers before this handler
+  // runs, so there is no in-handler admin check to duplicate here.
+  "taskFlows.clearTerminal": ({ params, respond }) => {
+    const status = params.status;
+    if (!isClearableTerminalTaskFlowStatus(status)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `taskFlows.clearTerminal requires params.status to be one of: ${CLEARABLE_TERMINAL_STATUSES.join(", ")}`,
+        ),
+      );
+      return;
+    }
+    const result = clearTerminalTaskFlowsByStatus(status);
+    respond(true, result, undefined);
   },
 };

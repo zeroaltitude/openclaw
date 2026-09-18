@@ -676,6 +676,9 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["diagnostics.cpuProfile", "diagnostics", "operator.admin", "2026.9"],
   // Cross-agent, cross-session TaskFlow visibility; gated in-handler like usage.cost/transcripts.*.
   ["taskFlows.listAll", "task-flows", "operator.read", "2026.9"],
+  // Operator-governed manual cleanup of terminal TaskFlow records; admin-only,
+  // same scope tier as "diagnostics.cpuProfile" above.
+  ["taskFlows.clearTerminal", "task-flows", "operator.admin", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];
 
 export type CoreGatewayHandlerFamily = Exclude<(typeof CORE_GATEWAY_METHOD_SPECS)[number][1], null>;

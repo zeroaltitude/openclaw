@@ -3193,6 +3193,7 @@ export const en: TranslationMap & {
     title: "TaskFlows across every agent",
     loading: "Loading TaskFlows…",
     empty: "No TaskFlows yet.",
+    emptyFiltered: "No TaskFlows match the current filters.",
     disconnected: "Connect to the gateway to load TaskFlows.",
     loadFailed: "Could not load TaskFlows.",
     invalidResponse: "The gateway returned an invalid TaskFlow list.",
@@ -3200,6 +3201,18 @@ export const en: TranslationMap & {
     owner: "Owner: {agent}",
     waitingFor: "Waiting {duration}",
     blocked: "Blocked",
+    showSucceeded: "Show succeeded",
+    showFailed: "Show failed",
+    clearSucceeded: "Clear succeeded",
+    clearFailed: "Clear failed",
+    clearing: "Clearing…",
+    clearSucceededConfirmTitle: "Clear succeeded TaskFlows?",
+    clearSucceededConfirmMessage:
+      "Immediately deletes every succeeded TaskFlow record across every agent, without waiting for the 7-day retention window. This cannot be undone.",
+    clearFailedConfirmTitle: "Clear failed TaskFlows?",
+    clearFailedConfirmMessage:
+      "Immediately deletes every failed TaskFlow record across every agent, without waiting for the 7-day retention window. This cannot be undone.",
+    clearFailedRequest: "Could not clear TaskFlows.",
     status: {
       queued: "Queued",
       running: "Running",

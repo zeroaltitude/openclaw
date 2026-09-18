@@ -10,8 +10,10 @@ import {
   listTaskFlowRecords,
   requestFlowCancel,
   setFlowWaiting,
+  updateFlowRecordByIdExpectedRevision,
 } from "./task-flow-registry.js";
 import {
+  clearTerminalTaskFlowsByStatus,
   getInspectableTaskFlowAuditSummary,
   previewTaskFlowRegistryMaintenance,
   runTaskFlowRegistryMaintenance,
@@ -438,6 +440,116 @@ describe("task-flow-registry maintenance", () => {
 
       const remainingFlowIds = new Set(listTaskFlowRecords().map((flow) => flow.flowId));
       expect(remainingFlowIds).toEqual(new Set([fresh.flowId, running.flowId]));
+    });
+  });
+});
+
+describe("clearTerminalTaskFlowsByStatus", () => {
+  afterEach(() => {
+    resetTaskRegistryDeliveryRuntimeForTests();
+    resetTaskRegistryForTests();
+    resetTaskFlowRegistryForTests({ persist: false });
+    ORIGINAL_ENV.restore();
+  });
+
+  it("deletes every flow in the requested status regardless of age, unlike the retention sweep", async () => {
+    await withTaskFlowMaintenanceStateDir(async () => {
+      const now = Date.now();
+      const freshSucceeded = createFlowRecord({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-flow-maintenance",
+        goal: "Just finished",
+        status: "succeeded",
+        createdAt: now,
+        updatedAt: now,
+        endedAt: now,
+      });
+      const freshFailed = createFlowRecord({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-flow-maintenance",
+        goal: "Just failed",
+        status: "failed",
+        createdAt: now,
+        updatedAt: now,
+        endedAt: now,
+      });
+      const stillRunning = createFlowRecord({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-flow-maintenance",
+        goal: "Still going",
+        status: "running",
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // The retention sweep would leave both terminal flows alone; they are
+      // seconds old, nowhere near TASK_FLOW_RETENTION_MS.
+      expect(await runTaskFlowRegistryMaintenance()).toEqual({ reconciled: 0, pruned: 0 });
+
+      expect(clearTerminalTaskFlowsByStatus("succeeded")).toEqual({ cleared: 1, skipped: 0 });
+      expect(getTaskFlowById(freshSucceeded.flowId)).toBeUndefined();
+      expect(getTaskFlowById(freshFailed.flowId)).toBeDefined();
+      expect(getTaskFlowById(stillRunning.flowId)).toBeDefined();
+
+      expect(clearTerminalTaskFlowsByStatus("failed")).toEqual({ cleared: 1, skipped: 0 });
+      expect(getTaskFlowById(freshFailed.flowId)).toBeUndefined();
+      expect(getTaskFlowById(stillRunning.flowId)).toBeDefined();
+    });
+  });
+
+  it("skips a terminal flow that still has an active linked task instead of deleting it", async () => {
+    await withTaskFlowMaintenanceStateDir(async () => {
+      // The registry refuses to link a new child task to an already-terminal
+      // flow, so this scenario (a stale "succeeded" status left behind while
+      // a child task is still running) can only be reached by linking the
+      // child while the flow is still open, then forcing the status update
+      // that would normally be blocked by the child's own lifecycle.
+      const flow = createManagedTaskFlow({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-flow-maintenance",
+        goal: "Reports done but a stray child lingers",
+        status: "running",
+        createdAt: 1,
+        updatedAt: 100,
+      });
+      const child = createRunningTaskRun({
+        runtime: "acp",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        parentFlowId: flow.flowId,
+        childSessionKey: "agent:main:child",
+        runId: "run-clear-terminal-active-child",
+        task: "Inspect repo",
+        startedAt: 100,
+        lastEventAt: 100,
+      });
+      const forced = updateFlowRecordByIdExpectedRevision({
+        flowId: flow.flowId,
+        expectedRevision: flow.revision,
+        patch: { status: "succeeded", endedAt: 100, updatedAt: 100 },
+      });
+      expect(forced.applied).toBe(true);
+
+      expect(clearTerminalTaskFlowsByStatus("succeeded")).toEqual({ cleared: 0, skipped: 1 });
+      expect(getTaskFlowById(flow.flowId)).toBeDefined();
+      expect(child.parentFlowId).toBe(flow.flowId);
+    });
+  });
+
+  it("leaves flows in other statuses untouched", async () => {
+    await withTaskFlowMaintenanceStateDir(async () => {
+      const cancelled = createFlowRecord({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-flow-maintenance",
+        goal: "Cancelled, not failed",
+        status: "cancelled",
+        createdAt: 1,
+        updatedAt: 1,
+        endedAt: 1,
+      });
+
+      expect(clearTerminalTaskFlowsByStatus("failed")).toEqual({ cleared: 0, skipped: 0 });
+      expect(getTaskFlowById(cancelled.flowId)).toBeDefined();
     });
   });
 });

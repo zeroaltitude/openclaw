@@ -5,10 +5,12 @@ import { state } from "lit/decorators.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { subtitleForRoute, titleForRoute } from "../../app-navigation.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
+import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import { renderSettingsPageHeader } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
 import { formatUiError } from "../../lib/format-error.ts";
+import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
 import {
   normalizeTaskFlowListAllResult,
   sortTaskFlowsByCreatedAtDesc,
@@ -17,6 +19,8 @@ import {
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { renderTaskFlows } from "./view.ts";
+
+type ClearableTerminalStatus = "succeeded" | "failed";
 
 async function loadTaskFlowSnapshot(params: {
   client: GatewayBrowserClient;
@@ -36,6 +40,12 @@ class TaskFlowsPage extends OpenClawLightDomElement {
 
   @state() private flows: TaskFlowListAllEntry[] = [];
   @state() private error: string | null = null;
+  // Terminal states are hidden by default; these mirror the two filter checkboxes.
+  @state() private showSucceeded = false;
+  @state() private showFailed = false;
+  // Which manual clear (if any) is currently in flight; disables both clear
+  // buttons and swaps the busy one's label until the request settles.
+  @state() private clearingStatus: ClearableTerminalStatus | null = null;
 
   private readonly gateway = new GatewayPageController(this, {
     getGateway: () => this.context?.gateway,
@@ -79,6 +89,42 @@ class TaskFlowsPage extends OpenClawLightDomElement {
     return this.listFlowsTask.run([gateway, client]);
   }
 
+  private canClearTerminal(): boolean {
+    return canCallGatewayMethod(this.gateway.snapshot, "taskFlows.clearTerminal", "operator.admin");
+  }
+
+  private async clearTerminal(status: ClearableTerminalStatus): Promise<void> {
+    const client = this.gateway.client;
+    if (!client || this.clearingStatus !== null || !this.canClearTerminal()) {
+      return;
+    }
+    const confirmed = await showConfirmDialog({
+      title:
+        status === "succeeded"
+          ? t("taskFlowsPage.clearSucceededConfirmTitle")
+          : t("taskFlowsPage.clearFailedConfirmTitle"),
+      message:
+        status === "succeeded"
+          ? t("taskFlowsPage.clearSucceededConfirmMessage")
+          : t("taskFlowsPage.clearFailedConfirmMessage"),
+      confirmLabel: t("common.delete"),
+      danger: true,
+    });
+    if (!confirmed || this.gateway.client !== client) {
+      return;
+    }
+    this.clearingStatus = status;
+    try {
+      await client.request("taskFlows.clearTerminal", { status });
+      this.error = null;
+    } catch (error) {
+      this.error = formatUiError(error, t("taskFlowsPage.clearFailedRequest"));
+    } finally {
+      this.clearingStatus = null;
+    }
+    await this.refreshFlows();
+  }
+
   override render() {
     return html`
       ${renderSettingsPageHeader({
@@ -105,6 +151,18 @@ class TaskFlowsPage extends OpenClawLightDomElement {
           loading: this.listFlowsTask.status === TaskStatus.PENDING,
           error: this.error,
           flows: this.flows,
+          showSucceeded: this.showSucceeded,
+          showFailed: this.showFailed,
+          onShowSucceededChange: (value) => {
+            this.showSucceeded = value;
+          },
+          onShowFailedChange: (value) => {
+            this.showFailed = value;
+          },
+          canClearTerminal: this.canClearTerminal(),
+          clearingStatus: this.clearingStatus,
+          onClearSucceeded: () => void this.clearTerminal("succeeded"),
+          onClearFailed: () => void this.clearTerminal("failed"),
         }),
       )}
     `;
