@@ -31,6 +31,8 @@ const TASKS_LEAF_OPTION_SUPPORT = {
   "flow list": ["json"],
   "flow show": ["json"],
   "flow cancel": [],
+  "flow retry": [],
+  "flow delete": [],
 } satisfies Record<string, readonly TasksParentOption[]>;
 type TasksLeaf = keyof typeof TASKS_LEAF_OPTION_SUPPORT;
 
@@ -267,6 +269,28 @@ export function registerTasksCommand(program: Command): void {
       resolveTasksLeafOptions(command, "flow cancel");
       await runOwner(loadFlowsCommands, ({ flowsCancelCommand }) =>
         flowsCancelCommand({ lookup }, defaultRuntime),
+      );
+    });
+
+  tasksFlowCmd
+    .command("retry")
+    .description("Retry the blocked completion delivery behind a TaskFlow")
+    .argument("<lookup>", "Flow id or owner key")
+    .action(async (lookup, _opts, command) => {
+      resolveTasksLeafOptions(command, "flow retry");
+      await runOwner(loadFlowsCommands, ({ flowsRetryCommand }) =>
+        flowsRetryCommand({ lookup }, defaultRuntime),
+      );
+    });
+
+  tasksFlowCmd
+    .command("delete")
+    .description("Delete one terminal TaskFlow record")
+    .argument("<lookup>", "Flow id or owner key")
+    .action(async (lookup, _opts, command) => {
+      resolveTasksLeafOptions(command, "flow delete");
+      await runOwner(loadFlowsCommands, ({ flowsDeleteCommand }) =>
+        flowsDeleteCommand({ lookup }, defaultRuntime),
       );
     });
 }

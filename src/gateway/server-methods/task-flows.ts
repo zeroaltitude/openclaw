@@ -24,6 +24,12 @@ import type { GatewayRequestHandlers } from "./types.js";
 const CLEARABLE_TERMINAL_STATUSES: readonly ClearableTerminalTaskFlowStatus[] = [
   "succeeded",
   "failed",
+  "cancelled",
+  "lost",
+  // `blocked` is clearable, but only for records that are genuinely terminal:
+  // `clearTerminalTaskFlowsByStatus` skips any blocked flow whose completion
+  // delivery can still be redriven.
+  "blocked",
 ];
 
 function isClearableTerminalTaskFlowStatus(

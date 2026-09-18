@@ -22,7 +22,7 @@ import {
   syncFlowFromTaskResult,
   updateFlowRecordByIdExpectedRevision,
 } from "./task-flow-registry.js";
-import type { TaskFlowRecord } from "./task-flow-registry.types.js";
+import { isTerminalTaskFlow, type TaskFlowRecord } from "./task-flow-registry.types.js";
 import { createProjectionTransactionDatabase } from "./task-registry-projection.test-support.js";
 import {
   configureTaskFlowRegistryRuntime,
@@ -669,6 +669,7 @@ describe("task-flow-registry", () => {
           taskId: "task-running",
           notifyPolicy: "done_only",
           status: "running",
+          deliveryStatus: "pending",
           label: "Fix permissions",
           task: "Fix permissions",
           createdAt: 100,
@@ -676,11 +677,14 @@ describe("task-flow-registry", () => {
         },
       });
 
+      // A blocked delivery that can still be redriven is NOT terminal: it must
+      // keep endedAt unset so the flow stays resumable.
       const blocked = syncFlowFromTaskForTest({
         taskId: "task-blocked",
         parentFlowId: mirrored.flowId,
         status: "succeeded",
         terminalOutcome: "blocked",
+        deliveryStatus: "failed",
         notifyPolicy: "done_only",
         label: "Fix permissions",
         task: "Fix permissions",
@@ -696,34 +700,58 @@ describe("task-flow-registry", () => {
       expect(blocked.status).toBe("blocked");
       expect(blocked.blockedTaskId).toBe("task-blocked");
       expect(blocked.blockedSummary).toBe("Writable session required.");
-      expect(blocked.endedAt).toBe(200);
+      expect(blocked.endedAt).toBeUndefined();
       expect(blocked.updatedAt).toBe(200);
 
-      const delivered = syncFlowFromTaskForTest({
+      const repeated = syncFlowFromTaskForTest({
         taskId: "task-blocked",
         parentFlowId: mirrored.flowId,
         status: "succeeded",
         terminalOutcome: "blocked",
+        deliveryStatus: "failed",
+        notifyPolicy: "done_only",
+        label: "Fix permissions",
+        task: "Fix permissions",
+        lastEventAt: 200,
+        endedAt: 200,
+        terminalSummary: "Writable session required.",
+      });
+      if (!repeated) {
+        throw new Error("Expected repeated mirrored flow update");
+      }
+      expect(repeated.flowId).toBe(mirrored.flowId);
+      expect(repeated.status).toBe("blocked");
+      expect(repeated.endedAt).toBeUndefined();
+      expect(repeated.updatedAt).toBe(200);
+      expect(repeated.revision).toBe(blocked.revision);
+
+      // Dismissal is the one genuinely finished blocked case, so it stamps endedAt.
+      const dismissed = syncFlowFromTaskForTest({
+        taskId: "task-blocked",
+        parentFlowId: mirrored.flowId,
+        status: "succeeded",
+        terminalOutcome: "blocked",
+        deliveryStatus: "dismissed",
         notifyPolicy: "done_only",
         label: "Fix permissions",
         task: "Fix permissions",
         lastEventAt: 250,
-        endedAt: 200,
+        endedAt: 250,
         terminalSummary: "Writable session required.",
       });
-      if (!delivered) {
-        throw new Error("Expected repeated mirrored flow update");
+      if (!dismissed) {
+        throw new Error("Expected dismissed mirrored flow update");
       }
-      expect(delivered.flowId).toBe(mirrored.flowId);
-      expect(delivered.status).toBe("blocked");
-      expect(delivered.endedAt).toBe(200);
-      expect(delivered.updatedAt).toBe(200);
-      expect(delivered.revision).toBe(blocked.revision);
+      expect(dismissed.status).toBe("blocked");
+      expect(dismissed.endedAt).toBe(250);
+      expect(dismissed.updatedAt).toBe(250);
+      expect(dismissed.revision).toBe(blocked.revision + 1);
 
       const stale = syncFlowFromTaskForTest({
         taskId: "task-blocked",
         parentFlowId: mirrored.flowId,
         status: "failed",
+        deliveryStatus: "failed",
         notifyPolicy: "done_only",
         label: "Fix permissions",
         task: "Fix permissions",
@@ -736,7 +764,7 @@ describe("task-flow-registry", () => {
       }
       expect(stale.status).toBe("failed");
       expect(stale.endedAt).toBe(260);
-      expect(stale.revision).toBe(blocked.revision + 1);
+      expect(stale.revision).toBe(dismissed.revision + 1);
 
       const terminalCreated = createTaskFlowForTask({
         task: {
@@ -744,6 +772,7 @@ describe("task-flow-registry", () => {
           taskId: "task-failed",
           notifyPolicy: "done_only",
           status: "failed",
+          deliveryStatus: "failed",
           label: "Fail permissions",
           task: "Fail permissions",
           createdAt: 100,
@@ -767,6 +796,7 @@ describe("task-flow-registry", () => {
         taskId: "task-child",
         parentFlowId: managed.flowId,
         status: "running",
+        deliveryStatus: "pending",
         notifyPolicy: "done_only",
         label: "Child task",
         task: "Child task",
@@ -781,6 +811,105 @@ describe("task-flow-registry", () => {
       expect(syncedManaged.status).toBe("waiting");
       expect(syncedManaged.currentStep).toBe("wait_for");
       expect(syncedManaged.waitJson).toEqual({ kind: "external_event" });
+    });
+  });
+
+  it("keeps a redrivable blocked mirrored flow non-terminal and buries only a dismissed one", async () => {
+    await withFlowRegistryTempDir(async () => {
+      const blockedTask = {
+        ownerKey: "agent:main:main",
+        taskId: "task-suspended",
+        notifyPolicy: "done_only",
+        status: "succeeded",
+        terminalOutcome: "blocked",
+        // The suspend path records a retryable delivery as `failed`; only an
+        // operator dismissal records `dismissed`.
+        deliveryStatus: "failed",
+        label: "Deliver result",
+        task: "Deliver result",
+        createdAt: 100,
+        lastEventAt: 200,
+        endedAt: 200,
+        terminalSummary: "Requester session was not writable.",
+      } as const;
+
+      // Creation path: a blocked-but-retryable flow must not be born terminal.
+      const created = createTaskFlowForTask({ task: blockedTask });
+      expect(created.status).toBe("blocked");
+      expect(created.endedAt).toBeUndefined();
+      expect(isTerminalTaskFlow(created)).toBe(false);
+
+      // Resync path: still non-terminal while the delivery stays redrivable.
+      const resynced = syncFlowFromTaskForTest({
+        ...blockedTask,
+        parentFlowId: created.flowId,
+        lastEventAt: 300,
+      });
+      if (!resynced) {
+        throw new Error("Expected blocked mirrored flow resync");
+      }
+      expect(resynced.status).toBe("blocked");
+      expect(resynced.endedAt).toBeUndefined();
+      expect(isTerminalTaskFlow(resynced)).toBe(false);
+
+      // A successful redrive clears the blocked outcome and the flow follows.
+      const redriven = syncFlowFromTaskForTest({
+        ...blockedTask,
+        parentFlowId: created.flowId,
+        terminalOutcome: "succeeded",
+        deliveryStatus: "delivered",
+        lastEventAt: 400,
+        endedAt: 400,
+      });
+      expect(redriven?.status).toBe("succeeded");
+      expect(redriven?.endedAt).toBe(400);
+      expect(isTerminalTaskFlow(redriven!)).toBe(true);
+
+      // Dismissal on a second flow is the genuinely-done case.
+      const dismissedFlow = createTaskFlowForTask({
+        task: { ...blockedTask, taskId: "task-dismissed", deliveryStatus: "dismissed" },
+      });
+      expect(dismissedFlow.status).toBe("blocked");
+      expect(dismissedFlow.endedAt).toBe(200);
+      expect(isTerminalTaskFlow(dismissedFlow)).toBe(true);
+    });
+  });
+
+  it("treats a redrive-exhausted blocked delivery as terminal only once dismissed", async () => {
+    await withFlowRegistryTempDir(async () => {
+      // A delivery that has burned every redrive generation still reports
+      // `deliveryStatus: "failed"` on the task, because the generation counter
+      // lives on the subagent record and a refused retry mutates nothing. The
+      // flow therefore stays resumable until the operator dismisses it, which
+      // is what makes it terminal and clearable.
+      const exhausted = {
+        ownerKey: "agent:main:main",
+        taskId: "task-exhausted",
+        notifyPolicy: "done_only",
+        status: "succeeded",
+        terminalOutcome: "blocked",
+        deliveryStatus: "failed",
+        label: "Deliver result",
+        task: "Deliver result",
+        createdAt: 100,
+        lastEventAt: 200,
+        endedAt: 200,
+        terminalSummary: "Delivery redrive limit reached.",
+      } as const;
+      const flow = createTaskFlowForTask({ task: exhausted });
+      expect(isTerminalTaskFlow(flow)).toBe(false);
+      expect(flow.endedAt).toBeUndefined();
+
+      const dismissed = syncFlowFromTaskForTest({
+        ...exhausted,
+        parentFlowId: flow.flowId,
+        deliveryStatus: "dismissed",
+        lastEventAt: 500,
+        endedAt: 500,
+      });
+      expect(dismissed?.status).toBe("blocked");
+      expect(dismissed?.endedAt).toBe(500);
+      expect(isTerminalTaskFlow(dismissed!)).toBe(true);
     });
   });
 

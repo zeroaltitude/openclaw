@@ -177,7 +177,12 @@ export async function runTaskFlowRegistryMaintenance(): Promise<TaskFlowRegistry
 }
 
 /** Terminal statuses an operator can manually clear ahead of the retention window. */
-export type ClearableTerminalTaskFlowStatus = "succeeded" | "failed";
+export type ClearableTerminalTaskFlowStatus =
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "lost"
+  | "blocked";
 
 /**
  * Immediately deletes every TaskFlow record in the given terminal status,
@@ -187,6 +192,12 @@ export type ClearableTerminalTaskFlowStatus = "succeeded" | "failed";
  * skips them: they should not normally exist (a flow whose status is
  * terminal has no active linked tasks), so a match here means the status
  * is stale and deleting the record now would be premature.
+ *
+ * `blocked` is status-terminal but not *record*-terminal: a blocked flow whose
+ * completion delivery can still be redriven has no `endedAt` and must survive.
+ * Matching on status alone would bulk-delete exactly those recoverable flows,
+ * so every candidate is re-checked with `isTerminalTaskFlow` and a
+ * still-resumable one is skipped rather than cleared.
  */
 export function clearTerminalTaskFlowsByStatus(status: ClearableTerminalTaskFlowStatus): {
   cleared: number;
@@ -200,6 +211,10 @@ export function clearTerminalTaskFlowsByStatus(status: ClearableTerminalTaskFlow
     }
     const current = getTaskFlowById(flow.flowId);
     if (!current || current.status !== status) {
+      continue;
+    }
+    if (!isTerminalTaskFlow(current)) {
+      skipped += 1;
       continue;
     }
     if (hasActiveLinkedTasks(current.flowId)) {

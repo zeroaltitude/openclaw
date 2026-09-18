@@ -1,16 +1,17 @@
-/** CLI commands for listing, inspecting, and cancelling TaskFlow records. */
+/** CLI commands for listing, inspecting, cancelling, retrying, and deleting TaskFlow records. */
 import { timestampMsToIsoString } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { isRich, theme } from "../../packages/terminal-core/src/theme.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { parseCliEnumFilter } from "../cli/enum-filter.js";
-import { formatCliJsonFailure } from "../cli/failure-output.js";
+import { formatCliJsonFailure, rethrowExpectedCliError } from "../cli/failure-output.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { info } from "../globals.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { truncateUtf16WithEllipsis as truncate } from "../shared/text-truncate.js";
 import { listTasksForFlowId } from "../tasks/runtime-internal.js";
+import { isTaskFlowCancellationPending } from "../tasks/task-cancellation-state.js";
 import { cancelFlowById, getFlowTaskSummary } from "../tasks/task-executor.js";
 import {
   isTerminalTaskFlow,
@@ -18,6 +19,7 @@ import {
   type TaskFlowRecord,
 } from "../tasks/task-flow-registry.types.js";
 import {
+  deleteTaskFlowRecordById,
   getTaskFlowById,
   listTaskFlowRecords,
   resolveTaskFlowForLookupToken,
@@ -270,4 +272,107 @@ export async function flowsCancelCommand(opts: { lookup: string }, runtime: Runt
       `Cancelled ${updated.flowId} (${updated.syncMode}) with status ${updated.status}.`,
     ),
   );
+}
+
+/**
+ * Deletes one terminal TaskFlow record selected by id or lookup token.
+ *
+ * Refuses anything still resumable — including a `blocked` mirrored flow whose
+ * completion delivery can still be redriven, which has no `endedAt` and is
+ * therefore not terminal. Those are retried (`openclaw tasks flow retry`) or
+ * dismissed, not deleted.
+ */
+export async function flowsDeleteCommand(opts: { lookup: string }, runtime: RuntimeEnv) {
+  const flow = resolveTaskFlowForLookupToken(opts.lookup);
+  if (!flow) {
+    runtime.error(formatFlowLookupMiss(opts.lookup));
+    runtime.exit(1);
+    return;
+  }
+  if (!isTerminalTaskFlow(flow)) {
+    runtime.error(
+      sanitizeTerminalText(
+        `Flow is still ${flow.status}. Only terminal TaskFlows can be deleted; cancel it with ${formatCliCommand("openclaw tasks flow cancel")}${flow.status === "blocked" ? `, retry its delivery with ${formatCliCommand("openclaw tasks flow retry")}, or dismiss it with ${formatCliCommand("openclaw tasks dismiss")}` : ""} first.`,
+      ),
+    );
+    runtime.exit(1);
+    return;
+  }
+  if (listTasksForFlowId(flow.flowId).some(isTaskFlowCancellationPending)) {
+    runtime.error(
+      sanitizeTerminalText(
+        `Flow ${flow.flowId} still has active linked tasks. Its terminal status is stale; deleting it now would be premature.`,
+      ),
+    );
+    runtime.exit(1);
+    return;
+  }
+  if (!deleteTaskFlowRecordById(flow.flowId)) {
+    runtime.error(sanitizeTerminalText(`Could not delete TaskFlow: ${opts.lookup}`));
+    runtime.exit(1);
+    return;
+  }
+  runtime.log(
+    sanitizeTerminalText(`Deleted ${flow.flowId} (${flow.syncMode}) with status ${flow.status}.`),
+  );
+}
+
+type GatewayTaskRetryResult = {
+  results?: Array<{ taskId?: string; ok?: boolean; reason?: string; duplicateRisk?: boolean }>;
+};
+
+/**
+ * Redrives the blocked completion delivery behind one mirrored TaskFlow.
+ *
+ * `openclaw tasks retry` already does this, but only if the operator knows the
+ * underlying task id. A blocked flow records it as `blockedTaskId`, so this
+ * closes that gap by flow id.
+ */
+export async function flowsRetryCommand(opts: { lookup: string }, runtime: RuntimeEnv) {
+  const flow = resolveTaskFlowForLookupToken(opts.lookup);
+  if (!flow) {
+    runtime.error(formatFlowLookupMiss(opts.lookup));
+    runtime.exit(1);
+    return;
+  }
+  const taskId = normalizeOptionalString(flow.blockedTaskId);
+  if (flow.status !== "blocked" || !taskId) {
+    runtime.error(
+      sanitizeTerminalText(
+        `Flow is ${flow.status} with no blocked task to retry. Only a blocked TaskFlow has a completion delivery to redrive.`,
+      ),
+    );
+    runtime.exit(1);
+    return;
+  }
+  try {
+    const { callGateway } = await import("../gateway/call.js");
+    const response = await callGateway<GatewayTaskRetryResult>({
+      method: "tasks.retry",
+      params: { taskIds: [taskId] },
+      timeoutMs: 10_000,
+    });
+    const failure = response.results?.find((result) => result.ok !== true);
+    if (failure) {
+      runtime.error(
+        sanitizeTerminalText(`${failure.taskId ?? taskId}: ${failure.reason ?? "retry failed"}`),
+      );
+      runtime.exit(1);
+      return;
+    }
+    const updated = getTaskFlowById(flow.flowId) ?? flow;
+    runtime.log(
+      sanitizeTerminalText(
+        `Retried the completion delivery for task ${taskId} behind ${updated.flowId} (now ${updated.status}). Ambiguous prior acknowledgements may still produce a duplicate visible result.`,
+      ),
+    );
+  } catch (error) {
+    rethrowExpectedCliError(error);
+    runtime.error(
+      sanitizeTerminalText(
+        `TaskFlow delivery retry requires a live Gateway: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    runtime.exit(1);
+  }
 }

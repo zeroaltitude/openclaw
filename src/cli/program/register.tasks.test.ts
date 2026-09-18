@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   flowsListCommand: vi.fn(),
   flowsShowCommand: vi.fn(),
   flowsCancelCommand: vi.fn(),
+  flowsRetryCommand: vi.fn(),
+  flowsDeleteCommand: vi.fn(),
   tasksModuleLoaded: vi.fn(),
   flowsModuleLoaded: vi.fn(),
   runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
@@ -41,6 +43,8 @@ vi.mock("../../commands/flows.js", () => {
     flowsListCommand: mocks.flowsListCommand,
     flowsShowCommand: mocks.flowsShowCommand,
     flowsCancelCommand: mocks.flowsCancelCommand,
+    flowsRetryCommand: mocks.flowsRetryCommand,
+    flowsDeleteCommand: mocks.flowsDeleteCommand,
   };
 });
 vi.mock("../../runtime.js", async (importOriginal) => ({
@@ -60,6 +64,8 @@ const ownerHandlers = [
   mocks.flowsListCommand,
   mocks.flowsShowCommand,
   mocks.flowsCancelCommand,
+  mocks.flowsRetryCommand,
+  mocks.flowsDeleteCommand,
 ];
 const requireRecord = createRequireRecord("object", "expected-label");
 
@@ -228,6 +234,18 @@ describe("registerTasksCommand", () => {
       args: ["tasks", "flow", "show", "flow-123", "--json"],
       handler: mocks.flowsShowCommand,
       expected: { lookup: "flow-123", json: true },
+    },
+    {
+      label: "flow retry by lookup",
+      args: ["tasks", "flow", "retry", "flow-123"],
+      handler: mocks.flowsRetryCommand,
+      expected: { lookup: "flow-123" },
+    },
+    {
+      label: "flow delete by lookup",
+      args: ["tasks", "flow", "delete", "flow-123"],
+      handler: mocks.flowsDeleteCommand,
+      expected: { lookup: "flow-123" },
     },
   ])("routes $label", async ({ args, handler, expected }) => {
     await runCli(args);

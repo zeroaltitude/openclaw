@@ -22,6 +22,10 @@ export type TaskFlowSyncInput = Pick<
   | "taskId"
   | "terminalSummary"
   | "progressSummary"
+  // A mirrored `blocked` flow's terminality depends on whether the projected
+  // completion delivery can still be redriven, so the sync needs the task's
+  // delivery status, not just its run status.
+  | "deliveryStatus"
 >;
 
 export type FlowRecordPatch = Omit<
@@ -295,13 +299,35 @@ function deriveTaskFlowStatusFromTask(
   return "failed";
 }
 
-function isTerminalTaskFlowStatus(status: TaskFlowStatus): boolean {
+/**
+ * Terminality for a mirrored flow projected from one task.
+ *
+ * `succeeded`, `failed`, `cancelled` and `lost` are unconditionally terminal:
+ * the underlying run is over and nothing can move it.
+ *
+ * `blocked` is NOT. A mirrored `blocked` flow means the run itself succeeded
+ * but its completion delivery could not be handed to the requester, and that
+ * delivery stays redrivable through `openclaw tasks retry` (see
+ * `retrySubagentCompletionDelivery`). A successful redrive clears
+ * `terminalOutcome: "blocked"`, so the flow must be able to leave `blocked`
+ * again. The one genuinely finished case is an operator dismissal, which
+ * records `deliveryStatus: "dismissed"` and never retries.
+ *
+ * Returning false here leaves `endedAt` unset, which is exactly what keeps
+ * `isTerminalTaskFlow` false and the flow resumable rather than buried. A
+ * delivery that has exhausted its redrive generations stays non-terminal until
+ * it is dismissed; `openclaw tasks dismiss <taskId>` is the operator's path to
+ * a terminal, clearable flow.
+ */
+export function isTerminalTaskMirroredFlowStatus(
+  status: TaskFlowStatus,
+  deliveryStatus: TaskRecord["deliveryStatus"] | undefined,
+): boolean {
+  if (status === "blocked") {
+    return deliveryStatus === "dismissed";
+  }
   return (
-    status === "succeeded" ||
-    status === "blocked" ||
-    status === "failed" ||
-    status === "cancelled" ||
-    status === "lost"
+    status === "succeeded" || status === "failed" || status === "cancelled" || status === "lost"
   );
 }
 
@@ -331,13 +357,14 @@ export function buildTaskMirroredFlowCreateFields(params: {
     | "endedAt"
     | "terminalSummary"
     | "progressSummary"
+    | "deliveryStatus"
   >;
   requesterOrigin?: TaskFlowRecord["requesterOrigin"];
 }): CreateFlowRecordParams {
   const terminalFlowStatus = deriveTaskFlowStatusFromTask(params.task);
   const timing = resolveTaskMirroredFlowTiming(
     params.task,
-    isTerminalTaskFlowStatus(terminalFlowStatus),
+    isTerminalTaskMirroredFlowStatus(terminalFlowStatus, params.task.deliveryStatus),
   );
   return {
     syncMode: "task_mirrored",
@@ -432,7 +459,7 @@ export function prepareTaskMirroredFlowSyncFromCurrent(
   flow: TaskFlowRecord,
 ): PreparedTaskMirroredFlowSync {
   const terminalFlowStatus = deriveTaskFlowStatusFromTask(task);
-  const isTerminal = isTerminalTaskFlowStatus(terminalFlowStatus);
+  const isTerminal = isTerminalTaskMirroredFlowStatus(terminalFlowStatus, task.deliveryStatus);
   const timing = resolveTaskMirroredFlowTiming(
     {
       createdAt: flow.createdAt,
