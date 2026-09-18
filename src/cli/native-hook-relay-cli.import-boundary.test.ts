@@ -40,9 +40,13 @@ describe("native hook relay CLI import boundary", () => {
         "src/agents/harness/native-hook-relay-permissions.ts",
         "src/agents/harness/native-hook-relay-state.ts",
         "src/agents/harness/native-hook-relay-store.ts",
+        // The terminal transport error the client reads is deliberately
+        // import-free; it must never gain a path back into the accounting
+        // that owns process-global relay state.
+        "src/agents/harness/native-hook-relay-transport-failure.ts",
         "src/state/openclaw-state-db.ts",
         "src/state/openclaw-state-db-maintenance.ts",
-        "src/state/state-database-coordinator.ts",
+        "src/infra/state-database-coordinator.ts",
         "src/gateway/call.ts",
       ]),
     ).toEqual([]);
