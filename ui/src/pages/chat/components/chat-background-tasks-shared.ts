@@ -63,6 +63,7 @@ export function backgroundTaskDeliveryLabel(task: TaskSummary): string | undefin
     session_queued: "chat.backgroundTasks.deliveryQueued",
     delivered: "chat.backgroundTasks.deliveryDelivered",
     failed: "chat.backgroundTasks.deliveryFailed",
+    suppressed: "chat.backgroundTasks.deliverySuppressed",
     dismissed: "chat.backgroundTasks.deliveryDismissed",
     parent_missing: "chat.backgroundTasks.deliveryParentMissing",
     not_applicable: "chat.backgroundTasks.deliveryNotApplicable",

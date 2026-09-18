@@ -3172,6 +3172,7 @@ export const en: TranslationMap & {
     copyResult: "Copy result",
     deliveryBlocked: "Completed, but result delivery is blocked.",
     deliveryDismissed: "Completed; result delivery was dismissed.",
+    deliverySuppressed: "Completed; result delivery was intentionally not made.",
     duplicateRisk: "Retrying may duplicate a result after an ambiguous acknowledgement.",
     status: {
       queued: "Queued",

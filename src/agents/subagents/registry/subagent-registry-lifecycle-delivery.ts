@@ -258,7 +258,7 @@ export const safeSetSubagentTaskDeliveryStatus = (
   params: SubagentLifecycleOptions,
   args: {
     entry: SubagentRunRecord;
-    deliveryStatus: Extract<TaskDeliveryStatus, "pending" | "delivered" | "failed">;
+    deliveryStatus: Extract<TaskDeliveryStatus, "pending" | "delivered" | "failed" | "suppressed">;
     deliveryError?: string;
   },
 ) => {
@@ -269,7 +269,12 @@ export const safeSetSubagentTaskDeliveryStatus = (
       runtime: "subagent",
       sessionKey: target.sessionKey,
       deliveryStatus: args.deliveryStatus,
-      error: args.deliveryStatus === "failed" ? args.deliveryError : undefined,
+      // `suppressed` records its last error for the same reason `failed` does:
+      // it is the only account of why the completion never reached anyone.
+      error:
+        args.deliveryStatus === "failed" || args.deliveryStatus === "suppressed"
+          ? args.deliveryError
+          : undefined,
     });
   } catch (err) {
     params.warn("failed to update subagent background task delivery state", {

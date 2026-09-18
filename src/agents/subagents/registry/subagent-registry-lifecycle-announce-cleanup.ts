@@ -277,7 +277,13 @@ const finalizeSubagentCleanup = async (
     if (!options?.skipDeliveryStatus) {
       safeSetSubagentTaskDeliveryStatus(params, {
         entry,
-        deliveryStatus: delivery.status,
+        // The run keeps `delivery.status = "failed"`, but the TASK must not:
+        // on a task, `failed` means a SUSPENDED delivery that retry/dismiss can
+        // still act on, and an explicitly suppressed delivery is neither. Both
+        // `retrySubagentCompletionDelivery` and `dismissSubagentCompletionDelivery`
+        // require the suspended state and refuse this one, so projecting it as
+        // `failed` would strand the mirrored flow as permanently unresolvable.
+        deliveryStatus: terminalNonDelivery ? "suppressed" : delivery.status,
         deliveryError: terminalNonDelivery ? getDeliveryLastError(entry) : undefined,
       });
     }
