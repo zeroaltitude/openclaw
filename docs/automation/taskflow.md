@@ -64,10 +64,19 @@ OpenClaw creates a mirrored one-task flow automatically when a detached ACP or s
 | `cancelled` | Cancel requested and all child tasks settled                      |
 | `lost`      | Flow lost its authoritative backing state                         |
 
-`blocked` is the only status whose terminal meaning depends on the record. A
-managed flow with no `endedAt` remains resumable. A `blocked` flow with
-`endedAt` is finished, including mirrored flows whose backing task completed
-with a blocked outcome.
+`blocked` is the only status whose terminal meaning depends on the record, and
+it is never terminal on its own — things block and unblock. A `blocked` flow
+with no `endedAt` remains resumable in either sync mode; one with `endedAt` is
+finished.
+
+For a managed flow, the controller sets `endedAt` when it finishes. For a
+mirrored flow, `blocked` means the backing task succeeded but its completion
+delivery could not be handed to the requester. That delivery stays redrivable
+(`openclaw tasks flow retry`, or `openclaw tasks retry <taskId>`), and a
+successful redrive clears the blocked outcome, so the flow keeps no `endedAt`
+and stays resumable. The one genuinely finished case is an operator dismissal
+(`openclaw tasks dismiss <taskId>`), which stamps `endedAt` and makes the flow
+terminal, prunable, and deletable.
 
 ## Durable state and revision tracking
 
@@ -76,8 +85,9 @@ Flow records persist in the shared SQLite state database (`~/.openclaw/state/ope
 Durability covers records, not a JavaScript call stack or automatic scheduling. After restart, the owning controller reloads the flow, checks cancellation and terminal state, reconciles any child outcome, and explicitly resumes from the latest revision. Waiting metadata alone does not register a timer or event listener. Use an automation or controller-owned event handler for wakeups; never blindly replay side effects after a revision conflict.
 
 Gateway maintenance retains finished flows for 7 days, then prunes them. This
-includes `blocked` flows with `endedAt`; resumable managed `blocked` flows are
-retained regardless of age.
+includes `blocked` flows with `endedAt`; resumable `blocked` flows — managed
+ones the controller has not finished, and mirrored ones whose completion
+delivery can still be redriven — are retained regardless of age.
 
 ## Cancel behavior
 
@@ -94,6 +104,12 @@ openclaw tasks flow show <lookup> [--json]
 
 # Cancel a running flow and its active tasks
 openclaw tasks flow cancel <lookup>
+
+# Redrive the blocked completion delivery behind a flow
+openclaw tasks flow retry <lookup>
+
+# Delete one terminal flow record ahead of the retention window
+openclaw tasks flow delete <lookup>
 ```
 
 | Command                           | Description                                                             |
@@ -101,6 +117,8 @@ openclaw tasks flow cancel <lookup>
 | `openclaw tasks flow list`        | Tracked flows with sync mode, status, revision, controller, task counts |
 | `openclaw tasks flow show <id>`   | Inspect one flow by flow id or owner key, including linked tasks        |
 | `openclaw tasks flow cancel <id>` | Cancel a running flow and its active tasks                              |
+| `openclaw tasks flow retry <id>`  | Redrive a blocked flow's completion delivery (needs a live Gateway)     |
+| `openclaw tasks flow delete <id>` | Delete one terminal flow record; refuses a still-resumable flow         |
 
 Flows are also covered by `openclaw tasks audit` (stale or broken flow findings) and `openclaw tasks maintenance` (finalizes stuck cancels, prunes terminal flows after 7 days).
 

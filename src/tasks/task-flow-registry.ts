@@ -17,7 +17,7 @@ import {
   buildManagedTaskFlowPatch,
   cloneFlowRecord,
   deriveTaskFlowStatusFromTask,
-  isTerminalTaskFlowStatus,
+  isTerminalTaskMirroredFlowStatus,
   normalizeRestoredFlowRecord,
   prepareTaskMirroredFlowSyncFromCurrent,
   resolveFlowBlockedSummary,
@@ -403,13 +403,14 @@ export function createTaskFlowForTask(params: {
     | "endedAt"
     | "terminalSummary"
     | "progressSummary"
+    | "deliveryStatus"
   >;
   requesterOrigin?: TaskFlowRecord["requesterOrigin"];
 }): TaskFlowRecord | null {
   const terminalFlowStatus = deriveTaskFlowStatusFromTask(params.task);
   const timing = resolveTaskMirroredFlowTiming(
     params.task,
-    isTerminalTaskFlowStatus(terminalFlowStatus),
+    isTerminalTaskMirroredFlowStatus(terminalFlowStatus, params.task.deliveryStatus),
   );
   return createFlowRecord({
     syncMode: "task_mirrored",

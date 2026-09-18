@@ -170,6 +170,7 @@ const repositoryScriptEntries = [
   // Maintainer proof harnesses are invoked manually from PR evidence.
   "scripts/proof-prompt-build-drop-marker.ts!",
   "scripts/proof-bi92-taskflow-cross-agent-list.ts!",
+  "scripts/proof-taskflow-blocked-nonterminal.ts!",
   // Generates the checked-in native protocol models from core descriptor metadata.
   "scripts/protocol-gen.ts!",
   "scripts/pr-lib/ci-dispatch.mjs!",
