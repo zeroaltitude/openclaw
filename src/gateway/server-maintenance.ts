@@ -28,6 +28,10 @@ import {
 import { createLazyPromiseLoader } from "../shared/lazy-promise.js";
 import { registerSkillUsageTracking } from "../skills/workshop/curator.js";
 import {
+  assertTaskFlowRegistryMaintenanceReady,
+  runTaskFlowRegistryMaintenance,
+} from "../tasks/task-flow-registry.maintenance.js";
+import {
   abortChatRunById,
   type ChatAbortControllerEntry,
   removeChatAbortControllerEntry,
@@ -67,6 +71,10 @@ import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-ag
 // stage-before-row-commit window.
 const DELIVERY_QUEUE_MEDIA_GC_INTERVAL_MS = 60 * 60_000;
 const TELEMETRY_MAINTENANCE_INTERVAL_MS = 5 * 60_000;
+// Terminal TaskFlow records are retained for 7 days (see TASK_FLOW_RETENTION_MS
+// in task-flow-registry.maintenance.ts); an hourly sweep is frequent enough to
+// keep the cross-agent TaskFlows list from growing without bound.
+const TASK_FLOW_REGISTRY_MAINTENANCE_INTERVAL_MS = 60 * 60_000;
 
 export function startGatewayMaintenanceTimers(params: {
   broadcast: (
@@ -109,6 +117,7 @@ export function startGatewayMaintenanceTimers(params: {
   runWorktreeGc?: () => Promise<unknown>;
   runDeliveryQueueMediaGc?: () => Promise<unknown>;
   runManagedOutgoingMediaGc?: () => Promise<unknown>;
+  runTaskFlowRegistryMaintenance?: () => Promise<unknown>;
 }): {
   tickInterval: ReturnType<typeof setInterval>;
   healthInterval: ReturnType<typeof setInterval>;
@@ -256,6 +265,33 @@ export function startGatewayMaintenanceTimers(params: {
   };
   void performDeliveryQueueMediaGc();
 
+  // Retires terminal (succeeded/failed/cancelled/lost) TaskFlow records past
+  // their 7-day retention window so the cross-agent TaskFlows list (and the
+  // taskFlows.listAll response backing it) does not grow without bound.
+  const performTaskFlowMaintenanceSweep =
+    params.runTaskFlowRegistryMaintenance ??
+    (async () => {
+      assertTaskFlowRegistryMaintenanceReady();
+      await runTaskFlowRegistryMaintenance();
+    });
+  let taskFlowRegistryMaintenanceStartedAtMs = 0;
+  const taskFlowRegistryMaintenanceLoader = createLazyPromiseLoader(async () => {
+    try {
+      await performTaskFlowMaintenanceSweep();
+    } catch (error) {
+      params.logHealth.error(`task-flow registry maintenance failed: ${formatError(error)}`);
+    } finally {
+      taskFlowRegistryMaintenanceLoader.clear();
+    }
+  });
+  const performTaskFlowRegistryMaintenance = () => {
+    if (!taskFlowRegistryMaintenanceLoader.peek()) {
+      taskFlowRegistryMaintenanceStartedAtMs = Date.now();
+    }
+    return taskFlowRegistryMaintenanceLoader.load();
+  };
+  void performTaskFlowRegistryMaintenance();
+
   let devicePairSetupCompletionGcInFlight: Promise<void> | null = null;
   const performDevicePairSetupCompletionGc = (nowMs: number) => {
     if (devicePairSetupCompletionGcInFlight) {
@@ -282,6 +318,12 @@ export function startGatewayMaintenanceTimers(params: {
     void performDevicePairSetupCompletionGc(now);
     if (now - deliveryQueueMediaGcStartedAtMs >= DELIVERY_QUEUE_MEDIA_GC_INTERVAL_MS) {
       void performDeliveryQueueMediaGc();
+    }
+    if (
+      now - taskFlowRegistryMaintenanceStartedAtMs >=
+      TASK_FLOW_REGISTRY_MAINTENANCE_INTERVAL_MS
+    ) {
+      void performTaskFlowRegistryMaintenance();
     }
     const resolveDedupeRunId = (key: string, entry: DedupeEntry) => {
       if (!key.startsWith("agent:") && !key.startsWith("chat:")) {

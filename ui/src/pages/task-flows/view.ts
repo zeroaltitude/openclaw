@@ -24,7 +24,35 @@ type TaskFlowsProps = {
   loading: boolean;
   error: string | null;
   flows: TaskFlowListAllEntry[];
+  /** Terminal states are hidden by default; these two checkboxes reveal them. */
+  showSucceeded: boolean;
+  showFailed: boolean;
+  onShowSucceededChange: (value: boolean) => void;
+  onShowFailedChange: (value: boolean) => void;
 };
+
+function renderFilterControls(props: TaskFlowsProps) {
+  return html`
+    <label class="task-flows-filter">
+      <input
+        type="checkbox"
+        .checked=${props.showSucceeded}
+        @change=${(event: Event) =>
+          props.onShowSucceededChange((event.target as HTMLInputElement).checked)}
+      />
+      ${t("taskFlowsPage.showSucceeded")}
+    </label>
+    <label class="task-flows-filter">
+      <input
+        type="checkbox"
+        .checked=${props.showFailed}
+        @change=${(event: Event) =>
+          props.onShowFailedChange((event.target as HTMLInputElement).checked)}
+      />
+      ${t("taskFlowsPage.showFailed")}
+    </label>
+  `;
+}
 
 function renderHeadingFacts(flows: readonly TaskFlowListAllEntry[]) {
   const active = flows.filter(
@@ -89,11 +117,24 @@ function renderFlow(
 
 export function renderTaskFlows(props: TaskFlowsProps) {
   const formatTimestamp = createMsFormatter();
+  // Terminal flows (succeeded/failed) are noisy by default once a flow list
+  // accumulates history; the two filter checkboxes opt back in per state.
+  const visibleFlows = props.flows.filter((flow) => {
+    if (flow.status === "succeeded") {
+      return props.showSucceeded;
+    }
+    if (flow.status === "failed") {
+      return props.showFailed;
+    }
+    return true;
+  });
   const rows =
-    props.flows.length === 0
-      ? renderSettingsEmpty(t("taskFlowsPage.empty"))
+    visibleFlows.length === 0
+      ? renderSettingsEmpty(
+          props.flows.length === 0 ? t("taskFlowsPage.empty") : t("taskFlowsPage.emptyFiltered"),
+        )
       : repeat(
-          props.flows,
+          visibleFlows,
           (flow) => flow.flowId,
           (flow) => renderFlow(flow, formatTimestamp),
         );
@@ -113,7 +154,10 @@ export function renderTaskFlows(props: TaskFlowsProps) {
       ${
         !props.loading
           ? renderSettingsSection(
-              { title: html`${t("taskFlowsPage.title")}${renderHeadingFacts(props.flows)}` },
+              {
+                title: html`${t("taskFlowsPage.title")}${renderHeadingFacts(props.flows)}`,
+                actions: renderFilterControls(props),
+              },
               rows,
             )
           : nothing

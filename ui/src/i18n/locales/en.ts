@@ -3144,6 +3144,7 @@ export const en: TranslationMap & {
     title: "TaskFlows across every agent",
     loading: "Loading TaskFlows…",
     empty: "No TaskFlows yet.",
+    emptyFiltered: "No TaskFlows match the current filters.",
     disconnected: "Connect to the gateway to load TaskFlows.",
     loadFailed: "Could not load TaskFlows.",
     invalidResponse: "The gateway returned an invalid TaskFlow list.",
@@ -3151,6 +3152,8 @@ export const en: TranslationMap & {
     owner: "Owner: {agent}",
     waitingFor: "Waiting {duration}",
     blocked: "Blocked",
+    showSucceeded: "Show succeeded",
+    showFailed: "Show failed",
     status: {
       queued: "Queued",
       running: "Running",

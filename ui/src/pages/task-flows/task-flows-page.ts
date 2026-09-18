@@ -36,6 +36,9 @@ class TaskFlowsPage extends OpenClawLightDomElement {
 
   @state() private flows: TaskFlowListAllEntry[] = [];
   @state() private error: string | null = null;
+  // Terminal states are hidden by default; these mirror the two filter checkboxes.
+  @state() private showSucceeded = false;
+  @state() private showFailed = false;
 
   private readonly gateway = new GatewayPageController(this, {
     getGateway: () => this.context?.gateway,
@@ -105,6 +108,14 @@ class TaskFlowsPage extends OpenClawLightDomElement {
           loading: this.listFlowsTask.status === TaskStatus.PENDING,
           error: this.error,
           flows: this.flows,
+          showSucceeded: this.showSucceeded,
+          showFailed: this.showFailed,
+          onShowSucceededChange: (value) => {
+            this.showSucceeded = value;
+          },
+          onShowFailedChange: (value) => {
+            this.showFailed = value;
+          },
         }),
       )}
     `;
