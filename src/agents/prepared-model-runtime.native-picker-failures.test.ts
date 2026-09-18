@@ -258,4 +258,38 @@ describe("native picker acquisition failures", () => {
       expect.objectContaining(freshDefault),
     );
   });
+
+  it("keeps background renewal of a provider at least ten minutes apart", async () => {
+    const before = Date.now();
+    mocks.providerExpiries.set("provider-a", before + 60_000);
+    mocks.providerExpiries.set("provider-b", before + 60_000);
+    const { owner } = await prepareNativePickerOwner();
+    const inventoryOwner = resolvePreparedModelRuntimeOwnerBySnapshot(owner);
+    const renewalIntervalMs = 10 * 60_000;
+    for (const provider of ["provider-a", "provider-b"]) {
+      expect(
+        inventoryOwner?.catalogInventory?.providers.get(provider)?.expiresAt,
+        `${provider} renewal deadline`,
+      ).toBeGreaterThanOrEqual(before + renewalIntervalMs);
+    }
+    const calls = mocks.runPreparedModelCatalogWorker.mock.calls.length;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // The provider cache deadline (60s) has passed, but the renewal interval has not.
+      vi.setSystemTime(before + 5 * 60_000);
+      const published = owner.readFullModelCatalog!();
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 20);
+      });
+      expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(calls);
+      expect(owner.readFullModelCatalog!()).toBe(published);
+      vi.setSystemTime(before + renewalIntervalMs + 60_000);
+      owner.readFullModelCatalog!();
+      await vi.waitFor(() => {
+        expect(mocks.runPreparedModelCatalogWorker.mock.calls.length).toBeGreaterThan(calls);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
