@@ -497,6 +497,36 @@ describe("clearTerminalTaskFlowsByStatus", () => {
     });
   });
 
+  it("clears a genuinely ended blocked flow but skips one that is still resumable", async () => {
+    await withTaskFlowMaintenanceStateDir(async () => {
+      const now = Date.now();
+      // Blocked WITH endedAt: the delivery behind it is genuinely finished.
+      const endedBlocked = createFlowRecord({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-flow-maintenance",
+        goal: "Blocked and dismissed",
+        status: "blocked",
+        createdAt: now,
+        updatedAt: now,
+        endedAt: now,
+      });
+      // Blocked WITHOUT endedAt: still redrivable, so a bulk clear by status
+      // must leave it alone rather than bury recoverable work.
+      const resumableBlocked = createFlowRecord({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/task-flow-maintenance",
+        goal: "Blocked but retryable",
+        status: "blocked",
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      expect(clearTerminalTaskFlowsByStatus("blocked")).toEqual({ cleared: 1, skipped: 1 });
+      expect(getTaskFlowById(endedBlocked.flowId)).toBeUndefined();
+      expect(getTaskFlowById(resumableBlocked.flowId)).toBeDefined();
+    });
+  });
+
   it("skips a terminal flow that still has an active linked task instead of deleting it", async () => {
     await withTaskFlowMaintenanceStateDir(async () => {
       // The registry refuses to link a new child task to an already-terminal

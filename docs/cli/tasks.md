@@ -32,6 +32,8 @@ openclaw tasks maintenance --apply
 openclaw tasks flow list
 openclaw tasks flow show <lookup>
 openclaw tasks flow cancel <lookup>
+openclaw tasks flow retry <lookup>
+openclaw tasks flow delete <lookup>
 ```
 
 ## Root Options
@@ -154,11 +156,23 @@ jobs and leaving non-cron session rows untouched.
 openclaw tasks flow list [--status <name>] [--json]
 openclaw tasks flow show <lookup> [--json]
 openclaw tasks flow cancel <lookup>
+openclaw tasks flow retry <lookup>
+openclaw tasks flow delete <lookup>
 ```
 
-Inspects or cancels durable Task Flow state under the task ledger. There is no
-top-level `openclaw flows` command. Both `flow show` and `flow cancel` accept a
-flow ID or its stable owner key as `<lookup>`.
+Inspects, cancels, retries, or deletes durable Task Flow state under the task
+ledger. There is no top-level `openclaw flows` command. Every `flow` subcommand
+that takes a `<lookup>` accepts a flow ID or its stable owner key.
+
+`flow retry` redrives the blocked completion delivery recorded on a `blocked`
+flow, without the operator having to look up the underlying task ID first; it
+is the by-flow equivalent of `openclaw tasks retry <taskId>` and needs a live
+Gateway.
+
+`flow delete` removes one terminal flow record immediately, ahead of the
+retention window. It refuses any flow that is still resumable. A `blocked` flow
+whose completion delivery can still be redriven is _not_ terminal: retry it, or
+dismiss it with `openclaw tasks dismiss <taskId>`, and only then delete it.
 
 `flow list --status` accepts `queued`, `running`, `waiting`, `blocked`,
 `succeeded`, `failed`, `cancelled`, or `lost`. See [Task Flow](/automation/taskflow)

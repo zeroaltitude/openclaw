@@ -248,6 +248,7 @@ describe("runtime TaskFlow", () => {
           taskId: "task-mirrored",
           notifyPolicy: "done_only",
           status: "running",
+          deliveryStatus: "pending",
           task: "Mirror this task",
           createdAt: 10,
           lastEventAt: 10,
