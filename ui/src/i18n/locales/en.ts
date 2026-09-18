@@ -3154,6 +3154,16 @@ export const en: TranslationMap & {
     blocked: "Blocked",
     showSucceeded: "Show succeeded",
     showFailed: "Show failed",
+    clearSucceeded: "Clear succeeded",
+    clearFailed: "Clear failed",
+    clearing: "Clearing…",
+    clearSucceededConfirmTitle: "Clear succeeded TaskFlows?",
+    clearSucceededConfirmMessage:
+      "Immediately deletes every succeeded TaskFlow record across every agent, without waiting for the 7-day retention window. This cannot be undone.",
+    clearFailedConfirmTitle: "Clear failed TaskFlows?",
+    clearFailedConfirmMessage:
+      "Immediately deletes every failed TaskFlow record across every agent, without waiting for the 7-day retention window. This cannot be undone.",
+    clearFailedRequest: "Could not clear TaskFlows.",
     status: {
       queued: "Queued",
       running: "Running",

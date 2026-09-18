@@ -29,7 +29,33 @@ type TaskFlowsProps = {
   showFailed: boolean;
   onShowSucceededChange: (value: boolean) => void;
   onShowFailedChange: (value: boolean) => void;
+  /** Manual, operator-governed cleanup ahead of the 7-day retention sweep. */
+  canClearTerminal: boolean;
+  clearingStatus: "succeeded" | "failed" | null;
+  onClearSucceeded: () => void;
+  onClearFailed: () => void;
 };
+
+function renderClearButton(props: {
+  status: "succeeded" | "failed";
+  label: string;
+  busyLabel: string;
+  clearingStatus: "succeeded" | "failed" | null;
+  connected: boolean;
+  onClick: () => void;
+}) {
+  const busy = props.clearingStatus === props.status;
+  return html`
+    <button
+      type="button"
+      class="btn btn--xs danger"
+      ?disabled=${!props.connected || props.clearingStatus !== null}
+      @click=${props.onClick}
+    >
+      ${busy ? props.busyLabel : props.label}
+    </button>
+  `;
+}
 
 function renderFilterControls(props: TaskFlowsProps) {
   return html`
@@ -42,6 +68,18 @@ function renderFilterControls(props: TaskFlowsProps) {
       />
       ${t("taskFlowsPage.showSucceeded")}
     </label>
+    ${
+      props.canClearTerminal
+        ? renderClearButton({
+            status: "succeeded",
+            label: t("taskFlowsPage.clearSucceeded"),
+            busyLabel: t("taskFlowsPage.clearing"),
+            clearingStatus: props.clearingStatus,
+            connected: props.connected,
+            onClick: props.onClearSucceeded,
+          })
+        : nothing
+    }
     <label class="task-flows-filter">
       <input
         type="checkbox"
@@ -51,6 +89,18 @@ function renderFilterControls(props: TaskFlowsProps) {
       />
       ${t("taskFlowsPage.showFailed")}
     </label>
+    ${
+      props.canClearTerminal
+        ? renderClearButton({
+            status: "failed",
+            label: t("taskFlowsPage.clearFailed"),
+            busyLabel: t("taskFlowsPage.clearing"),
+            clearingStatus: props.clearingStatus,
+            connected: props.connected,
+            onClick: props.onClearFailed,
+          })
+        : nothing
+    }
   `;
 }
 

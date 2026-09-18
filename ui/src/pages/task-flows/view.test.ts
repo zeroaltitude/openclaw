@@ -26,6 +26,24 @@ function flowIds(container: HTMLElement): string[] {
   );
 }
 
+function baseProps(overrides: Partial<Parameters<typeof renderTaskFlows>[0]> = {}) {
+  return {
+    connected: true,
+    loading: false,
+    error: null,
+    flows: [] as TaskFlowListAllEntry[],
+    showSucceeded: false,
+    showFailed: false,
+    onShowSucceededChange: vi.fn(),
+    onShowFailedChange: vi.fn(),
+    canClearTerminal: false,
+    clearingStatus: null,
+    onClearSucceeded: vi.fn(),
+    onClearFailed: vi.fn(),
+    ...overrides,
+  };
+}
+
 describe("renderTaskFlows", () => {
   it("hides succeeded and failed flows by default", () => {
     const container = document.createElement("div");
@@ -34,19 +52,7 @@ describe("renderTaskFlows", () => {
       flow({ flowId: "flow-succeeded", status: "succeeded" }),
       flow({ flowId: "flow-failed", status: "failed" }),
     ];
-    render(
-      renderTaskFlows({
-        connected: true,
-        loading: false,
-        error: null,
-        flows,
-        showSucceeded: false,
-        showFailed: false,
-        onShowSucceededChange: vi.fn(),
-        onShowFailedChange: vi.fn(),
-      }),
-      container,
-    );
+    render(renderTaskFlows(baseProps({ flows })), container);
     expect(flowIds(container)).toEqual(["flow-running"]);
   });
 
@@ -56,19 +62,7 @@ describe("renderTaskFlows", () => {
       flow({ flowId: "flow-succeeded", status: "succeeded" }),
       flow({ flowId: "flow-failed", status: "failed" }),
     ];
-    render(
-      renderTaskFlows({
-        connected: true,
-        loading: false,
-        error: null,
-        flows,
-        showSucceeded: true,
-        showFailed: false,
-        onShowSucceededChange: vi.fn(),
-        onShowFailedChange: vi.fn(),
-      }),
-      container,
-    );
+    render(renderTaskFlows(baseProps({ flows, showSucceeded: true })), container);
     expect(flowIds(container)).toEqual(["flow-succeeded"]);
   });
 
@@ -78,19 +72,7 @@ describe("renderTaskFlows", () => {
       flow({ flowId: "flow-succeeded", status: "succeeded" }),
       flow({ flowId: "flow-failed", status: "failed" }),
     ];
-    render(
-      renderTaskFlows({
-        connected: true,
-        loading: false,
-        error: null,
-        flows,
-        showSucceeded: false,
-        showFailed: true,
-        onShowSucceededChange: vi.fn(),
-        onShowFailedChange: vi.fn(),
-      }),
-      container,
-    );
+    render(renderTaskFlows(baseProps({ flows, showFailed: true })), container);
     expect(flowIds(container)).toEqual(["flow-failed"]);
   });
 
@@ -99,16 +81,13 @@ describe("renderTaskFlows", () => {
     const onShowSucceededChange = vi.fn();
     const onShowFailedChange = vi.fn();
     render(
-      renderTaskFlows({
-        connected: true,
-        loading: false,
-        error: null,
-        flows: [flow({ flowId: "flow-succeeded", status: "succeeded" })],
-        showSucceeded: false,
-        showFailed: false,
-        onShowSucceededChange,
-        onShowFailedChange,
-      }),
+      renderTaskFlows(
+        baseProps({
+          flows: [flow({ flowId: "flow-succeeded", status: "succeeded" })],
+          onShowSucceededChange,
+          onShowFailedChange,
+        }),
+      ),
       container,
     );
     const checkboxes = [
@@ -116,30 +95,79 @@ describe("renderTaskFlows", () => {
     ] as HTMLInputElement[];
     expect(checkboxes).toHaveLength(2);
     const [succeededCheckbox, failedCheckbox] = checkboxes;
-    succeededCheckbox.checked = true;
-    succeededCheckbox.dispatchEvent(new Event("change"));
+    expect(succeededCheckbox).toBeDefined();
+    expect(failedCheckbox).toBeDefined();
+    succeededCheckbox!.checked = true;
+    succeededCheckbox!.dispatchEvent(new Event("change"));
     expect(onShowSucceededChange).toHaveBeenCalledWith(true);
-    failedCheckbox.checked = true;
-    failedCheckbox.dispatchEvent(new Event("change"));
+    failedCheckbox!.checked = true;
+    failedCheckbox!.dispatchEvent(new Event("change"));
     expect(onShowFailedChange).toHaveBeenCalledWith(true);
   });
 
   it("shows the filtered-empty message when a filter hides every flow", () => {
     const container = document.createElement("div");
     render(
-      renderTaskFlows({
-        connected: true,
-        loading: false,
-        error: null,
-        flows: [flow({ flowId: "flow-succeeded", status: "succeeded" })],
-        showSucceeded: false,
-        showFailed: false,
-        onShowSucceededChange: vi.fn(),
-        onShowFailedChange: vi.fn(),
-      }),
+      renderTaskFlows(
+        baseProps({ flows: [flow({ flowId: "flow-succeeded", status: "succeeded" })] }),
+      ),
       container,
     );
     expect(flowIds(container)).toHaveLength(0);
     expect(container.textContent).toContain("No TaskFlows match the current filters.");
+  });
+
+  it("hides the clear-terminal buttons when the caller is not an operator admin", () => {
+    const container = document.createElement("div");
+    render(renderTaskFlows(baseProps({ canClearTerminal: false })), container);
+    expect(container.textContent).not.toContain("Clear succeeded");
+    expect(container.textContent).not.toContain("Clear failed");
+  });
+
+  it("shows both clear-terminal buttons for an operator admin and wires their callbacks", () => {
+    const container = document.createElement("div");
+    const onClearSucceeded = vi.fn();
+    const onClearFailed = vi.fn();
+    render(
+      renderTaskFlows(baseProps({ canClearTerminal: true, onClearSucceeded, onClearFailed })),
+      container,
+    );
+    const buttons = [...container.querySelectorAll("button")];
+    const clearSucceeded = buttons.find(
+      (button) => button.textContent?.trim() === "Clear succeeded",
+    );
+    const clearFailed = buttons.find((button) => button.textContent?.trim() === "Clear failed");
+    expect(clearSucceeded).toBeDefined();
+    expect(clearFailed).toBeDefined();
+    clearSucceeded!.click();
+    expect(onClearSucceeded).toHaveBeenCalledTimes(1);
+    clearFailed!.click();
+    expect(onClearFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables both clear-terminal buttons and shows a busy label for the one in flight", () => {
+    const container = document.createElement("div");
+    render(
+      renderTaskFlows(baseProps({ canClearTerminal: true, clearingStatus: "succeeded" })),
+      container,
+    );
+    const buttons = [...container.querySelectorAll("button")];
+    const busyButton = buttons.find((button) => button.textContent?.trim() === "Clearing…");
+    const otherButton = buttons.find((button) => button.textContent?.trim() === "Clear failed");
+    expect(busyButton).toBeDefined();
+    expect(busyButton!.disabled).toBe(true);
+    expect(otherButton).toBeDefined();
+    expect(otherButton!.disabled).toBe(true);
+  });
+
+  it("disables the clear-terminal buttons while disconnected", () => {
+    const container = document.createElement("div");
+    render(renderTaskFlows(baseProps({ canClearTerminal: true, connected: false })), container);
+    const buttons = [...container.querySelectorAll("button")];
+    const clearSucceeded = buttons.find(
+      (button) => button.textContent?.trim() === "Clear succeeded",
+    );
+    expect(clearSucceeded).toBeDefined();
+    expect(clearSucceeded!.disabled).toBe(true);
   });
 });

@@ -175,3 +175,40 @@ export async function runTaskFlowRegistryMaintenance(): Promise<TaskFlowRegistry
   }
   return { reconciled, pruned };
 }
+
+/** Terminal statuses an operator can manually clear ahead of the retention window. */
+export type ClearableTerminalTaskFlowStatus = "succeeded" | "failed";
+
+/**
+ * Immediately deletes every TaskFlow record in the given terminal status,
+ * bypassing TASK_FLOW_RETENTION_MS. Backs the operator-governed "Clear
+ * succeeded" / "Clear failed" TaskFlows UI actions. Records with active
+ * linked tasks are skipped for the same safety reason `shouldPruneFlow`
+ * skips them: they should not normally exist (a flow whose status is
+ * terminal has no active linked tasks), so a match here means the status
+ * is stale and deleting the record now would be premature.
+ */
+export function clearTerminalTaskFlowsByStatus(status: ClearableTerminalTaskFlowStatus): {
+  cleared: number;
+  skipped: number;
+} {
+  let cleared = 0;
+  let skipped = 0;
+  for (const flow of listTaskFlowRecords()) {
+    if (flow.status !== status) {
+      continue;
+    }
+    const current = getTaskFlowById(flow.flowId);
+    if (!current || current.status !== status) {
+      continue;
+    }
+    if (hasActiveLinkedTasks(current.flowId)) {
+      skipped += 1;
+      continue;
+    }
+    if (deleteTaskFlowRecordById(current.flowId)) {
+      cleared += 1;
+    }
+  }
+  return { cleared, skipped };
+}

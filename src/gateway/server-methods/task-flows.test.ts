@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
+import { listTaskFlowRecords } from "../../tasks/task-flow-registry.js";
 import {
   createFlowRecord,
   resetTaskFlowRegistryForTests,
@@ -52,10 +53,11 @@ async function request(
   cfg: OpenClawConfig = {},
   caller: GatewayClient = client(),
   params: Record<string, unknown> = {},
+  method = "taskFlows.listAll",
 ) {
   const respond = vi.fn<RespondFn>();
   await handleGatewayRequest({
-    req: { type: "req", id: "task-flows-list-all", method: "taskFlows.listAll", params },
+    req: { type: "req", id: "task-flows-request", method, params },
     respond,
     client: caller,
     isWebchatConnect: () => false,
@@ -153,6 +155,82 @@ describe("taskFlows.listAll cross-agent visibility", () => {
       const [ok, , error] = await request({}, client(undefined, ["operator.questions"]));
       expect(ok).toBe(false);
       expect(error?.details).toMatchObject({ missingScope: "operator.read" });
+    });
+  });
+});
+
+describe("taskFlows.clearTerminal operator-governed manual cleanup", () => {
+  afterEach(() => resetTaskFlowRegistryForTests({ persist: false }));
+
+  it("rejects a caller with only operator.read before the handler ever runs", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      resetTaskFlowRegistryForTests({ persist: false });
+      createFlowRecord({
+        ownerKey: "agent:ops:main",
+        goal: "ops flow",
+        controllerId: "tests/task-flows-clear-terminal",
+        status: "succeeded",
+      });
+      const [ok, payload, error] = await request(
+        {},
+        client(undefined, ["operator.read"]),
+        { status: "succeeded" },
+        "taskFlows.clearTerminal",
+      );
+      expect(ok).toBe(false);
+      expect(payload).toBeUndefined();
+      expect(error?.details).toMatchObject({ missingScope: "operator.admin" });
+    });
+  });
+
+  it("deletes every succeeded flow across every owner for an operator.admin caller", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      resetTaskFlowRegistryForTests({ persist: false });
+      const opsFlow = createFlowRecord({
+        ownerKey: "agent:ops:main",
+        goal: "ops flow",
+        controllerId: "tests/task-flows-clear-terminal",
+        status: "succeeded",
+      });
+      const mainFlow = createFlowRecord({
+        ownerKey: "agent:main:night-watch",
+        goal: "main flow",
+        controllerId: "tests/task-flows-clear-terminal",
+        status: "succeeded",
+      });
+      const stillFailed = createFlowRecord({
+        ownerKey: "agent:main:night-watch",
+        goal: "still failed",
+        controllerId: "tests/task-flows-clear-terminal",
+        status: "failed",
+      });
+      const [ok, payload] = await request(
+        {},
+        client(undefined, ["operator.admin"]),
+        { status: "succeeded" },
+        "taskFlows.clearTerminal",
+      );
+      expect(ok).toBe(true);
+      expect(payload).toEqual({ cleared: 2, skipped: 0 });
+      const remaining = listTaskFlowRecords().map((flow) => flow.flowId);
+      expect(remaining).not.toContain(opsFlow!.flowId);
+      expect(remaining).not.toContain(mainFlow!.flowId);
+      expect(remaining).toContain(stillFailed!.flowId);
+    });
+  });
+
+  it("rejects an invalid status param with INVALID_REQUEST", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      resetTaskFlowRegistryForTests({ persist: false });
+      const [ok, payload, error] = await request(
+        {},
+        client(undefined, ["operator.admin"]),
+        { status: "cancelled" },
+        "taskFlows.clearTerminal",
+      );
+      expect(ok).toBe(false);
+      expect(payload).toBeUndefined();
+      expect(error).toMatchObject({ code: "INVALID_REQUEST" });
     });
   });
 });
