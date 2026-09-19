@@ -107,25 +107,18 @@ vi.mock("../agents/agent-model-discovery.js", async () => {
     "../agents/sessions/index.js",
   );
 
+  type ActualRegistry = {
+    getAll: () => Array<{ provider?: string; id?: string }>;
+    getAvailable: () => Array<{ provider?: string; id?: string }>;
+    find: (provider: string, modelId: string) => unknown;
+    fork: (authStorage: never) => ActualRegistry;
+  };
+
   const createActualRegistry = (...args: Parameters<typeof actual.discoverModels>) => {
     const modelsFile = path.join(args[1], "models.json");
     const Registry = modelSessions.ModelRegistry as unknown as {
-      create?: (
-        authStorage: unknown,
-        modelsFile: string,
-      ) => {
-        getAll: () => Array<{ provider?: string; id?: string }>;
-        getAvailable: () => Array<{ provider?: string; id?: string }>;
-        find: (provider: string, modelId: string) => unknown;
-      };
-      new (
-        authStorage: unknown,
-        modelsFile: string,
-      ): {
-        getAll: () => Array<{ provider?: string; id?: string }>;
-        getAvailable: () => Array<{ provider?: string; id?: string }>;
-        find: (provider: string, modelId: string) => unknown;
-      };
+      create?: (authStorage: unknown, modelsFile: string) => ActualRegistry;
+      new (authStorage: unknown, modelsFile: string): ActualRegistry;
     };
     if (typeof Registry.create === "function") {
       return Registry.create(args[0], modelsFile);
@@ -134,12 +127,29 @@ vi.mock("../agents/agent-model-discovery.js", async () => {
   };
 
   class MockModelRegistry {
-    private readonly actualRegistry?: ReturnType<typeof createActualRegistry>;
+    private readonly modelsFile: string;
+    private readonly actualRegistry?: ActualRegistry;
 
-    constructor(authStorage: unknown, modelsFile: string) {
+    constructor(authStorage: unknown, modelsFile: string, forkedRegistry?: ActualRegistry) {
+      this.modelsFile = modelsFile;
+      if (forkedRegistry) {
+        this.actualRegistry = forkedRegistry;
+        return;
+      }
       if (!agentDiscoveryMock.enabled) {
         this.actualRegistry = createActualRegistry(authStorage as never, path.dirname(modelsFile));
       }
+    }
+
+    // Prepared model runtimes fork the lifecycle-owned template registry once per run
+    // (createStores in prepared-model-runtime.full-catalog.ts), so this stand-in has to
+    // offer fork too. The fork stays a mock so discovery keeps routing through the harness.
+    fork(authStorage: unknown) {
+      return new MockModelRegistry(
+        authStorage,
+        this.modelsFile,
+        this.actualRegistry?.fork(authStorage as never),
+      );
     }
 
     getAll() {
