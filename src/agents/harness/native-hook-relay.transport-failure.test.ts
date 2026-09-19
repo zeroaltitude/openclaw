@@ -102,6 +102,17 @@ function preToolUsePayload(toolCallId: string) {
   };
 }
 
+function postToolUsePayload(toolCallId: string) {
+  return {
+    hook_event_name: "PostToolUse",
+    cwd: "/repo",
+    tool_name: "exec_command",
+    tool_use_id: toolCallId,
+    tool_input: { cmd: "pnpm test" },
+    tool_response: { exit_code: 0, stdout: "ok" },
+  };
+}
+
 /** Post to the relay's real bridge and hand back the live socket. */
 function openNativeHookRelayBridgeRequest(
   record: { hostname: string; port: number; token: string },
@@ -422,6 +433,112 @@ describe("native hook relay failure disposition attribution", () => {
     await vi.waitFor(() => {
       expect(onPreToolUseFailure).toHaveBeenCalledWith(
         expect.objectContaining({ toolCallId: "native-deadline-pre_tool_use" }),
+      );
+    });
+    expect(onPreToolUseFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing to the run owner when the child abandons a post-tool-use hook", async () => {
+    const onPreToolUseFailure = vi.fn();
+    const relayId = `codex-post-tool-projection-${randomUUID()}`;
+    let afterToolCallEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      afterToolCallEntered = resolve;
+    });
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "after_tool_call",
+          handler: async () => {
+            afterToolCallEntered();
+            // The observed shape: the parent is still inside the observation when
+            // the child's own hook budget gives up on a call that already ran.
+            await new Promise(() => {});
+            return {};
+          },
+        },
+      ]),
+    );
+    const relay = registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      agentId: "agent-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      onPreToolUseFailure,
+    });
+    let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
+    await vi.waitFor(async () => {
+      record = await readNativeHookRelayBridgeRecord({ relayId });
+      expect(record?.relayId).toBe(relayId);
+    });
+    if (!record) {
+      throw new Error(`Expected a bridge record for ${relayId}`);
+    }
+
+    const request = openNativeHookRelayBridgeRequest(record, {
+      provider: "codex",
+      relayId,
+      generation: relay.generation,
+      event: "post_tool_use",
+      rawPayload: postToolUsePayload("native-post-tool-projection-1"),
+    });
+    await entered;
+    request.destroy();
+    await request.failed;
+    // The record site ran and attributed the failure to this event — the
+    // projection is withheld on purpose, not missed because nothing happened.
+    await vi.waitFor(() => {
+      expect(loggedMeta(subsystemLogger.warn, "native hook relay transport failure")).toMatchObject(
+        {
+          relayId,
+          event: "post_tool_use",
+        },
+      );
+    });
+
+    // A later invocation is a second settling point: anything the disconnect
+    // scheduled has run by the time this resolves.
+    await expect(
+      invokeNativeHookRelay({
+        provider: "codex",
+        relayId: relay.relayId,
+        event: "pre_tool_use",
+        rawPayload: preToolUsePayload("native-after-abandoned-post-tool"),
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+    expect(onPreToolUseFailure).not.toHaveBeenCalled();
+  });
+
+  it("says nothing for an abandoned post-tool-use hook's server deadline either", async () => {
+    const onPreToolUseFailure = vi.fn();
+    const relayId = `codex-post-tool-deadline-projection-${randomUUID()}`;
+    registerNativeHookRelay({
+      provider: "codex",
+      relayId,
+      agentId: "agent-1",
+      sessionId: "session-1",
+      runId: "run-1",
+      onPreToolUseFailure,
+    });
+
+    for (const event of ["post_tool_use", "pre_tool_use"] as const) {
+      recordNativeHookRelayTransportFailure({
+        relayId,
+        cause: "server-deadline",
+        event,
+        elapsedMs: NATIVE_HOOK_RELAY_BRIDGE_INVOCATION_DEADLINE_MS,
+        toolName: "shell",
+        toolCallId: `native-post-deadline-${event}`,
+      });
+    }
+
+    // Projection is scheduled, not immediate, so the pre-tool-use call recorded
+    // second is the settling point: once it has landed, anything the post-tool-use
+    // failure scheduled first would already have landed too.
+    await vi.waitFor(() => {
+      expect(onPreToolUseFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ toolCallId: "native-post-deadline-pre_tool_use" }),
       );
     });
     expect(onPreToolUseFailure).toHaveBeenCalledTimes(1);
@@ -758,6 +875,32 @@ describe("native hook relay transport failure escalation", () => {
     expect(readTransportFailureCount(relayId)).toBe(TRANSPORT_FAILURE_THRESHOLD);
     expect(loggedMeta(subsystemLogger.error, "native hook relay transport failed")).toMatchObject({
       relayId,
+      consecutiveFailures: TRANSPORT_FAILURE_THRESHOLD,
+    });
+  });
+
+  it("still charges an abandoned post-tool-use hook to the relay's health streak", () => {
+    const relayId = `codex-post-tool-streak-${randomUUID()}`;
+    registerEscalationRelay(relayId);
+
+    // Withholding the tool call's fate must not also withhold the relay's own
+    // health verdict: unlike an excused approval wait, a dead transport under a
+    // post-tool-use hook is a real transport failure and still counts.
+    for (let index = 0; index < TRANSPORT_FAILURE_THRESHOLD; index += 1) {
+      recordNativeHookRelayTransportFailure({
+        relayId,
+        cause: "client-disconnected",
+        event: "post_tool_use",
+        elapsedMs: 9_000,
+        toolName: "exec",
+        toolCallId: `native-post-tool-streak-${index}`,
+      });
+    }
+
+    expect(readTransportFailureCount(relayId)).toBe(TRANSPORT_FAILURE_THRESHOLD);
+    expect(loggedMeta(subsystemLogger.error, "native hook relay transport failed")).toMatchObject({
+      relayId,
+      cause: "client-disconnected",
       consecutiveFailures: TRANSPORT_FAILURE_THRESHOLD,
     });
   });
