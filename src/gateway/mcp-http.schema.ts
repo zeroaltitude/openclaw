@@ -7,7 +7,7 @@ import {
   findToolInputSchemaTopLevelUnionError,
   TOOL_INPUT_SCHEMA_TOP_LEVEL_UNION_KEYWORDS,
 } from "../shared/json-schema-defaults.js";
-import { resolveGatewayScopedTools } from "./tool-resolution.js";
+import type { resolveGatewayScopedTools } from "./tool-resolution.js";
 
 const MCP_LOOPBACK_LOG_PREFIX = "mcp-loopback";
 
