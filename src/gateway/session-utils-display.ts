@@ -105,15 +105,24 @@ export function projectGatewaySessionRunState(params: {
     normalizeOptionalString(subagentRun?.controllerSessionKey) ||
     normalizeOptionalString(subagentRun?.requesterSessionKey);
   const liveSubagentRunActive = isSubagentRunLive(subagentRun) || isSubagentRunQueued(subagentRun);
-  const hasActiveSubagentRun =
-    liveSubagentRunActive || subagentRuns.countActiveDescendantRuns(key) > 0;
+  const activeSubagentDescendantCount = subagentRuns.countActiveDescendantRuns(key);
+  const hasActiveSubagentRun = liveSubagentRunActive || activeSubagentDescendantCount > 0;
   const fields: Pick<
     GatewaySessionRow,
-    "status" | "subagentRunState" | "hasActiveSubagentRun" | "startedAt" | "endedAt" | "runtimeMs"
+    | "status"
+    | "subagentRunState"
+    | "hasActiveSubagentRun"
+    | "hasActiveSubagentDescendantRun"
+    | "startedAt"
+    | "endedAt"
+    | "runtimeMs"
   > = {
     status: entry?.status === "interrupted" ? "failed" : entry?.status,
     subagentRunState: undefined,
     hasActiveSubagentRun: subagentRun || hasActiveSubagentRun ? hasActiveSubagentRun : undefined,
+    // Emit an explicit false so clients can distinguish a current Gateway with
+    // no live descendants from a legacy Gateway that does not expose this fact.
+    hasActiveSubagentDescendantRun: activeSubagentDescendantCount > 0,
     startedAt: entry?.startedAt,
     endedAt: entry?.endedAt,
     runtimeMs: entry?.runtimeMs,
