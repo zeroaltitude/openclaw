@@ -210,6 +210,10 @@ describe("listGatewayMethods", () => {
       "computer.status",
       "computer.invoke",
       "sessions.activitySummary.ensure",
+      "tasks.supervision.list",
+      "tasks.supervision.artifact",
+      "tasks.supervision.get",
+      "tasks.supervision.control",
       "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
       ...voiceSelectionMethods,
@@ -219,6 +223,7 @@ describe("listGatewayMethods", () => {
       "desktop.release",
       "mcp.authLogin",
       "taskFlows.listAll",
+      "taskFlows.clearTerminal",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -255,6 +260,10 @@ describe("listGatewayMethods", () => {
       "computer.status",
       "computer.invoke",
       "sessions.activitySummary.ensure",
+      "tasks.supervision.list",
+      "tasks.supervision.artifact",
+      "tasks.supervision.get",
+      "tasks.supervision.control",
       "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
       ...voiceSelectionMethods,
@@ -264,6 +273,7 @@ describe("listGatewayMethods", () => {
       "desktop.release",
       "mcp.authLogin",
       "taskFlows.listAll",
+      "taskFlows.clearTerminal",
     ]);
   });
 
@@ -429,6 +439,10 @@ describe("listGatewayMethods", () => {
       "computer.status",
       "computer.invoke",
       "sessions.activitySummary.ensure",
+      "tasks.supervision.list",
+      "tasks.supervision.artifact",
+      "tasks.supervision.get",
+      "tasks.supervision.control",
       "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
       ...voiceSelectionMethods,
@@ -438,6 +452,7 @@ describe("listGatewayMethods", () => {
       "desktop.release",
       "mcp.authLogin",
       "taskFlows.listAll",
+      "taskFlows.clearTerminal",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));

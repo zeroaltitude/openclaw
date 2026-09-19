@@ -59,6 +59,7 @@ import {
 import type { AgentDeliveryPhaseResult } from "./agent-delivery-phase.js";
 import type { RestoredCronContinuation } from "./agent-handler-helpers.js";
 import { createAgentRunAdmissionRevalidator } from "./agent-run-admission-revalidation.js";
+import { maybeAdmitSupervisedGatewayRoot } from "./agent-run-supervised-root.js";
 import { prepareAgentRunTaskTracking } from "./agent-run-task-tracking.js";
 import {
   prepareAgentRunUserTurn,
@@ -601,6 +602,20 @@ export async function prepareAgentRunDispatch(params: {
     } finally {
       releasePreparedAgentRunUserTurn(userTurn, parentResume ? "cancelled" : "interrupted");
     }
+  }
+  const supervisedRoot = maybeAdmitSupervisedGatewayRoot({
+    admission: params,
+    userTurn,
+    activeModel,
+    activeRunAbort,
+    onInputAccepted: () => {
+      assertInputAdmissionCurrent = undefined;
+    },
+    onAccepted: cleanupPreaccept,
+    onRejected: (error) => rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, error)),
+  });
+  if (supervisedRoot && (await supervisedRoot)) {
+    return undefined;
   }
   const accepted = {
     runId: params.runId,
