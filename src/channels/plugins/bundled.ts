@@ -20,7 +20,6 @@ import { unwrapDefaultModuleExport } from "../../plugins/module-export.js";
 import { pluginCacheRealpathSync } from "../../plugins/plugin-cache-files.js";
 import { getPluginCacheRoot, getPluginCacheSource } from "../../plugins/plugin-cache.js";
 import { pluginInstanceInvocation } from "../../plugins/plugin-instance-invocation.js";
-import { getCachedPluginModuleLoader } from "../../plugins/plugin-module-loader-cache.js";
 import { resolveBundledChannelRootScope, type BundledChannelRootScope } from "./bundled-root.js";
 import { normalizeChannelMeta } from "./meta-normalization.js";
 import { loadChannelPluginModule } from "./module-loader.js";
