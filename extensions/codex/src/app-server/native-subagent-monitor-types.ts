@@ -107,7 +107,12 @@ export type ChildState = NativeSubagentAssignment & {
   settledWithoutCompletion: boolean;
   releaseDirectChild?: () => void;
   directOwner?: ParentOwner;
+  // Claim callbacks already applied to this child, held by identity so a
+  // repeated spawn notification cannot re-claim the same owner.
+  claimedDirectChildOwners?: Set<DirectChildClaim>;
 };
+
+export type DirectChildClaim = (threadId: string) => (() => void) | undefined;
 
 export type KnownChild = {
   parent: ParentState;

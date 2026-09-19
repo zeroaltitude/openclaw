@@ -39,6 +39,7 @@ import {
 } from "./native-subagent-monitor-runtime.js";
 import type {
   ChildState,
+  DirectChildClaim,
   DirectSpawnEvidence,
   KnownChild,
   MonitorOptions,
@@ -1725,11 +1726,64 @@ class Monitor {
       ...(owner?.claimDirectChild ? { directOwner: owner } : {}),
     });
     if (!owner) {
+      // The child's first pre_tool_use hook blocks on this claim, so evidence
+      // that owner resolution can never consume must still admit the child.
+      if (childState && !turnIdInput?.trim()) {
+        this.claimDirectChildWithoutTurn(state, childState);
+      }
       this.bufferPendingChildAdmissionEvidence(turnIdInput, { ...evidence, kind: "spawn" });
     } else if (childState) {
       owner.onDirectChildAccepted?.();
     }
     return childState;
+  }
+
+  /** Applies a claim once per owner, composing releases so none are lost. */
+  private addDirectChildClaim(childState: ChildState, claimDirectChild: DirectChildClaim): void {
+    if (childState.terminal || childState.settledWithoutCompletion) {
+      return;
+    }
+    const claimed = (childState.claimedDirectChildOwners ??= new Set<DirectChildClaim>());
+    if (claimed.has(claimDirectChild)) {
+      return;
+    }
+    claimed.add(claimDirectChild);
+    const release = claimDirectChild(childState.childThreadId);
+    if (!release) {
+      return;
+    }
+    const previous = childState.releaseDirectChild;
+    childState.releaseDirectChild = previous
+      ? () => {
+          previous();
+          release();
+        }
+      : release;
+  }
+
+  /**
+   * Provisional admission for direct-spawn evidence that owner resolution can
+   * never consume. Only turn-less evidence qualifies: it is keyed by nothing, so
+   * no bindTurn will ever drain it, and the child's first pre_tool_use hook is
+   * already blocked on the claim it will never receive. Evidence whose turn id
+   * matches no owner stays unclaimed on purpose — it is not authoritative for
+   * this parent's live runs, and its own turn's owner still drains the buffer.
+   */
+  private claimDirectChildWithoutTurn(state: ParentState, childState: ChildState): void {
+    if (this.recovery.isTerminalRevision(childState.childThreadId)) {
+      // Matches registerChildThread: a late spawn event must not mint direct
+      // authority for a child this client has already seen terminate.
+      return;
+    }
+    // Without a turn ID, the parent must have exactly one owner. Fan-out would
+    // grant unrelated runs authority over a child they did not spawn.
+    if (state.owners.size !== 1) {
+      return;
+    }
+    const owner = state.owners.values().next().value;
+    if (owner?.claimDirectChild) {
+      this.addDirectChildClaim(childState, owner.claimDirectChild);
+    }
   }
 
   private bufferPendingChildAdmissionEvidence(
@@ -1776,17 +1830,38 @@ class Monitor {
             (candidate.nativeTurnId !== undefined &&
               candidate.nativeTurnId === evidence.nativeTurnId) ||
             (evidence.itemId !== undefined && candidate.itemId === evidence.itemId)),
-      ) ||
-      (requiresUnboundOwner &&
-        [...this.pendingChildAdmissionEvidence.values()].reduce(
-          (count, entries) => count + entries.length,
-          0,
-        ) >= MAX_PENDING_CHILD_ADMISSION_EVIDENCE)
+      )
     ) {
       return;
     }
+    // At capacity, evict the oldest rather than refusing the newest. Refusing
+    // silently discarded the only evidence that could ever claim a live child,
+    // whose first pre_tool_use hook is already blocked on that claim.
+    this.evictOldestPendingChildAdmissionEvidence();
     pending.push(evidence);
     this.pendingChildAdmissionEvidence.set(turnId, pending);
+  }
+
+  /** Frees a slot so new admission evidence fits, oldest turn first. */
+  private evictOldestPendingChildAdmissionEvidence(): void {
+    const countPending = () =>
+      [...this.pendingChildAdmissionEvidence.values()].reduce(
+        (count, entries) => count + entries.length,
+        0,
+      );
+    while (countPending() >= MAX_PENDING_CHILD_ADMISSION_EVIDENCE) {
+      const oldest = [...this.pendingChildAdmissionEvidence.entries()].find(
+        ([, entries]) => entries.length > 0,
+      );
+      if (!oldest) {
+        return;
+      }
+      const [oldestTurnId, entries] = oldest;
+      entries.shift();
+      if (entries.length === 0) {
+        this.pendingChildAdmissionEvidence.delete(oldestTurnId);
+      }
+    }
   }
 
   private drainPendingChildAdmissionEvidence(
@@ -2014,6 +2089,7 @@ class Monitor {
     const release = childState.releaseDirectChild;
     childState.releaseDirectChild = undefined;
     childState.directOwner = undefined;
+    childState.claimedDirectChildOwners = undefined;
     release?.();
   }
 

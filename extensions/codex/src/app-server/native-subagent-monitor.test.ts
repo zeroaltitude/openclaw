@@ -701,6 +701,506 @@ describe("CodexNativeSubagentMonitor", () => {
     monitor.dispose();
   });
 
+  it.each(["v1", "v2"] as const)(
+    "buffers direct %s spawn evidence until its exact parent turn binds",
+    async (version) => {
+      const client = createClient();
+      const claimDirectChild = vi.fn(() => () => undefined);
+      const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+      const owner = monitor.registerParent({ parentThreadId: "parent-thread", claimDirectChild });
+      const item = directSpawnItem(version, "parent-thread", "child-thread");
+
+      await client.notify({
+        method: "item/completed",
+        params: { threadId: "parent-thread", turnId: "turn-1", item },
+      } as unknown as CodexServerNotification);
+      expect(claimDirectChild).not.toHaveBeenCalled();
+
+      owner.bindTurn("turn-1");
+      expect(claimDirectChild).toHaveBeenCalledTimes(1);
+      expect(claimDirectChild).toHaveBeenCalledWith("child-thread");
+      monitor.dispose();
+    },
+  );
+
+  it("does not consume pre-bind direct spawn evidence for another turn", async () => {
+    const client = createClient();
+    const claimDirectChild = vi.fn(() => () => undefined);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const owner = monitor.registerParent({ parentThreadId: "parent-thread", claimDirectChild });
+
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "wrong-turn",
+        item: directSpawnItem("v1", "parent-thread", "child-thread"),
+      },
+    });
+    owner.bindTurn("turn-1");
+
+    expect(claimDirectChild).not.toHaveBeenCalled();
+    monitor.dispose();
+  });
+
+  it.each(["v1", "v2"] as const)(
+    "claims direct %s spawn evidence that carries no turn id",
+    async (version) => {
+      // Nothing will ever drain a turn-less evidence, so buffering it silently
+      // discarded the only thing that could unblock the child's first hook.
+      const client = createClient();
+      const claimDirectChild = vi.fn(() => () => undefined);
+      const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+      const owner = monitor.registerParent({ parentThreadId: "parent-thread", claimDirectChild });
+
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          item: directSpawnItem(version, "parent-thread", "child-thread"),
+        },
+      } as unknown as CodexServerNotification);
+
+      expect(claimDirectChild).toHaveBeenCalledWith("child-thread");
+      owner.unregister();
+      monitor.dispose();
+    },
+  );
+
+  it.each(["v1", "v2"] as const)(
+    "does not grant turn-less %s spawn authority to multiple parent owners",
+    async (version) => {
+      const client = createClient();
+      const firstClaim = vi.fn(() => () => undefined);
+      const secondClaim = vi.fn(() => () => undefined);
+      const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+      onTestFinished(() => monitor.dispose());
+      const first = monitor.registerParent({
+        parentThreadId: "parent-thread",
+        claimDirectChild: firstClaim,
+      });
+      const second = monitor.registerParent({
+        parentThreadId: "parent-thread",
+        claimDirectChild: secondClaim,
+      });
+      first.bindTurn("turn-first");
+      second.bindTurn("turn-second");
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          item: directSpawnItem(version, "parent-thread", "child-thread"),
+        },
+      } as unknown as CodexServerNotification);
+      expect(firstClaim).not.toHaveBeenCalled();
+      expect(secondClaim).not.toHaveBeenCalled();
+      // Identified evidence can still admit the same child through its actual owner.
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          turnId: "turn-second",
+          item: directSpawnItem(version, "parent-thread", "child-thread"),
+        },
+      } as unknown as CodexServerNotification);
+      expect(firstClaim).not.toHaveBeenCalled();
+      expect(secondClaim).toHaveBeenCalledExactlyOnceWith("child-thread");
+      first.unregister();
+      second.unregister();
+    },
+  );
+
+  it("keeps a direct spawn turn unambiguous so exactly one owner can claim it", async () => {
+    // bindTurn refuses a turn another owner already holds, which is why an
+    // owner-ambiguous direct spawn cannot occur and needs no provisional claim.
+    const client = createClient();
+    const firstClaim = vi.fn(() => () => undefined);
+    const secondClaim = vi.fn(() => () => undefined);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const first = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      claimDirectChild: firstClaim,
+    });
+    const second = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      claimDirectChild: secondClaim,
+    });
+    first.bindTurn("turn-1");
+    second.bindTurn("turn-1");
+
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-1",
+        item: directSpawnItem("v1", "parent-thread", "child-thread"),
+      },
+    } as unknown as CodexServerNotification);
+
+    expect(firstClaim).toHaveBeenCalledWith("child-thread");
+    expect(secondClaim).not.toHaveBeenCalled();
+    first.unregister();
+    second.unregister();
+    monitor.dispose();
+  });
+
+  it("evicts the oldest pending direct spawn evidence instead of refusing the newest", async () => {
+    const client = createClient();
+    const claimDirectChild = vi.fn(() => () => undefined);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const owner = monitor.registerParent({ parentThreadId: "parent-thread", claimDirectChild });
+
+    for (let index = 0; index < 32; index += 1) {
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          turnId: "turn-1",
+          item: directSpawnItem("v1", "parent-thread", `child-${index}`),
+        },
+      } as unknown as CodexServerNotification);
+    }
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-1",
+        item: directSpawnItem("v1", "parent-thread", "child-last"),
+      },
+    } as unknown as CodexServerNotification);
+    owner.bindTurn("turn-1");
+
+    // The newest child is live and already blocked on its claim; the oldest is
+    // the one most likely to be gone.
+    expect(claimDirectChild).toHaveBeenCalledWith("child-last");
+    expect(claimDirectChild).not.toHaveBeenCalledWith("child-0");
+    monitor.dispose();
+  });
+
+  it.each(["v1", "v2"] as const)(
+    "keeps another bound parent from consuming %s pre-bind evidence capacity",
+    async (version) => {
+      const client = createClient();
+      const firstClaim = vi.fn(() => () => undefined);
+      const secondClaim = vi.fn(() => () => undefined);
+      const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+      const first = monitor.registerParent({
+        parentThreadId: "parent-first",
+        claimDirectChild: firstClaim,
+      });
+      const second = monitor.registerParent({
+        parentThreadId: "parent-second",
+        claimDirectChild: secondClaim,
+      });
+      first.bindTurn("turn-first");
+
+      for (const childThreadId of Array.from(
+        { length: 32 },
+        (_, index) => `first-unmatched-${index}`,
+      )) {
+        const item = directSpawnItem(version, "parent-first", childThreadId);
+        await client.notify({
+          method: "item/completed",
+          params: { threadId: "parent-first", turnId: "unmatched-first", item },
+        } as unknown as CodexServerNotification);
+      }
+      expect(firstClaim).not.toHaveBeenCalled();
+
+      const secondItem = directSpawnItem(version, "parent-second", "second-child");
+      await client.notify({
+        method: "item/completed",
+        params: { threadId: "parent-second", turnId: "turn-second", item: secondItem },
+      } as unknown as CodexServerNotification);
+      second.bindTurn("turn-second");
+
+      expect(secondClaim).toHaveBeenCalledWith("second-child");
+      expect(firstClaim).not.toHaveBeenCalled();
+      // Both parents are now bound: unmatched direct evidence has no owner
+      // and must not be buffered for a later registration.
+      await client.notify({
+        method: "item/completed",
+        params: { threadId: "parent-first", turnId: "wrong-parent-turn", item: secondItem },
+      } as unknown as CodexServerNotification);
+      expect(secondClaim).toHaveBeenCalledTimes(1);
+      monitor.dispose();
+    },
+  );
+
+  it.each(["v1", "v2"] as const)(
+    "does not resurrect terminal pre-bind %s spawn evidence",
+    async (version) => {
+      const client = createClient();
+      const claimDirectChild = vi.fn(() => () => undefined);
+      const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+      const owner = monitor.registerParent({ parentThreadId: "parent-thread", claimDirectChild });
+      const item = directSpawnItem(version, "parent-thread", "child-thread");
+      await client.notify({
+        method: "item/completed",
+        params: { threadId: "parent-thread", turnId: "turn-1", item },
+      } as unknown as CodexServerNotification);
+      await client.notify(nativeCompletionNotification({ result: "done" }));
+
+      owner.bindTurn("turn-1");
+      expect(claimDirectChild).not.toHaveBeenCalled();
+      monitor.dispose();
+    },
+  );
+
+  it("claims only direct spawn evidence and releases before terminal delivery", async () => {
+    const client = createClient();
+    const runtime = createRuntime();
+    const release = vi.fn();
+    runtime.deliverAgentHarnessTaskCompletion.mockImplementation(async () => {
+      expect(release).toHaveBeenCalledTimes(1);
+      return { delivered: true, path: "direct" };
+    });
+    const claimDirectChild = vi.fn(() => release);
+    const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
+    const owner = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      requesterSessionKey: "agent:main:main",
+      taskRuntimeScope: createTaskScope("agent:main:main"),
+      agentId: "main",
+      claimDirectChild,
+    });
+    owner.bindTurn("turn-1");
+
+    await notifyChildStarted(client);
+    expect(claimDirectChild).not.toHaveBeenCalled();
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-1",
+        item: directSpawnItem("v1", "parent-thread", "child-thread"),
+      },
+    });
+    expect(claimDirectChild).toHaveBeenCalledWith("child-thread");
+
+    await client.notify(
+      nativeCompletionNotification({ agentPath: "child-thread", result: "direct result" }),
+    );
+    expect(release).toHaveBeenCalledTimes(1);
+    monitor.dispose();
+  });
+
+  it("does not retain authority for a failed V1 spawn", async () => {
+    const client = createClient();
+    const claimDirectChild = vi.fn(() => () => undefined);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const owner = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      claimDirectChild,
+    });
+    owner.bindTurn("turn-1");
+
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-1",
+        item: {
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          status: "failed",
+          senderThreadId: "parent-thread",
+          receiverThreadIds: ["failed-child"],
+        },
+      },
+    });
+
+    expect(claimDirectChild).not.toHaveBeenCalled();
+    monitor.dispose();
+  });
+
+  it.each(["v1", "v2"] as const)(
+    "does not reclaim a terminal child from late %s spawn evidence",
+    async (version) => {
+      const client = createClient();
+      const claimDirectChild = vi.fn(() => () => undefined);
+      const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+      const owner = monitor.registerParent({
+        parentThreadId: "parent-thread",
+        requesterSessionKey: "agent:main:main",
+        taskRuntimeScope: createTaskScope("agent:main:main"),
+        claimDirectChild,
+      });
+      owner.bindTurn("turn-1");
+      const item = directSpawnItem(version, "parent-thread", "child-thread");
+      await client.notify({
+        method: "item/completed",
+        params: { threadId: "parent-thread", turnId: "turn-1", item },
+      } as unknown as CodexServerNotification);
+      expect(claimDirectChild).toHaveBeenCalledTimes(1);
+
+      await client.notify(
+        nativeCompletionNotification({ agentPath: "child-thread", result: "done" }),
+      );
+      await client.notify({
+        method: "item/completed",
+        params: { threadId: "parent-thread", turnId: "turn-1", item },
+      } as unknown as CodexServerNotification);
+
+      expect(claimDirectChild).toHaveBeenCalledTimes(1);
+      monitor.dispose();
+    },
+  );
+
+  it("does not reclaim an interrupted child from later V1 spawn evidence", async () => {
+    const client = createClient();
+    const claimDirectChild = vi.fn(() => () => undefined);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const owner = monitor.registerParent({ parentThreadId: "parent-thread", claimDirectChild });
+    owner.bindTurn("turn-1");
+    const spawn = directSpawnItem("v1", "parent-thread", "child-thread");
+    await client.notify({
+      method: "item/completed",
+      params: { threadId: "parent-thread", turnId: "turn-1", item: spawn },
+    });
+    await client.notify(childTurnCompletedNotification({ status: "interrupted" }));
+    await client.notify({
+      method: "item/completed",
+      params: { threadId: "parent-thread", turnId: "turn-1", item: spawn },
+    });
+
+    expect(claimDirectChild).toHaveBeenCalledTimes(1);
+    monitor.dispose();
+  });
+
+  it("does not reclaim a completed child while its final result is still unresolved", async () => {
+    const client = createClient();
+    const release = vi.fn();
+    const claimDirectChild = vi.fn(() => release);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const owner = monitor.registerParent({ parentThreadId: "parent-thread", claimDirectChild });
+    owner.bindTurn("turn-1");
+    const spawn = directSpawnItem("v1", "parent-thread", "child-thread");
+    await client.notify({
+      method: "item/completed",
+      params: { threadId: "parent-thread", turnId: "turn-1", item: spawn },
+    });
+    await client.notify(childTurnCompletedNotification({ status: "completed" }));
+    await client.notify({
+      method: "item/completed",
+      params: { threadId: "parent-thread", turnId: "turn-1", item: spawn },
+    });
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(claimDirectChild).toHaveBeenCalledTimes(1);
+    monitor.dispose();
+  });
+
+  it.each(["completed", "failed", "interrupted"] as const)(
+    "rejects pending direct admission when a child is observed %s before its spawn claim",
+    async (status) => {
+      const client = createClient();
+      const rejectPendingDirectChild = vi.fn();
+      const claimDirectChild = vi.fn(() => () => undefined);
+      const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+      const owner = monitor.registerParent({
+        parentThreadId: "parent-thread",
+        claimDirectChild,
+        rejectPendingDirectChild,
+      });
+      owner.bindTurn("turn-1");
+      await notifyChildStarted(client);
+      await client.notify(childTurnCompletedNotification({ status }));
+      await client.notify({
+        method: "item/completed",
+        params: {
+          threadId: "parent-thread",
+          turnId: "turn-1",
+          item: directSpawnItem("v1", "parent-thread", "child-thread"),
+        },
+      });
+
+      expect(rejectPendingDirectChild).toHaveBeenCalledWith(
+        "child-thread",
+        expect.stringContaining("Codex child turn"),
+      );
+      expect(claimDirectChild).not.toHaveBeenCalled();
+      monitor.dispose();
+    },
+  );
+
+  it("releases terminal tombstones when their parent registration closes", async () => {
+    const client = createClient();
+    const firstClaim = vi.fn(() => () => undefined);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const first = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      claimDirectChild: firstClaim,
+    });
+    first.bindTurn("turn-1");
+    for (const childThreadId of ["terminal-child-1", "terminal-child-2", "terminal-child-3"]) {
+      await notifyChildStarted(client, "parent-thread", childThreadId, childThreadId);
+      await client.notify(
+        nativeCompletionNotification({ agentPath: childThreadId, result: "done" }),
+      );
+    }
+
+    first.unregister();
+    const nextClaim = vi.fn(() => () => undefined);
+    const next = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      claimDirectChild: nextClaim,
+    });
+    next.bindTurn("turn-2");
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-2",
+        item: directSpawnItem("v1", "parent-thread", "terminal-child-1"),
+      },
+    });
+
+    expect(firstClaim).not.toHaveBeenCalled();
+    expect(nextClaim).toHaveBeenCalledWith("terminal-child-1");
+    monitor.dispose();
+  });
+
+  it("collects a terminal revision after its last held reader releases", async () => {
+    const client = createClient();
+    let resolveRead: ((value: CodexThreadReadResponse) => void) | undefined;
+    const pendingRead = new Promise<CodexThreadReadResponse>((resolve) => {
+      resolveRead = resolve;
+    });
+    client.setThreadReadFactory("child-thread", async () => await pendingRead);
+    const firstClaim = vi.fn(() => () => undefined);
+    const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());
+    const first = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      claimDirectChild: firstClaim,
+    });
+    first.bindTurn("turn-1");
+    await notifyChildStarted(client);
+    const reconciliation = monitor.reconcileChildThread("child-thread");
+    await client.notify(nativeCompletionNotification({ result: "done" }));
+    first.unregister();
+    resolveRead?.(threadRead({ status: "inProgress" }));
+    await reconciliation;
+
+    const nextClaim = vi.fn(() => () => undefined);
+    const next = monitor.registerParent({
+      parentThreadId: "parent-thread",
+      claimDirectChild: nextClaim,
+    });
+    next.bindTurn("turn-2");
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-2",
+        item: directSpawnItem("v1", "parent-thread", "child-thread"),
+      },
+    });
+
+    expect(firstClaim).not.toHaveBeenCalled();
+    expect(nextClaim).toHaveBeenCalledWith("child-thread");
+    monitor.dispose();
+  });
+
   it("selects the exact bound parent turn and preserves the remaining owner on unregister", async () => {
     const client = createClient();
     const monitor = new CodexNativeSubagentMonitor(client as never, createRuntime());

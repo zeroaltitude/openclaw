@@ -21,6 +21,10 @@ import {
   isRetryableNativeHookRelayBridgeLookupError,
 } from "./native-hook-relay-bridge.js";
 import {
+  awaitBoundedNativeHookRelayChildAdmission,
+  resolveNativeHookRelayChildAdmissionTimeoutMs,
+} from "./native-hook-relay-child-admission.js";
+import {
   getNativeHookRelayProviderAdapter,
   normalizeNativeHookInvocation,
 } from "./native-hook-relay-codec.js";
@@ -233,6 +237,9 @@ function registerNativeHookRelayInternal(
     setRelayLifetime(registration, {
       foregroundOpen: true,
       foregroundToken: Symbol("native-hook-relay-foreground"),
+      childAdmissionTimeoutMs: resolveNativeHookRelayChildAdmissionTimeoutMs(
+        params.command?.timeoutMs,
+      ),
       policyReady,
       ...(retained ? { retained } : {}),
       ...(retention ? { retention } : {}),
@@ -454,21 +461,25 @@ async function resolveNativeHookRelayInvocationBinding(
         throw new Error("native hook relay retained invocation not allowed");
       }
     };
-    if (lifetime.foregroundOpen && retention.awaitForegroundAdmission) {
-      // Attribution for a hook that dies waiting here: a long admissionWaitMs
-      // means the child lost the admission race, a short one with no outcome
-      // means the relay was already gone.
-      const admissionStartedAt = Date.now();
-      assertAdmission = await racePromiseWithAbortSignal(
-        retention.awaitForegroundAdmission(claim, signal),
-        signal,
-      );
-      log.debug("native hook relay child admission settled", {
-        relayId: registration.relayId,
-        childThreadId: claim,
-        admissionWaitMs: Date.now() - admissionStartedAt,
-        outcome: assertAdmission ? "admitted" : "not-admitted",
-      });
+    const awaitForegroundAdmission = retention.awaitForegroundAdmission;
+    if (lifetime.foregroundOpen && awaitForegroundAdmission) {
+      const admissionStartedAtMs = Date.now();
+      try {
+        assertAdmission = await awaitBoundedNativeHookRelayChildAdmission({
+          admit: (admissionSignal) => awaitForegroundAdmission(claim, admissionSignal),
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          ...(signal ? { signal } : {}),
+        });
+      } catch (error) {
+        log.debug("native hook relay child admission failed", {
+          relayId: registration.relayId,
+          childThreadId: claim,
+          admissionWaitMs: Date.now() - admissionStartedAtMs,
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          error,
+        });
+        throw error;
+      }
       if (!assertAdmission) {
         throw new Error("native hook relay retained invocation not allowed");
       }
