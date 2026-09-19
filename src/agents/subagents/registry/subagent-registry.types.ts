@@ -26,6 +26,8 @@ export type SubagentCompletionRequest = {
   startedAt?: number;
   suppressSessionEffects?: boolean;
   recoverInterrupted?: true;
+  /** Revalidate recovery evidence under the terminal lock before claiming effects. */
+  canRecoverInterrupted?: () => boolean;
   completionSnapshot?: { resultText: string | null; capturedAt: number };
   terminalReply?: AgentRunTerminalReplySnapshot;
 };
@@ -162,6 +164,11 @@ export type SubagentRunRecord = Omit<SubagentRunReadRecord, "execution" | "colle
   label?: string;
   agentDir?: string;
   workspaceDir?: string;
+  runTimeoutSeconds?: number;
+  /** First clock-derived wait expiry observed without terminalizing the child. */
+  waitExpiryObservedAt?: number;
+  /** Notification attempt settled; not proof of delivery or of child completion. */
+  waitExpiryAnnouncedAt?: number;
   spawnMode?: SpawnSubagentMode;
   archiveAtMs?: number;
   cleanupHandled?: boolean;

@@ -77,6 +77,59 @@ describe("updateSubagentArchiveAtMs", () => {
     }
   });
 
+  it("keeps every retention clock disabled for an unconfirmed child", () => {
+    // Regression (openclaw-odqn round 2, finding 2): zero is the documented
+    // no-auto-archive opt-out. Round 1 substituted the default 60-minute window
+    // for a `child-unconfirmed` row so the deferred deletion would have an
+    // owner, which turned that opt-out into a blind deletion timer for a child
+    // nothing had observed stop. Observed stop evidence owns the deletion now,
+    // so zero must survive untouched — including for this disposition.
+    const disabled = { agents: { defaults: { subagents: { archiveAfterMinutes: 0 } } } };
+    const unconfirmed = createRunEntry({
+      cleanup: "delete",
+      execution: {
+        status: "terminal",
+        startedAt: 1_000,
+        endedAt: 602_000,
+        outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+      },
+    });
+
+    expect(updateSubagentArchiveAtMs(unconfirmed, disabled)).toBe(false);
+    expect(unconfirmed.archiveAtMs).toBeUndefined();
+
+    // A positive configured window is still only a clock, not stop evidence.
+    const configured = createRunEntry({
+      cleanup: "delete",
+      execution: {
+        status: "terminal",
+        startedAt: 1_000,
+        endedAt: 602_000,
+        outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+      },
+    });
+    expect(updateSubagentArchiveAtMs(configured, cfg)).toBe(false);
+    expect(configured.archiveAtMs).toBeUndefined();
+  });
+
+  it("does not freeze an unconfirmed collector or arm group archival", () => {
+    const entry = createRunEntry({
+      collect: true,
+      archiveAtMs: 302_000,
+      collectorCompletion: { status: "timeout" },
+      execution: {
+        status: "terminal",
+        startedAt: 1_000,
+        endedAt: 2_000,
+        outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+      },
+    });
+
+    expect(updateSwarmCollectorCompletion(entry, cfg)).toBe(true);
+    expect(entry.collectorCompletion).toBeUndefined();
+    expect(entry.archiveAtMs).toBeUndefined();
+  });
+
   it("starts ordinary delete-mode retention at execution completion", () => {
     const entry = createRunEntry({
       cleanup: "delete",
@@ -237,6 +290,80 @@ describe("safeRemoveAttachmentsDir", () => {
 
     await fs.rm(workspaceDir, { recursive: true, force: true });
     await fs.rm(externalDir, { recursive: true, force: true });
+  });
+
+  it("refuses to remove attachments while the child stop is unconfirmed", async () => {
+    // The backstop lives inside the destructive call, not only in each caller's
+    // policy check: attachment removal is the one terminal effect a later
+    // observed promotion can never undo, and a caller that forgets the guard
+    // would silently destroy a possibly-live child's output.
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-attachment-state-"));
+    const attachmentId = "6f2a7e5a-0e2d-4a6a-9a5a-1c9a2f6b8e10";
+    const childSessionKey = "agent:main:subagent:child";
+    const attachmentDir = resolveSubagentAttachmentDir("main", childSessionKey, attachmentId, {
+      ...process.env,
+      OPENCLAW_STATE_DIR: stateDir,
+    });
+    await fs.mkdir(attachmentDir, { recursive: true });
+    await fs.writeFile(path.join(attachmentDir, "staged.txt"), "staged");
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    await expect(
+      safeRemoveAttachmentsDir(
+        createRunEntry({
+          attachmentId,
+          childSessionKey,
+          cleanup: "delete",
+          execution: {
+            status: "terminal",
+            startedAt: 1_000,
+            endedAt: 2_000,
+            outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+          },
+        }),
+      ),
+    ).resolves.toBe(false);
+    // The decision is made before touching the disk: nothing removed.
+    await expect(fs.access(attachmentDir)).resolves.toBeUndefined();
+
+    vi.unstubAllEnvs();
+    await fs.rm(stateDir, { recursive: true, force: true });
+  });
+
+  it("removes attachments once an observed stop promotes the run", async () => {
+    // Anti-vacuity control for the case above: the same delete-mode row with an
+    // observed disposition does reach the removal, so the refusal is the guard
+    // and not an unrelated early return.
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-attachment-state-"));
+    const attachmentId = "6f2a7e5a-0e2d-4a6a-9a5a-1c9a2f6b8e10";
+    const childSessionKey = "agent:main:subagent:child";
+    const attachmentDir = resolveSubagentAttachmentDir("main", childSessionKey, attachmentId, {
+      ...process.env,
+      OPENCLAW_STATE_DIR: stateDir,
+    });
+    await fs.mkdir(attachmentDir, { recursive: true });
+    await fs.writeFile(path.join(attachmentDir, "staged.txt"), "staged");
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+
+    await expect(
+      safeRemoveAttachmentsDir(
+        createRunEntry({
+          attachmentId,
+          childSessionKey,
+          cleanup: "delete",
+          execution: {
+            status: "terminal",
+            startedAt: 1_000,
+            endedAt: 2_000,
+            outcome: { status: "timeout", timeoutDisposition: "child-stopped" },
+          },
+        }),
+      ),
+    ).resolves.toBe(true);
+    await expect(fs.access(attachmentDir)).rejects.toHaveProperty("code", "ENOENT");
+
+    vi.unstubAllEnvs();
+    await fs.rm(stateDir, { recursive: true, force: true });
   });
 });
 

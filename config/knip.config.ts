@@ -193,7 +193,12 @@ const repositoryScriptEntries = [
   "scripts/pre-commit/filter-staged-files.mjs!",
   "scripts/print-live-docker-plugin-selection.mjs!",
   // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-126924-isolated-gateway.ts!",
+  "scripts/proof-126924-provisional-notification-delivery.ts!",
+  "scripts/proof-126924-subagent-wait-expiry-not-death.ts!",
+  "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
   "scripts/proof-136474-blocked-hook-registrations.ts!",
+  "scripts/proof-136476-orphan-owner-binding.ts!",
   "scripts/proof-142306-queued-admission-authority.ts!",
   "scripts/proof-142306-queued-execution-benefit.ts!",
   "scripts/proof-3i95-cron-restart-interrupt-budget.ts!",

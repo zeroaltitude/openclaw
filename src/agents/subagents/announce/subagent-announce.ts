@@ -69,9 +69,11 @@ import {
   buildCompactAnnounceStatsLine,
   dedupeLatestChildCompletionRows,
   filterCurrentDirectChildCompletionRows,
+  isSubagentRunStillRunning,
   readLatestSubagentOutputWithRetry,
   readSubagentOutput,
   readSubagentTimeoutProgress,
+  resolveSubagentRunDisposition,
   waitForSubagentRunOutcome,
 } from "./subagent-announce-output.js";
 import {
@@ -117,6 +119,7 @@ function buildAnnounceReplyInstruction(params: {
   requesterIsSubagent: boolean;
   announceType: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
+  stillRunning?: boolean;
   completionTarget?: "parent";
   completionRequesterSessionId?: string;
   modelRouteChange?: string;
@@ -127,6 +130,12 @@ function buildAnnounceReplyInstruction(params: {
     : params.preserveModelRouteNotice
       ? " Preserve any runtime-authored model-route change notice in your update."
       : " Keep runtime-authored model-route change notices internal on this shared surface.";
+  if (params.stillRunning) {
+    // A parent-only child's provisional wake is still parent-only: keep the
+    // still-running guidance first, but never promise user delivery for it.
+    const parentOnly = params.completionTarget === "parent";
+    return `This ${params.announceType} is NOT known to have finished: the wait for it expired without observing it stop, so it may still be running. Do not treat this as a completed result, and do not start a replacement, duplicate, or successor for it — a second worker on the same files or working directory can corrupt what the first one is mid-edit on. Re-check whether it is still live before acting, and keep waiting or harvest its own output when it lands.${modelRouteInstruction} Keep this internal context private (don't mention system/log/stats/session details or announce type).${parentOnly ? " Your final reply stays internal; no external response is required." : ""} Reply ONLY: ${SILENT_REPLY_TOKEN} if there is nothing to ${parentOnly ? "act on" : "say to the user about this"} yet.`;
+  }
   if (params.completionTarget === "parent") {
     return SUBAGENT_PRIVATE_COMPLETION_INSTRUCTION;
   }
@@ -199,6 +208,8 @@ type SubagentAnnounceFlowParams = {
   label?: string;
   outcome?: SubagentRunOutcome;
   announceType?: SubagentAnnounceType;
+  /** Distinguishes a provisional wake from the later terminal delivery. */
+  deliveryPhase?: "wait-expiry";
   expectsCompletionMessage?: boolean;
   completionTarget?: "parent";
   completionRequesterSessionId?: string;
@@ -274,6 +285,10 @@ async function runSubagentAnnounceFlowBound(
         if (outcome?.status !== "timeout" || params.cleanup === "delete") {
           return "retryable";
         }
+        // A terminal timeout snapshot owns the disposition. The embedded-run
+        // map can lag finalization, so it is only a delete fence here; rewriting
+        // the event to still-running would promise a later completion after the
+        // registry has already committed its terminal winner.
       }
     }
 
@@ -353,10 +368,13 @@ async function runSubagentAnnounceFlowBound(
       isChildResultsCurrent = prepared.isCurrent;
     }
 
-    const announceId = buildAnnounceIdFromChildRun({
+    const baseAnnounceId = buildAnnounceIdFromChildRun({
       childSessionKey: params.childSessionKey,
       childRunId: params.childRunId,
     });
+    const announceId = params.deliveryPhase
+      ? `${baseAnnounceId}:${params.deliveryPhase}`
+      : baseAnnounceId;
 
     if (
       params.wakeOnDescendantSettle === true &&
@@ -508,9 +526,19 @@ async function runSubagentAnnounceFlowBound(
       outcome = params.outcome ?? { status: "unknown" };
     }
 
-    // Build status label
-    const statusLabel =
-      outcome.status === "ok"
+    const disposition = resolveSubagentRunDisposition(outcome);
+    const stillRunning = isSubagentRunStillRunning(outcome);
+    if (stillRunning) {
+      // The child owns this session until it actually ends; deleting it under a
+      // live run is the collision this event exists to prevent.
+      shouldDeleteChildSession = false;
+    }
+
+    const statusLabel = stillRunning
+      ? outcome.error
+        ? `wait expired; child stop NOT observed — it may still be running (last error while retrying: ${outcome.error})`
+        : "wait expired; child stop NOT observed — it may still be running"
+      : outcome.status === "ok"
         ? "completed; ready for parent review"
         : outcome.status === "timeout"
           ? outcome.error
@@ -526,7 +554,11 @@ async function runSubagentAnnounceFlowBound(
       : "unknown";
     // Descendant findings are wake input; only this child's own answer travels onward.
     const childResultText = reply;
-    const findings = childResultText || "(no output)";
+    const findings =
+      childResultText ||
+      (stillRunning
+        ? "(no output observed before this wait expired; the child may still be working — re-check before acting on this)"
+        : "(no output)");
 
     let requesterIsSubagent = requesterIsInternalSession();
     if (requesterIsSubagent) {
@@ -570,6 +602,7 @@ async function runSubagentAnnounceFlowBound(
             sessionKey: params.childSessionKey,
             startedAt: params.startedAt,
             endedAt: params.endedAt,
+            disposition,
           });
     const statsLine = childSessionEffectsAllowed() ? candidateStatsLine : undefined;
     // Send to the requester session. For nested subagents this is an internal
@@ -607,6 +640,7 @@ async function runSubagentAnnounceFlowBound(
       requesterIsSubagent,
       announceType,
       expectsCompletionMessage,
+      stillRunning,
       completionTarget: params.completionTarget,
       modelRouteChange,
       // Nested and local operator parents may report the route fact. External
@@ -626,6 +660,7 @@ async function runSubagentAnnounceFlowBound(
         taskLabel,
         status: outcome.status,
         statusLabel,
+        disposition,
         result: findings,
         ...(childResultText ? {} : { noVisibleResult: true }),
         modelRouteChange,
