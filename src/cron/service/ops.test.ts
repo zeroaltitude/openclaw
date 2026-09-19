@@ -952,7 +952,9 @@ describe("cron service ops seam coverage", () => {
     const { storePath } = await makeStorePath();
     const now = Date.parse("2026-03-23T12:00:00.000Z");
     const job = createInterruptedMainJob(now);
-    job.state.consecutiveErrors = 9;
+    // Ten genuine run failures already spent the budget; the restart only
+    // re-evaluates it, because interruptions never spend a failure slot.
+    job.state.consecutiveErrors = 10;
     await writeCronStoreSnapshot({ storePath, jobs: [job] });
 
     const order: string[] = [];
