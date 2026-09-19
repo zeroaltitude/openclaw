@@ -177,7 +177,9 @@ const repositoryScriptEntries = [
   // Frozen-target contract admission is invoked as a standalone Node CLI.
   "scripts/preflight-frozen-target-contracts.mjs!",
   // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-118555-installed-plugin-provider-request.ts!",
   "scripts/proof-bi92-taskflow-cross-agent-list.ts!",
+  "scripts/proof-prompt-build-drop-marker.ts!",
   "scripts/proof-taskflow-blocked-nonterminal.ts!",
   "scripts/proof-taskflow-retryable-failure.ts!",
   // Generates the checked-in native protocol models from core descriptor metadata.
