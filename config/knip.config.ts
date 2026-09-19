@@ -193,6 +193,8 @@ const repositoryScriptEntries = [
   "scripts/pre-commit/filter-staged-files.mjs!",
   "scripts/print-live-docker-plugin-selection.mjs!",
   // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-117734-conversation-burst-replay.ts!",
+  "scripts/proof-117734-slack-gateway-isolation.ts!",
   "scripts/proof-126924-isolated-gateway.ts!",
   "scripts/proof-126924-live-gateway-wait-expiry.ts!",
   "scripts/proof-126924-provisional-notification-delivery.ts!",
