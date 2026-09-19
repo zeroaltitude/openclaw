@@ -84,3 +84,12 @@ The returned client exposes three methods:
 After successful `stop()`, the optional read-only `cleanupResult` records forced relay retirement: `reason: "forced-relay-exit"`, `signalRequested`, the observed relay `exit` code and signal, `durationMs`, and `escalationAfterMs`. It retains `signalError` when signal delivery reported failure but exit was subsequently confirmed. It is absent for ordinary cleanup. Closed control/output/lineage pipes and a matching closing receipt admit escalation; pending force requests are reconsidered as closure and group-exit facts arrive. A live anchor is killed and reaped through its relay. Confirmed anchor-group absence permits direct native termination of an unresponsive relay. Actual relay exit and server-group disappearance must then be confirmed within the original hard deadline. Uncertain cleanup retains missing closure facts and timing or signal-delivery details in the error's cause chain.
 
 Malformed frames, incompatible initialization, write failures, and unexpected process exit also retire the whole connection. The first fatal error is retained. Create a new client to reconnect. Timeout classification follows the SDK error code, so a timeout-coded server error also retires the connection.
+
+### Official Claude Agent SDK runtimes
+
+Official providers sharing Claude Agent SDK execution use the private packaged
+`claude-agent-sdk-runtime` facade. The Anthropic plugin remains the implementation
+owner; separately installed providers do not depend on its private workspace
+package. This facade is not a third-party SDK compatibility contract. Selected
+bearer credentials reach auxiliary and isolated executions through the same native
+process owner, preserving their restricted arguments and ephemeral sessions.

@@ -35,6 +35,7 @@ import {
   type CodexAppServerRuntimeOptions,
 } from "./config.js";
 import { createCodexDynamicToolBuildStageTracker } from "./dynamic-tool-build.js";
+import { isCodexAppServerProxyLaunch } from "./launch-args.js";
 import { resolveCodexNativeHookRelayEvents } from "./native-hook-relay.js";
 import { isCodexAppServerProfilerEnabled } from "./profiler-flag.js";
 import { ensureCodexWorkspaceDirOnce } from "./run-attempt-lifecycle.js";
