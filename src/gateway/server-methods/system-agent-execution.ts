@@ -39,6 +39,7 @@ export async function runSystemAgentGatewayTask<T>(task: () => Promise<T>): Prom
 
 export async function verifyGatewaySetupInference(params: {
   agentId?: string;
+  modelTarget?: "utility";
   runtime: RuntimeEnv;
   context: Pick<GatewayRequestContext, "getRuntimeConfig" | "isConfigReloadSettled">;
 }): Promise<VerifySetupInferenceResult> {
@@ -78,6 +79,7 @@ export async function verifyGatewaySetupInference(params: {
   }
   const verification = await verifySetupInference({
     runtime: params.runtime,
+    ...(params.modelTarget ? { modelTarget: params.modelTarget } : {}),
     ...(params.agentId ? { agentId: params.agentId } : {}),
   });
   return (await isApplied()) ? verification : unavailable;
