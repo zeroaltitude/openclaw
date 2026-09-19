@@ -194,6 +194,7 @@ const repositoryScriptEntries = [
   "scripts/proof-142306-queued-admission-authority.ts!",
   "scripts/proof-142306-queued-execution-benefit.ts!",
   "scripts/proof-3i95-cron-restart-interrupt-budget.ts!",
+  "scripts/proof-app-server-runtime-chooser-bindings.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
   "scripts/resolve-frozen-codex-live-suite.mjs!",
