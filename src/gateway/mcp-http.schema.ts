@@ -3,13 +3,19 @@
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { logWarn } from "../logger.js";
+import {
+  findToolInputSchemaTopLevelUnionError,
+  TOOL_INPUT_SCHEMA_TOP_LEVEL_UNION_KEYWORDS,
+} from "../shared/json-schema-defaults.js";
 import type { resolveGatewayScopedTools } from "./tool-resolution.js";
 
 const MCP_LOOPBACK_LOG_PREFIX = "mcp-loopback";
 
 // MCP loopback schema projection adapts gateway tool definitions into MCP
 // tools/list entries. It flattens provider-hostile union schemas into object
-// schemas because some MCP clients cannot render anyOf/oneOf controls.
+// schemas because some MCP clients cannot render anyOf/oneOf controls, and
+// because native tool definitions (Anthropic Messages among them) reject
+// allOf/anyOf/oneOf at the top level of a tool input schema outright.
 export type McpLoopbackTool = ReturnType<typeof resolveGatewayScopedTools>["tools"][number];
 
 /** MCP tools/list schema entry derived from a gateway loopback tool. */
@@ -122,17 +128,14 @@ function mergeLiteralSchemas(
   return merged;
 }
 
-function flattenUnionSchema(
-  raw: Record<string, unknown>,
+// MCP clients vary in union-schema support. Merge only safe object variants and
+// report the ones that cannot merge, so generated forms stay usable and a lost
+// constraint is never silent. Returns one required-key set per merged variant.
+function mergeVariantsIntoProperties(
+  variants: readonly unknown[],
   toolName: string,
-): Record<string, unknown> {
-  // MCP clients vary in union-schema support. Merge only safe object variants
-  // and keep common required fields so generated forms remain usable.
-  const variants = (raw.anyOf ?? raw.oneOf) as unknown[] | undefined;
-  if (!Array.isArray(variants) || variants.length === 0) {
-    return raw;
-  }
-  const mergedProps = Object.create(null) as Record<string, unknown>;
+  mergedProps: Record<string, unknown>,
+): Set<string>[] {
   const requiredSets: Set<string>[] = [];
   for (const variant of variants) {
     if (variant === true) {
@@ -198,14 +201,73 @@ function flattenUnionSchema(
       new Set(Array.isArray(variant.required) ? (variant.required as string[]) : []),
     );
   }
-  const required =
-    requiredSets.length > 0
-      ? [...(requiredSets[0] ?? [])].filter(
-          (key) => Object.hasOwn(mergedProps, key) && requiredSets.every((set) => set.has(key)),
-        )
-      : [];
-  const { anyOf: _anyOf, oneOf: _oneOf, ...rest } = raw;
-  return { ...rest, type: "object", properties: mergedProps, required };
+  return requiredSets;
+}
+
+function readSchemaVariants(value: unknown): readonly unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined;
+}
+
+function hasTopLevelUnion(schema: Record<string, unknown>): boolean {
+  return TOOL_INPUT_SCHEMA_TOP_LEVEL_UNION_KEYWORDS.some((keyword) =>
+    Object.hasOwn(schema, keyword),
+  );
+}
+
+// Collapses every top-level union keyword into the single object schema native
+// tool definitions require. `anyOf`/`oneOf` branches are alternatives, so only a
+// key required by every branch stays required; `allOf` branches all hold, so
+// their required keys are added. Sibling `properties`/`required` on the root are
+// kept rather than replaced, and an empty union list is reported instead of
+// being left in place for the provider to reject.
+function flattenTopLevelUnionSchema(
+  raw: Record<string, unknown>,
+  toolName: string,
+): Record<string, unknown> {
+  const mergedProps = Object.create(null) as Record<string, unknown>;
+  if (isRecord(raw.properties)) {
+    for (const [key, schema] of Object.entries(raw.properties)) {
+      mergedProps[key] = schema;
+    }
+  }
+  const required = new Set<string>(Array.isArray(raw.required) ? (raw.required as string[]) : []);
+  for (const keyword of TOOL_INPUT_SCHEMA_TOP_LEVEL_UNION_KEYWORDS) {
+    const variants = readSchemaVariants(raw[keyword]);
+    if (!variants || variants.length > 0) {
+      continue;
+    }
+    warnSchemaOnce(
+      `${MCP_LOOPBACK_LOG_PREFIX}: dropping empty top-level "${keyword}" for "${toolName}", native tool schemas reject it`,
+    );
+  }
+  const alternatives = [
+    ...(readSchemaVariants(raw.anyOf) ?? []),
+    ...(readSchemaVariants(raw.oneOf) ?? []),
+  ];
+  if (alternatives.length > 0) {
+    const requiredSets = mergeVariantsIntoProperties(alternatives, toolName, mergedProps);
+    for (const key of requiredSets[0] ?? []) {
+      if (requiredSets.every((set) => set.has(key))) {
+        required.add(key);
+      }
+    }
+  }
+  for (const set of mergeVariantsIntoProperties(
+    readSchemaVariants(raw.allOf) ?? [],
+    toolName,
+    mergedProps,
+  )) {
+    for (const key of set) {
+      required.add(key);
+    }
+  }
+  const { allOf: _allOf, anyOf: _anyOf, oneOf: _oneOf, ...rest } = raw;
+  return {
+    ...rest,
+    type: "object",
+    properties: mergedProps,
+    required: [...required].filter((key) => Object.hasOwn(mergedProps, key)),
+  };
 }
 
 function isPropertySchema(value: unknown): value is boolean | Record<string, unknown> {
@@ -291,14 +353,22 @@ export function buildMcpToolSchema(tools: McpLoopbackTool[]): McpToolSchemaEntry
     if (!raw) {
       return [];
     }
-    if (raw.anyOf || raw.oneOf) {
-      raw = flattenUnionSchema(raw, name);
+    if (hasTopLevelUnion(raw)) {
+      raw = flattenTopLevelUnionSchema(raw, name);
     }
     if (raw.type !== "object") {
       raw.type = "object";
     }
     if (!raw.properties) {
       raw.properties = {};
+    }
+    // Publish-boundary invariant: the flatten above removes every top-level union
+    // keyword, and a schema carrying one past this point is rejected by native
+    // tool definitions as an opaque request-wide 400 that names only a tool index.
+    // Fail here, where the tool is named, rather than at the provider.
+    const unionError = findToolInputSchemaTopLevelUnionError(raw, name);
+    if (unionError) {
+      throw new Error(`${MCP_LOOPBACK_LOG_PREFIX}: ${unionError}`);
     }
     return {
       name,
