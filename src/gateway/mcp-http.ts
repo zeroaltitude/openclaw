@@ -21,19 +21,20 @@ import {
   sendHttpRequestRejection,
 } from "../infra/http-request-lifecycle.js";
 import { logDebug, logWarn } from "../logger.js";
+import { runOutsideGatewayRootWorkAdmission } from "../process/gateway-work-admission.js";
 import {
   AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE,
   isAgentHarnessSessionKey,
   isAgentHarnessSessionStoreEntryProtected,
 } from "../sessions/agent-harness-session-key.js";
-import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { AsyncWorkScope, runWithTrackedCancellation } from "../shared/async-work-scope.js";
 import {
   registerMcpLoopbackClientGrantRevocationListener,
   revokeMcpLoopbackClientGrantsForRuntime,
 } from "./mcp-grant-store.js";
-import { handleMcpJsonRpc } from "./mcp-http.handlers.js";
 import {
   clearActiveMcpLoopbackRuntimeByOwnerToken,
+  getActiveMcpLoopbackRuntime,
   markMcpLoopbackRequestClassified,
   markMcpLoopbackRequestFinished,
   markMcpLoopbackRequestStarted,
@@ -51,7 +52,6 @@ import {
   resolveMcpRequestContext,
   validateMcpLoopbackRequest,
 } from "./mcp-http.request.js";
-import { McpLoopbackToolCache } from "./mcp-http.runtime.js";
 
 // Loopback MCP server exposes gateway-scoped tools to local MCP clients over a
 // bearer-token HTTP endpoint bound to 127.0.0.1. Only one active server/runtime
@@ -131,7 +131,15 @@ function logMcpLoopbackTraffic(step: string, details: Record<string, unknown>): 
 }
 
 /** Starts a new MCP loopback HTTP server and registers its bearer tokens. */
-async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
+async function startMcpLoopbackServer(
+  port: number,
+  work: AsyncWorkScope,
+): Promise<() => Promise<void>> {
+  // Shutdown preloads this module even when no MCP listener is needed.
+  const [{ handleMcpJsonRpc }, { McpLoopbackToolCache }] = await Promise.all([
+    import("./mcp-http.handlers.js"),
+    import("./mcp-http.runtime.js"),
+  ]);
   const ownerToken = crypto.randomBytes(32).toString("hex");
   const nonOwnerToken = crypto.randomBytes(32).toString("hex");
   const toolCache = new McpLoopbackToolCache();
@@ -177,7 +185,7 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
     const cliCaptureKey = resolveMcpCliCaptureKey(req, auth);
     const cliRequestCaptureHandle = markMcpLoopbackRequestStarted(cliCaptureKey);
     const requestAbort = createHttpRequestAbortSignal(req, res);
-    void (async () => {
+    void work.track(async () => {
       let parsed: unknown;
       let cliCaptureHandles: Array<ReturnType<typeof markMcpLoopbackToolCallStarted>> = [];
       try {
@@ -225,7 +233,10 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
         }
         const cfg = getRuntimeConfig();
         const requestContext = resolveMcpRequestContext(req, cfg, auth);
-        const authorizeToolCall = boundClientGrant?.isCurrent;
+        const authorizeToolCall = () =>
+          !work.isClosing &&
+          getActiveMcpLoopbackRuntime()?.ownerToken === ownerToken &&
+          (boundClientGrant?.isCurrent() ?? true);
         const harnessEntry = isAgentHarnessSessionKey(requestContext.sessionKey)
           ? resolveSessionEntryAccessTarget({ cfg, sessionKey: requestContext.sessionKey }).entry
           : undefined;
@@ -261,6 +272,7 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
             toolCache.resolve({
               context: requestContext,
               rootedExecution: boundClientGrant?.rootedExecution,
+              messageActionTurnCapability: boundClientGrant?.messageActionTurnCapability,
               cfg,
               signal: requestAbort.signal,
               ...(boundClientGrant?.toolAuth
@@ -327,7 +339,7 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
           const cliCaptureHandle = cliCaptureHandles[messageIndex];
           let response: object | null;
           try {
-            const handleRequest = async () =>
+            const handleRequest = async (signal: AbortSignal) =>
               await handleMcpJsonRpc({
                 message,
                 tools: scopedTools.tools,
@@ -350,7 +362,7 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
                     agentId: scopedTools.agentId,
                   }),
                 },
-                signal: requestAbort.signal,
+                signal,
                 authorizeToolCall,
                 onToolCallPrepared: cliCaptureHandle
                   ? ({ toolName: preparedToolName, args }) => {
@@ -373,6 +385,8 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
               ? createAdmittedGatewayToolCallerIdentity({
                   admittedRunContext: boundClientGrant.admittedRunContext,
                   receiptAuthority: boundClientGrant.isCurrent,
+                  cronAuthorityCheck: boundClientGrant.cronAuthorityCheck,
+                  mintCronRequesterGrant: boundClientGrant.mintCronRequesterGrant,
                   agentId: scopedTools.agentId,
                   sessionKey: requestContext.sessionKey,
                   turnSourceChannel: requestContext.messageProvider,
@@ -386,7 +400,9 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
                   turnSourceThreadId: requestContext.currentThreadTs,
                 })
               : undefined;
-            response = await withGatewayToolCallerIdentity(callerIdentity, handleRequest);
+            response = await withGatewayToolCallerIdentity(callerIdentity, () =>
+              runWithTrackedCancellation(requestAbort.signal, handleRequest),
+            );
           } finally {
             markMcpLoopbackToolCallFinished(cliCaptureHandle);
           }
@@ -471,7 +487,7 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
         }
         markMcpLoopbackRequestFinished(cliRequestCaptureHandle);
       }
-    })();
+    });
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -496,17 +512,24 @@ async function startMcpLoopbackServer(port = 0): Promise<() => Promise<void>> {
   setActiveMcpLoopbackRuntime({ port: address.port, ownerToken, nonOwnerToken });
   logDebug(`mcp loopback listening on 127.0.0.1:${address.port}`);
 
-  return () => {
+  return async () => {
     // Stop admitting this runtime's child grants before draining accepted
     // requests. A delayed old-server close cannot revoke a successor runtime.
     clearActiveMcpLoopbackRuntimeByOwnerToken(ownerToken);
     revokeMcpLoopbackClientGrantsForRuntime(ownerToken);
     unregisterGrantRevocation();
     toolCache.clear();
-    return new Promise<void>((resolve, reject) => {
-      httpServer.close((error) => (error ? reject(error) : resolve()));
-      closeActiveSseResponses();
-    });
+    // Abort in-flight request work as soon as shutdown starts; do not wait on
+    // the socket layer to finish draining before signaling cancellation.
+    work.beginClose();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        httpServer.close((error) => (error ? reject(error) : resolve()));
+        closeActiveSseResponses();
+      });
+    } finally {
+      await work.drain();
+    }
   };
 }
 
@@ -516,22 +539,14 @@ export async function ensureMcpLoopbackServer(port = 0): Promise<void> {
     return;
   }
   if (!activeMcpLoopbackServerPromise) {
-    // The process-owned listener may start inside a short-lived CLI turn.
-    // Socket callbacks must inherit its own work lifetime, not that starter's.
+    // The listener owns its context until Gateway close; callers own only requests.
+    // Inheriting the first turn's scope poisons later tool calls when that turn closes.
     const work = new AsyncWorkScope();
-    activeMcpLoopbackServerPromise = work
-      .track(() => startMcpLoopbackServer(port))
+    activeMcpLoopbackServerPromise = runOutsideGatewayRootWorkAdmission(() =>
+      work.run(() => startMcpLoopbackServer(port, work)),
+    )
       .then((close) => {
-        closeActiveMcpLoopbackServer = async () => {
-          try {
-            // Revoke grants before cancellation callbacks can reenter the server.
-            const closing = close();
-            work.beginClose();
-            await closing;
-          } finally {
-            await work.drain();
-          }
-        };
+        closeActiveMcpLoopbackServer = close;
       })
       .catch(async (error: unknown) => {
         await work.drain();
