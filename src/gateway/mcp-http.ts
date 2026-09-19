@@ -591,7 +591,20 @@ export async function ensureMcpLoopbackServer(port = 0): Promise<void> {
       work.run(() => startMcpLoopbackServer(port, work)),
     )
       .then((close) => {
-        closeActiveMcpLoopbackServer = close;
+        closeActiveMcpLoopbackServer = async () => {
+          try {
+            // Revoke grants before cancellation callbacks can reenter the server.
+            const closing = close();
+            work.beginClose();
+            await closing;
+          } finally {
+            await work.drain();
+          }
+        };
+      })
+      .catch(async (error: unknown) => {
+        await work.drain();
+        throw error;
       })
       .catch(async (error: unknown) => {
         await work.drain();
