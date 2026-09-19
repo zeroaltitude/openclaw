@@ -201,6 +201,7 @@ const repositoryScriptEntries = [
   "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
   "scripts/proof-136474-blocked-hook-registrations.ts!",
   "scripts/proof-136476-orphan-owner-binding.ts!",
+  "scripts/proof-136554-timeout-notification-boundaries.ts!",
   "scripts/proof-142306-queued-admission-authority.ts!",
   "scripts/proof-142306-queued-execution-benefit.ts!",
   "scripts/proof-3i95-cron-restart-interrupt-budget.ts!",

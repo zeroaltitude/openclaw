@@ -507,10 +507,11 @@ export async function completeSubagentRunAttempt(
     if (cancelledCompletion && completionOutcome.disposition !== "killed") {
       // This boundary owns cancellation disposition for every producer, not
       // just the `entry.killIntent` path above. The wait manager, the pending
-      // lifecycle scheduler, and persisted killed-session reconciliation all
-      // supply the killed reason with no disposition; the default read of an
-      // absent disposition is `exited`, so announcement published `exited` for
-      // a child that was killed.
+      // lifecycle scheduler, the lifecycle cancellation listener, cancellation
+      // grace, and persisted killed-session reconciliation all supply the
+      // killed reason with no disposition, and `resolveSubagentRunDisposition`
+      // reads that absence as `exited` -- so announcement, which does not wait
+      // for completion, published `exited` for a child that was killed.
       //
       // A cancellation completion is terminal by construction, so the reason is
       // the authority here: an absent disposition is not evidence of a clean

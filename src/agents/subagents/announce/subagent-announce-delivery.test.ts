@@ -2037,6 +2037,8 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     { response: "synthesis error", disposition: "still-running", failedChild: false },
     { response: "silent", disposition: "exited", failedChild: true },
     { response: "synthesis error", disposition: "exited", failedChild: true },
+    { response: "silent", disposition: "killed", failedChild: true },
+    { response: "synthesis error", disposition: "killed", failedChild: true },
   ] as const)(
     "distinguishes provisional expiry from terminal failure for $response / $disposition",
     async ({ response, disposition, failedChild }) => {
@@ -2081,7 +2083,12 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
           expect(result.disposition).toBe("retryable");
           expect(result.error).toContain(requesterError);
         } else {
-          expect(result.reason).toBe("message_tool_delivery_missing");
+          // Instructed silence is a settled non-delivery, not a failure to
+          // retry: a retryable result here re-announces every few seconds for
+          // as long as the child keeps working.
+          expect(result.disposition).toBe("intentional_non_delivery");
+          expect(result.terminal).toBe(true);
+          expect(result.error).toBeUndefined();
         }
       }
     },

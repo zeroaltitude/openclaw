@@ -45,7 +45,7 @@ import { finalizeInterruptedSubagentRun } from "./subagent-registry.test-helpers
 const fixture = useSubagentControlFixture();
 
 it.each(["end", "error"] as const)(
-  "keeps a timeout successor running when its exact predecessor owner publishes its first %s terminal",
+  "keeps a terminal-timeout successor running when its exact predecessor owner publishes its first %s terminal",
   async (phase) => {
     vi.spyOn(subagentRegistryDeps, "runSubagentAnnounceFlow").mockResolvedValue("delivered");
     const oldWait = createDeferred<AgentWaitResult>();

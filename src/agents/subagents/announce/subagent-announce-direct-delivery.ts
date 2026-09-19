@@ -158,6 +158,8 @@ export async function sendSubagentAnnounceDirectly(params: {
         : undefined;
     const hasFailedTrustedSubagentCompletion =
       isFailedTerminalSubagentCompletion(trustedCompletionEvent);
+    const hasProvisionalTrustedSubagentCompletion =
+      isStillRunningSubagentCompletion(trustedCompletionEvent);
     const hasRequiredSubagentNoOutputCompletion =
       params.expectsCompletionMessage &&
       isSubagentCompletion &&
@@ -569,6 +571,29 @@ export async function sendSubagentAnnounceDirectly(params: {
     const hasIntentionalSilentCompletionReply = Boolean(
       directAnnounceResult && hasIntentionalSilentAgentPayload(directAnnounceResult),
     );
+    // A provisional expiry instructs the parent to stay quiet, so intentional
+    // silence is the instruction being carried out and settles the
+    // notification. This holds in every delivery mode, not just message-tool-only:
+    // an internal parent on the automatic route follows the same instruction and
+    // would otherwise fall through to `visible_reply_missing`, leaving the wait
+    // manager to re-announce every few seconds while the child still works.
+    // Real delivery evidence is unaffected (it produces a visible reply) and so
+    // are synthesis failures (they throw before reaching here).
+    const settlesAsProvisionalSilence =
+      hasProvisionalTrustedSubagentCompletion && hasIntentionalSilentCompletionReply;
+    const provisionalSilenceSettled = {
+      delivered: false,
+      path: "direct",
+      reason: "delivery_suppressed",
+      terminal: true,
+      disposition: "intentional_non_delivery",
+    } as const satisfies SubagentAnnounceDeliveryResult;
+    const visibleReplyMissing = {
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+      error: "completion agent did not produce a visible reply",
+    } as const satisfies SubagentAnnounceDeliveryResult;
     const hasCompletionSideEffect = Boolean(
       directAnnounceResult && hasCommittedOutboundDeliveryEvidence(directAnnounceResult),
     );
@@ -587,12 +612,7 @@ export async function sendSubagentAnnounceDirectly(params: {
         return textDelivery;
       }
       if (hasSuccessfulTrustedSubagentNoOutputCompletion && !hasCompletionSideEffect) {
-        return {
-          delivered: false,
-          path: "direct",
-          reason: "visible_reply_missing",
-          error: "completion agent did not produce a visible reply",
-        };
+        return visibleReplyMissing;
       }
     }
     if (
@@ -600,13 +620,7 @@ export async function sendSubagentAnnounceDirectly(params: {
       !hasVisibleRequiredCompletionReply &&
       hasCompletionSideEffect
     ) {
-      return {
-        delivered: false,
-        path: "direct",
-        reason: "visible_reply_missing",
-        error: "completion agent did not produce a visible reply",
-        disposition: "permanent_failure",
-      };
+      return { ...visibleReplyMissing, disposition: "permanent_failure" };
     }
     if (
       params.expectsCompletionMessage &&
@@ -617,12 +631,10 @@ export async function sendSubagentAnnounceDirectly(params: {
         hasRequiredSubagentNoOutputCompletion)
     ) {
       if (hasSuccessfulTrustedSubagentNoOutputCompletion) {
-        return {
-          delivered: false,
-          path: "direct",
-          reason: "visible_reply_missing",
-          error: "completion agent did not produce a visible reply",
-        };
+        return visibleReplyMissing;
+      }
+      if (settlesAsProvisionalSilence) {
+        return provisionalSilenceSettled;
       }
       if (subagentDirectMessageCompletionRequiresMessageTool) {
         const textDelivery = await tryTextCompletionDirectDelivery(
@@ -673,12 +685,7 @@ export async function sendSubagentAnnounceDirectly(params: {
               !hasCompletionSideEffect &&
               !acceptsIntentionalSilentCompletion))))
     ) {
-      return {
-        delivered: false,
-        path: "direct",
-        reason: "visible_reply_missing",
-        error: "completion agent did not produce a visible reply",
-      };
+      return visibleReplyMissing;
     }
     const requesterVisibleFinalCommitted =
       !params.requesterIsSubagent &&

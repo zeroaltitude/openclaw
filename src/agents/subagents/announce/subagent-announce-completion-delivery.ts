@@ -196,7 +196,6 @@ function resolveTextCompletionDirectFallback(
   return undefined;
 }
 
-/** A provisional wait timeout is not evidence that the child failed. */
 /**
  * A wait-expiry publication observes the waiter, not the run: the child is still
  * live and the notification is provisional, so it owes no terminal visible
@@ -232,6 +231,7 @@ export function requiresSubagentNoOutputCompletionReply(
   );
 }
 
+/** A provisional wait timeout is not evidence that the child failed. */
 export function isFailedTerminalSubagentCompletion(event: AgentInternalEvent | undefined): boolean {
   return (
     event?.type === "task_completion" &&
