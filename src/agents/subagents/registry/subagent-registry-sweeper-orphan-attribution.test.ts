@@ -4,6 +4,7 @@ import * as placementStore from "../../../gateway/worker-environments/placement-
 import type { GatewayBootLifecycleSegment } from "../../../infra/gateway-boot-lifecycle.js";
 import { resetGatewayWorkAdmission } from "../../../process/gateway-work-admission.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
+import { MAX_UNCONFIRMED_ORPHAN_AGE_MS } from "./subagent-registry-sweeper-orphan.js";
 import { createSubagentRegistrySweeper } from "./subagent-registry-sweeper.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -182,6 +183,42 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
     sweeper.reset();
     expect(completeSubagentRunWithRecovery).not.toHaveBeenCalled();
     expect(entry).toEqual(before);
+  });
+
+  it("still defers an unconfirmed wait past the age ceiling while its live context remains", async () => {
+    // No boot history at all, so there is no host-reboot attribution to fall
+    // back on either — isolates the ceiling+liveness interaction from the
+    // attribution path exercised by the other tests in this suite.
+    bootSegments.current = [];
+    // Same real-time liveness recheck as the un-aged case above: age alone
+    // never overrides positive evidence the child is still there.
+    vi.setSystemTime(RUN_DIED_AT + MAX_UNCONFIRMED_ORPHAN_AGE_MS + 60_000);
+    liveContext.present = true;
+    const { entry, completeSubagentRunWithRecovery, sweeper } = createHarness({
+      waitExpiryObservedAt: RUN_DIED_AT,
+    });
+    const before = structuredClone(entry);
+    await sweeper.sweepOnce();
+    sweeper.reset();
+    expect(completeSubagentRunWithRecovery).not.toHaveBeenCalled();
+    expect(entry).toEqual(before);
+  });
+
+  it("settles an unconfirmed wait once it has aged past the ceiling with no live context", async () => {
+    bootSegments.current = [];
+    vi.setSystemTime(RUN_DIED_AT + MAX_UNCONFIRMED_ORPHAN_AGE_MS + 60_000);
+    const { completeSubagentRunWithRecovery, sweeper } = createHarness({
+      waitExpiryObservedAt: RUN_DIED_AT,
+    });
+    await sweeper.sweepOnce();
+    sweeper.reset();
+    expect(completeSubagentRunWithRecovery).toHaveBeenCalledTimes(1);
+    const [completion, source] = completeSubagentRunWithRecovery.mock.calls[0]!;
+    expect(source).toBe("sweeper-lost-context");
+    expect(completion.outcome.status).toBe("error");
+    expect(completion.outcome.error).toContain("could not be confirmed after");
+    expect(completion.outcome.error).toContain("treating as orphaned");
+    expect(completion.recoverInterrupted).toBeUndefined();
   });
 
   it("notifies the spawning session instead of silently pruning a run that said nothing", async () => {
