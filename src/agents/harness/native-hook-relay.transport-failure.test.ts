@@ -181,10 +181,15 @@ describe("native hook relay bridge client disconnect", () => {
       onPreToolUseFailure: oldFailure,
     });
     let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
-    await vi.waitFor(async () => {
-      record = await readNativeHookRelayBridgeRecord({ relayId });
-      expect(record?.relayId).toBe(relayId);
-    });
+    // The default 1s budget can race the shared-state broker's cold start when
+    // this is the first bridge-record read in the process.
+    await vi.waitFor(
+      async () => {
+        record = await readNativeHookRelayBridgeRecord({ relayId });
+        expect(record?.relayId).toBe(relayId);
+      },
+      { timeout: 5_000 },
+    );
     if (!record) {
       throw new Error("Expected the original relay bridge");
     }
@@ -221,10 +226,15 @@ describe("native hook relay bridge client disconnect", () => {
       onPreToolUseFailure,
     });
     let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
-    await vi.waitFor(async () => {
-      record = await readNativeHookRelayBridgeRecord({ relayId });
-      expect(record?.relayId).toBe(relayId);
-    });
+    // The default 1s budget can race the shared-state broker's cold start when
+    // this is the first bridge-record read in the process.
+    await vi.waitFor(
+      async () => {
+        record = await readNativeHookRelayBridgeRecord({ relayId });
+        expect(record?.relayId).toBe(relayId);
+      },
+      { timeout: 5_000 },
+    );
     if (!record) {
       throw new Error(`Expected a bridge record for ${relayId}`);
     }
@@ -359,10 +369,15 @@ describe("native hook relay failure disposition attribution", () => {
       onPreToolUseFailure,
     });
     let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
-    await vi.waitFor(async () => {
-      record = await readNativeHookRelayBridgeRecord({ relayId });
-      expect(record?.relayId).toBe(relayId);
-    });
+    // The default 1s budget can race the shared-state broker's cold start when
+    // this is the first bridge-record read in the process.
+    await vi.waitFor(
+      async () => {
+        record = await readNativeHookRelayBridgeRecord({ relayId });
+        expect(record?.relayId).toBe(relayId);
+      },
+      { timeout: 5_000 },
+    );
     if (!record) {
       throw new Error(`Expected a bridge record for ${relayId}`);
     }
@@ -468,10 +483,15 @@ describe("native hook relay failure disposition attribution", () => {
       onPreToolUseFailure,
     });
     let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
-    await vi.waitFor(async () => {
-      record = await readNativeHookRelayBridgeRecord({ relayId });
-      expect(record?.relayId).toBe(relayId);
-    });
+    // The default 1s budget can race the shared-state broker's cold start when
+    // this is the first bridge-record read in the process.
+    await vi.waitFor(
+      async () => {
+        record = await readNativeHookRelayBridgeRecord({ relayId });
+        expect(record?.relayId).toBe(relayId);
+      },
+      { timeout: 5_000 },
+    );
     if (!record) {
       throw new Error(`Expected a bridge record for ${relayId}`);
     }
@@ -695,10 +715,15 @@ describe("native hook relay transport failure escalation", () => {
       runId: "run-1",
     });
     let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
-    await vi.waitFor(async () => {
-      record = await readNativeHookRelayBridgeRecord({ relayId });
-      expect(record?.relayId).toBe(relayId);
-    });
+    // The default 1s budget can race the shared-state broker's cold start when
+    // this is the first bridge-record read in the process.
+    await vi.waitFor(
+      async () => {
+        record = await readNativeHookRelayBridgeRecord({ relayId });
+        expect(record?.relayId).toBe(relayId);
+      },
+      { timeout: 5_000 },
+    );
     if (!record) {
       throw new Error(`Expected a bridge record for ${relayId}`);
     }
@@ -801,10 +826,15 @@ describe("native hook relay transport failure escalation", () => {
       return "deny";
     });
     let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
-    await vi.waitFor(async () => {
-      record = await readNativeHookRelayBridgeRecord({ relayId });
-      expect(record?.relayId).toBe(relayId);
-    });
+    // The default 1s budget can race the shared-state broker's cold start when
+    // this is the first bridge-record read in the process.
+    await vi.waitFor(
+      async () => {
+        record = await readNativeHookRelayBridgeRecord({ relayId });
+        expect(record?.relayId).toBe(relayId);
+      },
+      { timeout: 5_000 },
+    );
     if (!record) {
       throw new Error(`Expected a bridge record for ${relayId}`);
     }
