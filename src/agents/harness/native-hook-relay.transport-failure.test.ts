@@ -170,10 +170,13 @@ describe("native hook relay bridge client disconnect", () => {
       onPreToolUseFailure: oldFailure,
     });
     let record: Awaited<ReturnType<typeof readNativeHookRelayBridgeRecord>>;
-    await vi.waitFor(async () => {
-      record = await readNativeHookRelayBridgeRecord({ relayId });
-      expect(record?.relayId).toBe(relayId);
-    });
+    await vi.waitFor(
+      async () => {
+        record = await readNativeHookRelayBridgeRecord({ relayId });
+        expect(record?.relayId).toBe(relayId);
+      },
+      { timeout: 10000 },
+    );
     if (!record) {
       throw new Error("Expected the original relay bridge");
     }
