@@ -171,8 +171,9 @@ async function scenarioRestartDoesNotPayForFailure(tmpDir: string): Promise<void
   await saveCronStore(storePath, { version: 1, jobs: [job] });
 
   const afterRestart = await restartGateway(storePath, BASE_MS + EVERY_MS);
+  const enabledAfterRestart = afterRestart.enabled;
   assert(
-    afterRestart.enabled === true,
+    enabledAfterRestart === true,
     "a gateway restart spent the tenth run-failure slot of a nine-failure streak",
   );
   assert(
