@@ -1,6 +1,6 @@
 // Subagent registry helper tests cover attachment cleanup and compact logging
 // for announce delivery give-up paths.
-import { promises as fs } from "node:fs";
+import { promises as fs, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -323,17 +323,20 @@ describe("safeRemoveAttachmentsDir", () => {
   it("removes attachments once an observed stop promotes the run", async () => {
     // Anti-vacuity control for the case above: the same delete-mode row with an
     // observed disposition does reach the removal, so the refusal is the guard
-    // and not an unrelated early return.
-    const realpathSpy = vi
-      .spyOn(fs, "realpath")
-      .mockRejectedValue(Object.assign(new Error("probe reached"), { code: "EACCES" }));
+    // and not an unrelated early return. Cleanup resolves the attachment root
+    // via realpathSync.native (fs-safe's root() guard), not the async
+    // fs.promises.realpath used elsewhere in this file, so that's what fails here.
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-attachment-state-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const realpathSpy = vi.spyOn(realpathSync, "native").mockImplementation(() => {
+      throw Object.assign(new Error("probe reached"), { code: "EACCES" });
+    });
 
     await expect(
       safeRemoveAttachmentsDir(
         createRunEntry({
           cleanup: "delete",
-          attachmentsDir: "/tmp/openclaw-child-attachments",
-          attachmentsRootDir: "/tmp/openclaw-attachments",
+          attachmentId: "2d4a8398-4d5a-4c20-9c16-0a5f6627cf92",
           execution: {
             status: "terminal",
             startedAt: 1_000,
@@ -346,6 +349,8 @@ describe("safeRemoveAttachmentsDir", () => {
     expect(realpathSpy).toHaveBeenCalled();
 
     realpathSpy.mockRestore();
+    vi.unstubAllEnvs();
+    await fs.rm(stateDir, { recursive: true, force: true });
   });
 });
 
