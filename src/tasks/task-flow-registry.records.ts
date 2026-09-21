@@ -317,18 +317,37 @@ function deriveTaskFlowStatusFromTask(
  * `blocked` is the status whose terminality genuinely varies. A mirrored
  * `blocked` flow means the run itself succeeded but its completion delivery was
  * not handed to the requester, and only the task's `deliveryStatus` says
- * whether anything can still act on that:
+ * whether anything can still act on that. `failed` is the one value with a
+ * live redrive path — every other value means there is nothing left pending:
  *
  * - `failed` — the delivery is suspended. `openclaw tasks retry` redrives it
  *   and `openclaw tasks dismiss` abandons it, and a successful redrive clears
- *   `terminalOutcome: "blocked"`, so the flow must be able to leave `blocked`.
- *   NOT terminal.
- * - `dismissed` — the operator gave up on it. Terminal.
- * - `suppressed` — the delivery was deliberately and terminally never made.
- *   Retry and dismiss both refuse it (each requires the suspended state), so
- *   treating it as resumable would strand the flow with no exit at all: not
- *   retryable, not dismissable, and — because a non-terminal flow is neither
- *   deletable nor prunable — not removable either. Terminal.
+ *   `terminalOutcome: "blocked"` (`projectRedrivenTask`,
+ *   subagent-completion-delivery.ts), so the flow must be able to leave
+ *   `blocked`. NOT terminal.
+ * - `dismissed` — the operator gave up on it (`dismissSubagentCompletionDelivery`,
+ *   the only writer). Terminal.
+ * - `suppressed` — the delivery was deliberately and terminally never made
+ *   (`conversation-delivery.ts`). Retry and dismiss both refuse it (each
+ *   requires the suspended state), so treating it as resumable would strand
+ *   the flow with no exit at all: not retryable, not dismissable, and —
+ *   because a non-terminal flow is neither deletable nor prunable — not
+ *   removable either. Terminal.
+ * - `delivered` — the completion already reached the requester
+ *   (`subagent-completion-admission.store.ts`, `task-registry-delivery.ts`).
+ *   Nothing is pending. Terminal.
+ * - `parent_missing` — `ensureDeliveryStatus` (task-registry-common.ts) only
+ *   assigns this when the task has no resolvable owner session to deliver to.
+ *   There is nothing to redrive toward. Terminal.
+ * - `not_applicable` — this task's scope never required a completion
+ *   delivery at all (`ensureDeliveryStatus`'s system-scope branch). Terminal.
+ * - `pending` / `session_queued` — mean a delivery attempt hasn't happened
+ *   yet or is queued to fire automatically. `projectRedrivenTask` sets these
+ *   alongside `terminalOutcome: "succeeded"` (not `"blocked"`), so it is not
+ *   yet confirmed whether either value is reachable while `terminalOutcome`
+ *   is still `"blocked"` in steady state. Treated as NOT terminal until that
+ *   is verified — the cost of guessing wrong here is closing a flow while a
+ *   delivery is genuinely still in flight.
  *
  * Returning false here leaves `endedAt` unset, which is exactly what keeps
  * `isTerminalTaskFlow` false and the flow resumable rather than buried. A
@@ -341,7 +360,11 @@ function isTerminalTaskMirroredFlowStatus(
   deliveryStatus: TaskRecord["deliveryStatus"] | undefined,
 ): boolean {
   if (status === "blocked") {
-    return deliveryStatus === "dismissed" || deliveryStatus === "suppressed";
+    return (
+      deliveryStatus !== "failed" &&
+      deliveryStatus !== "pending" &&
+      deliveryStatus !== "session_queued"
+    );
   }
   return (
     status === "succeeded" || status === "failed" || status === "cancelled" || status === "lost"
