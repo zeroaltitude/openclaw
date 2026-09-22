@@ -52,6 +52,7 @@ const enBackgroundTasks = {
       transcriptEmpty: "No transcript messages yet.",
       transcriptFailed: "Could not load task transcript.",
       taskDetailTitle: "Task details",
+      backToTasks: "Back to tasks",
       taskUnavailable: "This task is no longer available.",
       prompt: "Prompt",
       output: "Output",

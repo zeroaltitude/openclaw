@@ -24,6 +24,7 @@ import {
   listTaskFlowRecords,
   resolveTaskFlowForLookupToken,
 } from "../tasks/task-flow-runtime-internal.js";
+import { summarizeTaskRecords } from "../tasks/task-registry.summary.js";
 import {
   formatTaskStatus,
   formatTaskStatusDetail,
@@ -150,11 +151,10 @@ export async function flowsListCommand(
     writeRuntimeJson(runtime, {
       count: flows.length,
       status: statusFilter ?? null,
-      flows: flows.map((flow) => ({
-        ...flow,
-        tasks: listTasksForFlowId(flow.flowId),
-        taskSummary: getFlowTaskSummary(flow.flowId),
-      })),
+      flows: flows.map((flow) => {
+        const tasks = listTasksForFlowId(flow.flowId);
+        return Object.assign({}, flow, { tasks, taskSummary: summarizeTaskRecords(tasks) });
+      }),
     });
     return;
   }
@@ -193,7 +193,7 @@ export async function flowsShowCommand(
     return;
   }
   const tasks = listTasksForFlowId(flow.flowId);
-  const taskSummary = getFlowTaskSummary(flow.flowId);
+  const taskSummary = summarizeTaskRecords(tasks);
   const stateSummary = summarizeFlowState(flow);
 
   if (opts.json) {
