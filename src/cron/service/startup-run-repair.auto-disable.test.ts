@@ -16,7 +16,8 @@ import {
 import * as cronSchedule from "../schedule.js";
 import type { CronJob } from "../types.js";
 import { markInterruptedStartupRun, restoreFinalizedStartupRun } from "./startup-run-repair.js";
-import { createCronServiceState } from "./state.js";
+import { createCronServiceState, type DeferredCronNotifications } from "./state.js";
+import { runPostPersistCronNotifications } from "./store.js";
 import { applyJobResult } from "./timer-outcomes.js";
 
 function createRepairState(storePath: string, nowMs: number) {
@@ -55,7 +56,7 @@ describe("startup run repair auto-disable", () => {
       nextRunAtMs: runningAtMs,
       runningAtMs,
     });
-    const deferredNotifications: Array<() => void> = [];
+    const deferredNotifications: DeferredCronNotifications = [];
 
     // Well past MAX_CONSECUTIVE_RUN_FAILURES: a healthy schedule that keeps
     // getting caught mid-run by gateway restarts must survive all of them.
@@ -76,16 +77,37 @@ describe("startup run repair auto-disable", () => {
   it("still auto-disables on the tenth genuine failure when restarts inflate the streak", () => {
     const runningAtMs = Date.parse("2026-08-01T16:00:00.000Z");
     const nowMs = runningAtMs + 30_000;
-    const state = createRepairState("/tmp/startup-run-repair-mixed-streak.json", nowMs);
-    // Nine genuine run failures already recorded, none of them infrastructure.
-    const job = createRecurringJob("mixed-streak", runningAtMs, {
-      nextRunAtMs: runningAtMs,
-      runningAtMs,
-      consecutiveErrors: 9,
-      lastErrorReason: "timeout",
-      deliverySuppressionReason: "silent",
+    const enqueueSystemEvent = vi.fn();
+    const requestHeartbeat = vi.fn();
+    const state = createCronServiceState({
+      storePath: "/tmp/startup-run-repair-mixed-streak.json",
+      cronEnabled: true,
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      nowMs: () => nowMs,
+      enqueueSystemEvent,
+      requestHeartbeat,
+      runIsolatedAgentJob: vi.fn(),
     });
-    const deferredNotifications: Array<() => void> = [];
+    // Nine genuine run failures already recorded, none of them infrastructure.
+    const job: CronJob = {
+      id: "mixed-streak",
+      name: "mixed-streak",
+      enabled: true,
+      createdAtMs: runningAtMs - 60_000,
+      updatedAtMs: runningAtMs,
+      schedule: { kind: "every", everyMs: 60_000, anchorMs: runningAtMs - 60_000 },
+      sessionTarget: "main",
+      wakeMode: "next-heartbeat",
+      payload: { kind: "systemEvent", text: "do not replay".repeat(8192) },
+      state: {
+        nextRunAtMs: runningAtMs,
+        runningAtMs,
+        consecutiveErrors: 9,
+        lastErrorReason: "timeout",
+        deliverySuppressionReason: "silent",
+      },
+    };
+    const deferredNotifications: DeferredCronNotifications = [];
 
     markInterruptedStartupRun({ state, job, runningAtMs, nowMs, deferredNotifications });
 
@@ -120,6 +142,19 @@ describe("startup run repair auto-disable", () => {
       reason: "consecutive-failures",
       consecutiveErrors: 10,
     });
+    expect(enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(requestHeartbeat).not.toHaveBeenCalled();
+    expect(deferredNotifications).toHaveLength(1);
+
+    const notificationIntents = structuredClone(deferredNotifications);
+    expect(Buffer.byteLength(JSON.stringify(notificationIntents))).toBeLessThan(4096);
+    runPostPersistCronNotifications(state, notificationIntents);
+    expect(enqueueSystemEvent).toHaveBeenCalledOnce();
+    expect(enqueueSystemEvent.mock.calls[0]?.[0]).toContain(
+      "Check automation history for details.",
+    );
+    expect(enqueueSystemEvent.mock.calls[0]?.[0]).not.toContain("timeout");
+    expect(requestHeartbeat).toHaveBeenCalledOnce();
   });
 
   it("auto-disables an uninterrupted job on its tenth genuine failure", () => {
@@ -131,7 +166,7 @@ describe("startup run repair auto-disable", () => {
       runningAtMs: startedAt,
       consecutiveErrors: 9,
     });
-    const deferredNotifications: Array<() => void> = [];
+    const deferredNotifications: DeferredCronNotifications = [];
 
     applyJobResult(
       state,
@@ -166,11 +201,16 @@ describe("startup run repair auto-disable", () => {
     });
 
     const startedAt = nowMs + 60_000;
-    applyJobResult(state, job, {
-      status: "ok",
-      startedAt,
-      endedAt: startedAt + 500,
-    });
+    applyJobResult(
+      state,
+      job,
+      {
+        status: "ok",
+        startedAt,
+        endedAt: startedAt + 500,
+      },
+      { deferredNotifications: [] },
+    );
 
     expect(job.state.consecutiveErrors).toBe(0);
     expect(job.state.consecutiveRestartInterruptions).toBe(0);
@@ -263,7 +303,7 @@ describe("startup run repair auto-disable", () => {
         // spent before this restart; the restart only re-evaluates it.
         state: { runningAtMs: nowMs, consecutiveErrors: 10 },
       };
-      const deferredNotifications: Array<() => void> = [];
+      const deferredNotifications: DeferredCronNotifications = [];
 
       markInterruptedStartupRun({
         state,
@@ -274,7 +314,7 @@ describe("startup run repair auto-disable", () => {
       });
       expect(job.sessionKey).toBe(testCase.creatorSessionKey);
       expect(deferredNotifications).toHaveLength(1);
-      deferredNotifications[0]?.();
+      runPostPersistCronNotifications(state, structuredClone(deferredNotifications));
       await vi.advanceTimersByTimeAsync(1);
 
       expect(runOnce).toHaveBeenCalledOnce();
@@ -326,7 +366,7 @@ describe("startup run repair auto-disable", () => {
       payload: { kind: "systemEvent", text: "do not replay" },
       state: { nextRunAtMs: runningAtMs, runningAtMs },
     };
-    const deferredNotifications: Array<() => void> = [];
+    const deferredNotifications: DeferredCronNotifications = [];
 
     restoreFinalizedStartupRun({
       state,
@@ -355,7 +395,7 @@ describe("startup run repair auto-disable", () => {
     expect(state.deps.requestHeartbeat).not.toHaveBeenCalled();
     expect(deferredNotifications).toHaveLength(1);
 
-    deferredNotifications[0]?.();
+    runPostPersistCronNotifications(state, structuredClone(deferredNotifications));
     expect(state.deps.enqueueSystemEvent).toHaveBeenCalledOnce();
     expect(state.deps.requestHeartbeat).toHaveBeenCalledOnce();
   });
@@ -394,7 +434,7 @@ describe("startup run repair auto-disable", () => {
     const failureNotificationDelivery =
       "failureNotificationDelivery" in testCase ? testCase.failureNotificationDelivery : undefined;
     const runningAtMs = Date.parse("2026-08-01T17:00:00.000Z");
-    const deferredNotifications: Array<() => void> = [];
+    const deferredNotifications: DeferredCronNotifications = [];
     const state = createCronServiceState({
       storePath: "/tmp/startup-run-repair-completion.json",
       cronEnabled: true,
@@ -490,7 +530,7 @@ describe("startup run repair auto-disable", () => {
         scheduleErrorCount: 2,
       },
     };
-    const deferredNotifications: Array<() => void> = [];
+    const deferredNotifications: DeferredCronNotifications = [];
     const computeSpy = vi.spyOn(cronSchedule, "computeNextRunAtMs").mockImplementation(() => {
       throw new Error("simulated quiet-trigger schedule failure");
     });
@@ -549,6 +589,7 @@ describe("startup run repair auto-disable", () => {
       const before = structuredClone(job);
 
       const result = restoreFinalizedStartupRun({
+        deferredNotifications: [],
         state,
         job,
         runningAtMs,

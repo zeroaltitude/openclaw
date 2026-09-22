@@ -188,13 +188,18 @@ async function scenarioRestartDoesNotPayForFailure(tmpDir: string): Promise<void
   const startedAt = BASE_MS + 2 * EVERY_MS;
   const endedAt = startedAt + 500;
   const state = offlineServiceState(storePath, endedAt);
-  applyJobResult(state, afterRestart, {
-    status: "error",
-    error: "provider refused the request",
-    executionStarted: true,
-    startedAt,
-    endedAt,
-  });
+  applyJobResult(
+    state,
+    afterRestart,
+    {
+      status: "error",
+      error: "provider refused the request",
+      executionStarted: true,
+      startedAt,
+      endedAt,
+    },
+    { deferredNotifications: [] },
+  );
 
   assert(afterRestart.enabled === false, "the tenth genuine failure did not auto-disable the job");
   assert(
@@ -226,13 +231,18 @@ function scenarioGenuineStreakUnchanged(tmpDir: string): void {
   });
   const state = offlineServiceState(storePath, endedAt);
 
-  applyJobResult(state, job, {
-    status: "error",
-    error: "provider refused the request",
-    executionStarted: true,
-    startedAt,
-    endedAt,
-  });
+  applyJobResult(
+    state,
+    job,
+    {
+      status: "error",
+      error: "provider refused the request",
+      executionStarted: true,
+      startedAt,
+      endedAt,
+    },
+    { deferredNotifications: [] },
+  );
 
   assert(job.state.consecutiveErrors === 10, "genuine failure counting regressed");
   assert(job.enabled === false, "an uninterrupted ten-failure streak no longer auto-disables");
@@ -257,7 +267,7 @@ function scenarioSuccessClearsStreak(tmpDir: string): void {
   });
   const state = offlineServiceState(storePath, endedAt);
 
-  applyJobResult(state, job, { status: "ok", startedAt, endedAt });
+  applyJobResult(state, job, { status: "ok", startedAt, endedAt }, { deferredNotifications: [] });
 
   assert(job.state.consecutiveErrors === 0, "a successful run did not clear the error streak");
   assert(
