@@ -59,6 +59,8 @@ vi.mock("./subagent-session-reconciliation.js", () => ({
     sessionId: fixture.sessionId,
     lifecycleRevision: fixture.lifecycleRevision,
   }),
+  // Restore consults the staleness ceiling; these fixtures are live, never orphaned.
+  resolveSubagentRunOrphanReason: () => null,
 }));
 
 beforeEach(() => {
