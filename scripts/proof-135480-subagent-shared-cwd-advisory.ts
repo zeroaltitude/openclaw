@@ -102,8 +102,11 @@ async function main(): Promise<void> {
     (await import("../src/agents/spawned-context.js")) as SpawnedContextModule;
   const { upsertSessionEntryCore } =
     (await import("../src/config/sessions/session-accessor.js")) as SessionAccessorModule;
-  const { buildSubagentList } =
+  const { buildSubagentList, captureSubagentListReadContext, readSubagentListSessionEntries } =
     (await import("../src/agents/subagents/registry/subagent-list.js")) as SubagentListModule;
+  const { buildSubagentRunReadIndexFromRuns } = (await import(
+    "../src/agents/subagents/registry/subagent-registry-queries.js"
+  )) as typeof import("../src/agents/subagents/registry/subagent-registry-queries.js");
   const { handleSubagentsListAction } =
     (await import("../src/auto-reply/reply/commands-subagents/action-list.js")) as SubagentsCommandModule;
 
@@ -132,7 +135,14 @@ async function main(): Promise<void> {
 
   const listFor = (storePath: string, runs: SubagentRunRecord[]) => {
     const cfg = { session: { store: storePath } } as OpenClawConfig;
-    const list = buildSubagentList({ cfg, runs, recentMinutes: 30 });
+    const runsMap = new Map(runs.map((run) => [run.runId, run]));
+    const readIndex = buildSubagentRunReadIndexFromRuns({ runs: runsMap });
+    const context = captureSubagentListReadContext(runs, readIndex, runsMap, 30);
+    const list = buildSubagentList({
+      cfg,
+      context,
+      sessionEntries: readSubagentListSessionEntries(cfg, context),
+    });
     // The `/subagents` command surface, driven for real off the same build.
     const text = handleSubagentsListAction({
       params: { cfg },

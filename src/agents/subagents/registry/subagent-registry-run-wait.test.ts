@@ -45,6 +45,11 @@ function createWaitManager(params: {
     resumedRuns: new Set<string>(),
     persist: vi.fn(),
     persistOrThrow: vi.fn(),
+    persistAsyncOrThrow: async (_context, publication) => {
+      publication.assertCurrent();
+      await Promise.resolve();
+      publication.onCommitted?.();
+    },
     callGateway: (async (_opts: CallGatewayOptions) =>
       params.wait) as SubagentManagerOptions["callGateway"],
     getRuntimeConfig: (() => ({})) as SubagentManagerOptions["getRuntimeConfig"],

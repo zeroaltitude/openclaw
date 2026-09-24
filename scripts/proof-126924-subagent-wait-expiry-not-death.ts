@@ -158,6 +158,8 @@ type DetachedTaskRuntimeModule = typeof import("../src/tasks/detached-task-runti
 type SessionAccessorModule = typeof import("../src/config/sessions/session-accessor.js");
 type SwarmSchedulerModule = typeof import("../src/agents/subagents/swarm/swarm-scheduler.js");
 type SubagentListModule = typeof import("../src/agents/subagents/registry/subagent-list.js");
+type SubagentRegistryQueriesModule =
+  typeof import("../src/agents/subagents/registry/subagent-registry-queries.js");
 type AgentEventsModule = typeof import("../src/infra/agent-events.js");
 
 const repoRoot = process.env.PROOF_REPO_ROOT ?? process.cwd();
@@ -289,6 +291,9 @@ try {
   const subagentList = (await importSource(
     "src/agents/subagents/registry/subagent-list.js",
   )) as SubagentListModule;
+  const registryQueries = (await importSource(
+    "src/agents/subagents/registry/subagent-registry-queries.js",
+  )) as SubagentRegistryQueriesModule;
   const agentEvents = (await importSource("src/infra/agent-events.js")) as AgentEventsModule;
   log(`[boot] production modules imported in ${Math.round((Date.now() - bootStartedAt) / 1_000)}s`);
 
@@ -639,10 +644,28 @@ try {
   // under recent timeouts here would contradict, in the same turn, both the
   // completion warning and the still-`running` detached task — and a parent that
   // believes the listing is the one that spawns the destructive replacement.
+  const unconfirmedListCfg = depsModule.subagentRegistryDeps.getRuntimeConfig();
+  const unconfirmedListRuns = registryRead.listSubagentRunsForRequester(REQUESTER_SESSION_KEY);
+  const unconfirmedListRunsMap = new Map(
+    unconfirmedListRuns.map((run) => [run.runId, run]),
+  );
+  const unconfirmedListReadIndex = registryQueries.buildSubagentRunReadIndexFromRuns({
+    runs: unconfirmedListRunsMap,
+    inMemoryRuns: memory.subagentRuns.values(),
+  });
+  const unconfirmedListContext = subagentList.captureSubagentListReadContext(
+    unconfirmedListRuns,
+    unconfirmedListReadIndex,
+    unconfirmedListRunsMap,
+    30,
+  );
   const unconfirmedList = subagentList.buildSubagentList({
-    cfg: depsModule.subagentRegistryDeps.getRuntimeConfig(),
-    runs: registryRead.listSubagentRunsForRequester(REQUESTER_SESSION_KEY),
-    recentMinutes: 30,
+    cfg: unconfirmedListCfg,
+    context: unconfirmedListContext,
+    sessionEntries: subagentList.readSubagentListSessionEntries(
+      unconfirmedListCfg,
+      unconfirmedListContext,
+    ),
   });
   const listedLiveRun = unconfirmedList.active.find((item) => item.runId === LIVE_RUN_ID);
   assert.ok(

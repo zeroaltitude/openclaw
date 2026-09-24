@@ -112,7 +112,7 @@ export async function reconcileStaleActiveSubagentRun(params: {
   ) {
     return;
   }
-  const canRecoverInterrupted = isSubagentChildStopUnconfirmed(entry)
+  const isRecoveryCurrent = isSubagentChildStopUnconfirmed(entry)
     ? () => {
         try {
           // Remote worker ownership survives missing session metadata. Default
@@ -129,7 +129,7 @@ export async function reconcileStaleActiveSubagentRun(params: {
         }
       }
     : undefined;
-  if (canRecoverInterrupted && !canRecoverInterrupted()) {
+  if (isRecoveryCurrent && !isRecoveryCurrent()) {
     return;
   }
   const attributedError = attribution ? formatSubagentOrphanErrorMessage(attribution) : undefined;
@@ -159,7 +159,7 @@ export async function reconcileStaleActiveSubagentRun(params: {
       },
       reason: SUBAGENT_ENDED_REASON_ERROR,
       ...(attribution ? { recoverInterrupted: true as const } : {}),
-      ...(canRecoverInterrupted ? { canRecoverInterrupted } : {}),
+      ...(isRecoveryCurrent ? { isRecoveryCurrent } : {}),
       sendFarewell: true,
       accountId,
       triggerCleanup: true,
