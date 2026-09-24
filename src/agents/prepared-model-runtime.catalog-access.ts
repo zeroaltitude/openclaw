@@ -80,7 +80,7 @@ export function createFullModelCatalogAccess(
     params.agentFacts.input.config,
     params.agentFacts.env,
   );
-  const projectInventory = createPreparedModelCatalogProjection(params);
+  const projectInventory = createPreparedModelCatalogProjection({ ...params, normalizeProvider });
   const project = (
     catalog: ModelCatalogSnapshot,
     runtimeModels:
@@ -176,6 +176,16 @@ export function createFullModelCatalogAccess(
       !entry.nativeRuntime || identifiedNativeProviders.has(normalizeProvider(entry.provider));
     inventory.catalog.entries = inventory.catalog.entries.filter(retain);
     inventory.catalog.routeVariants = inventory.catalog.routeVariants.filter(retain);
+    if (inventory.catalog.nativeProviderOutcomes) {
+      inventory.catalog.nativeProviderOutcomes = Object.fromEntries(
+        Object.entries(inventory.catalog.nativeProviderOutcomes).map(([runtime, outcomes]) => [
+          runtime,
+          outcomes.filter(({ provider }) =>
+            identifiedNativeProviders.has(normalizeProvider(provider)),
+          ),
+        ]),
+      );
+    }
   }
   const currentAuth = {
     authStore: params.agentFacts.authStore,
@@ -505,6 +515,7 @@ export function createFullModelCatalogAccess(
           input: params.agentFacts.input,
           nativeSelection,
           snapshot: rawInventory,
+          normalizeProvider,
           preparedSnapshot: current,
           pluginRegistry: params.pluginGeneration.pluginRegistry,
           isCurrent: params.isCurrent,
