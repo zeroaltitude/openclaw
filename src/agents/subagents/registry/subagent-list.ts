@@ -13,7 +13,7 @@ import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { formatDurationCompact } from "../../../infra/format-time/format-duration.js";
 import { resolveUserPath } from "../../../infra/home-dir.js";
-import { parseAgentSessionKey, type ParsedAgentSessionKey } from "../../../routing/session-key.js";
+import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import {
   formatTokenUsageDisplay,
   resolveTotalTokens,
@@ -165,9 +165,23 @@ export function readSubagentListSessionEntries(
   cfg: OpenClawConfig,
   context: SubagentListReadContext,
 ): Map<string, SessionEntry> {
-  const runs = [...context.view.active, ...context.view.recent];
+  // The shared-cwd advisory also inspects unended and unconfirmed-stop runs that
+  // can fall outside the displayed active/recent rows, so read those entries too.
+  const runs = [
+    ...context.view.active,
+    ...context.view.recent,
+    ...context.view.latest.filter(
+      (run) =>
+        isRetainedUnendedSubagentRun(run, context.now) || isSubagentChildStopUnconfirmed(run),
+    ),
+  ];
+  const seen = new Set<string>();
   const keysByStore = new Map<string, string[]>();
   for (const run of runs) {
+    if (seen.has(run.childSessionKey)) {
+      continue;
+    }
+    seen.add(run.childSessionKey);
     const storePath = resolveSessionStorePathCore(cfg.session?.store, {
       agentId: parseAgentSessionKey(run.childSessionKey)?.agentId,
     });
@@ -191,40 +205,6 @@ export function readSubagentListSessionEntries(
     }
   }
   return entries;
-}
-
-type SessionEntryResolution = {
-  storePath: string;
-  entry: SessionEntry | undefined;
-};
-
-function resolveStorePathForKey(cfg: OpenClawConfig, parsed?: ParsedAgentSessionKey | null) {
-  return resolveSessionStorePathCore(cfg.session?.store, {
-    agentId: parsed?.agentId,
-  });
-}
-
-/** Resolve persisted session metadata for a session key, caching per store path. */
-function resolveSessionEntryForKey(params: {
-  cfg: OpenClawConfig;
-  key: string;
-  cache: Map<string, Record<string, SessionEntry>>;
-}): SessionEntryResolution {
-  const parsed = parseAgentSessionKey(params.key);
-  const storePath = resolveStorePathForKey(params.cfg, parsed);
-  let store = params.cache.get(storePath);
-  if (!store) {
-    store = Object.fromEntries(
-      listSessionEntriesReadOnly({ storePath, clone: false, projection: "list" }).map(
-        ({ sessionKey, entry }) => [sessionKey, entry],
-      ),
-    );
-    params.cache.set(storePath, store);
-  }
-  return {
-    storePath,
-    entry: store[params.key],
-  };
 }
 
 /** Build child-session indexes from the latest run associated with each child key. */
@@ -325,9 +305,8 @@ function capSharedCwdPath(value: string) {
  * skipped so the advisory stays silent on normal usage.
  */
 function buildSharedCwdIndex(params: {
-  cfg: OpenClawConfig;
   runs: SubagentRunRecord[];
-  cache: Map<string, Record<string, SessionEntry>>;
+  sessionEntries: ReadonlyMap<string, SessionEntry>;
   now: number;
 }) {
   const groups = new Map<string, { path: string; displayPath: string; runIds: string[] }>();
@@ -337,11 +316,7 @@ function buildSharedCwdIndex(params: {
     if (!isRetainedUnendedSubagentRun(run, params.now) && !isSubagentChildStopUnconfirmed(run)) {
       continue;
     }
-    const spawnedCwd = resolveSessionEntryForKey({
-      cfg: params.cfg,
-      key: run.childSessionKey,
-      cache: params.cache,
-    }).entry?.spawnedCwd?.trim();
+    const spawnedCwd = params.sessionEntries.get(run.childSessionKey)?.spawnedCwd?.trim();
     if (!spawnedCwd) {
       continue;
     }
@@ -455,20 +430,17 @@ function buildListText(params: {
 
 /** Build structured and text views for active and recent subagent runs. */
 export function buildSubagentList(params: {
-  cfg: OpenClawConfig;
   context: SubagentListReadContext;
   sessionEntries: ReadonlyMap<string, SessionEntry>;
   taskMaxChars?: number;
 }): BuiltSubagentList {
   const { now, view: runView, childSessionsByController } = params.context;
-  const cache = new Map<string, Record<string, SessionEntry>>();
   // `runView.latest` is the full deduped run set (not just the displayed
   // active/recent rows), so the shared-cwd advisory can see unended or
-  // unconfirmed-stop runs that fall outside `params.sessionEntries`.
+  // unconfirmed-stop runs; readSubagentListSessionEntries loads their entries.
   const sharedCwdIndex = buildSharedCwdIndex({
-    cfg: params.cfg,
     runs: runView.latest,
-    cache,
+    sessionEntries: params.sessionEntries,
     now,
   });
   let index = 1;
