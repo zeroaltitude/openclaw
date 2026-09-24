@@ -20,7 +20,6 @@ import {
 } from "../../../tasks/task-registry.store.js";
 import { findTaskByRunIdForStatus } from "../../../tasks/task-status-access.js";
 import { loadGatewayBootSegmentsForAttribution } from "./subagent-orphan-attribution.js";
-import { settleSubagentRegistryPersistenceWork } from "./subagent-registry.persistence.test-support.js";
 import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite.js";
 import {
   addSubagentRunForTests,
@@ -37,6 +36,7 @@ export function registerSubagentOrphanTaskCases({
   writeChildSessionEntry,
   restartRegistry,
   waitForRegistryWork,
+  settle,
 }: {
   announceSpy: () => Promise<"delivered" | "retryable">;
   flushQueuedRegistryWork: () => Promise<void>;
@@ -52,6 +52,7 @@ export function registerSubagentOrphanTaskCases({
     abortedLastRun?: boolean;
   }) => Promise<string>;
   restartRegistry: () => void;
+  settle: () => Promise<void>;
   waitForRegistryWork: (predicate: () => boolean | Promise<boolean>) => Promise<void>;
 }) {
   it("preserves stale unended restored runs for attributed sweeper recovery", async () => {
@@ -206,7 +207,7 @@ export function registerSubagentOrphanTaskCases({
           vi.mocked(callGateway).mock.calls.some(([request]) => request.method === "agent.wait"),
         );
         await testing.sweepOnceForTests();
-        await settleSubagentRegistryPersistenceWork();
+        await settle();
         if (evidence === "host reboot") {
           expect(findTaskByRunIdForStatus(runId)).toMatchObject({
             status: "failed",
@@ -225,7 +226,7 @@ export function registerSubagentOrphanTaskCases({
         }
       } finally {
         childResult.resolve({ status: "ok", startedAt, endedAt: now });
-        await settleSubagentRegistryPersistenceWork();
+        await settle();
       }
     },
   );
@@ -310,7 +311,7 @@ export function registerSubagentOrphanTaskCases({
         }
       } finally {
         childResult.resolve({ status: "ok", startedAt: now - 10_000, endedAt: now });
-        await settleSubagentRegistryPersistenceWork();
+        await settle();
       }
     },
   );
@@ -411,31 +412,39 @@ export function registerSubagentOrphanTaskCases({
     configureTaskRegistryRuntime({
       store: {
         ...store,
-        upsertTaskWithDeliveryState(params) {
+        async runInitialMutationAsync(context, command, assertCurrent, onGranted) {
           if (
-            params.task.taskId === task?.taskId &&
-            params.task.status === "failed" &&
+            command.type === "tasks.transitionRunRow" &&
+            "kind" in command.input &&
+            command.input.kind === "state" &&
+            command.input.taskId === task?.taskId &&
+            command.input.params.status === "failed" &&
             rejectTerminalWrites
           ) {
             rejectedWrites += 1;
             throw new Error("injected task settlement failure");
           }
-          store.upsertTaskWithDeliveryState(params);
+          return store.runInitialMutationAsync(context, command, assertCurrent, onGranted);
         },
       },
     });
-    restartRegistry();
-    await testing.sweepOnceForTests();
-    await waitForRegistryWork(() => rejectedWrites > 0);
-    await settleSubagentRegistryPersistenceWork();
-    expect(findTaskByRunIdForStatus(runId)?.status).toBe("running");
-    expect(loadSubagentRegistryFromSqlite().get(runId)?.cleanupCompletedAt).toBeUndefined();
-    rejectTerminalWrites = false;
-    await testing.sweepOnceForTests();
-    await waitForRegistryWork(() => findTaskByRunIdForStatus(runId)?.status === "failed");
-    await waitForRegistryWork(
-      () => loadSubagentRegistryFromSqlite().get(runId)?.cleanupCompletedAt !== undefined,
-    );
+    try {
+      restartRegistry();
+      await testing.sweepOnceForTests();
+      await waitForRegistryWork(() => rejectedWrites > 0);
+      await settle();
+      expect(findTaskByRunIdForStatus(runId)?.status).toBe("running");
+      expect(loadSubagentRegistryFromSqlite().get(runId)?.cleanupCompletedAt).toBeUndefined();
+      rejectTerminalWrites = false;
+      await testing.sweepOnceForTests();
+      await waitForRegistryWork(() => findTaskByRunIdForStatus(runId)?.status === "failed");
+      await waitForRegistryWork(
+        () => loadSubagentRegistryFromSqlite().get(runId)?.cleanupCompletedAt !== undefined,
+      );
+    } finally {
+      // An early assertion must release the fault before fixture-owned delivery is joined.
+      rejectTerminalWrites = false;
+    }
   });
 
   it("reconciles a previously stranded registry-backed task despite its retained running session", async () => {
