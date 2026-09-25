@@ -595,7 +595,9 @@ const subagentRunManager = createSubagentRunManager({
     if (entry.collect === true || entry.expectsCompletionMessage === false) {
       return;
     }
-    const announceResult = await subagentRegistryDeps.runSubagentAnnounceFlow({
+    const announceResult = await (
+      await loadSubagentAnnounceModule()
+    ).runSubagentAnnounceFlow({
       childSessionKey: entry.childSessionKey,
       childRunId: entry.runId,
       requesterSessionKey: entry.requesterSessionKey,
