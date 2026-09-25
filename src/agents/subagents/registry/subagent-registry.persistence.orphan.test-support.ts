@@ -96,7 +96,8 @@ export function registerSubagentOrphanTaskCases({
       // exact host/process wording depends on authoritative kernel boot IDs.
       error: expect.stringContaining(`(previous boot ${priorBootId} ended without a clean stop)`),
     });
-    expect(announceSpy).toHaveBeenCalled();
+    // Recovery's completion announcement is queued work (#151303); wait for it.
+    await vi.waitFor(() => expect(announceSpy).toHaveBeenCalled());
   });
   it.each([
     "host reboot",
