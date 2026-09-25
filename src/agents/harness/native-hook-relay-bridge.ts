@@ -10,7 +10,7 @@ import {
   NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR,
 } from "./native-hook-relay-client.js";
 import {
-  getNativeHookRelayProviderAdapter,
+  normalizeCodexHookMetadata,
   normalizeNativeHookToolName,
 } from "./native-hook-relay-codec.js";
 import { nativeHookRelayState } from "./native-hook-relay-state.js";
@@ -376,9 +376,7 @@ function trackNativeHookRelayBridgeRequest(
         return;
       }
       try {
-        const metadata = getNativeHookRelayProviderAdapter(auth.provider).normalizeMetadata(
-          payload.rawPayload,
-        );
+        const metadata = normalizeCodexHookMetadata(payload.rawPayload);
         toolCallId = metadata.toolUseId;
         toolName = normalizeNativeHookToolName(metadata.toolName);
       } catch {
