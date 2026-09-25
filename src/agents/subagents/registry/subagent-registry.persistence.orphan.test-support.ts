@@ -96,6 +96,7 @@ export function registerSubagentOrphanTaskCases({
       // exact host/process wording depends on authoritative kernel boot IDs.
       error: expect.stringContaining(`(previous boot ${priorBootId} ended without a clean stop)`),
     });
+    await waitForRegistryWork(() => announceSpy.mock.calls.length > 0);
     expect(announceSpy).toHaveBeenCalled();
   });
   it.each([

@@ -23,26 +23,24 @@
  *   child that genuinely has no row on disk — not a stubbed return value.
  *
  * WHAT IS STUBBED, AND ONLY THIS
- * - `subagentRegistryDeps.callGateway` — the WebSocket edge that would reach the
- *   child agent's own run. `agent.wait` answers `{ status: "timeout" }` with no
- *   terminal snapshot, which is exactly the deadline-only expiry under test.
- *   Every request is recorded, so the proof asserts on what the production code
- *   actually submitted — notably whether any `sessions.delete` was sent for a
- *   child that may still be live.
- * - `subagentRegistryDeps.captureSubagentCompletionReply` — the child's own
- *   transcript. It answers from a scripted per-session map so the proof can tell
- *   pre-expiry partial output apart from the child's real final output. The seam
- *   under test (`freezeRunResultAtCompletion`'s first-write-wins capture and the
- *   promotion that must clear it) is entirely real; only the transcript text is
- *   scripted, exactly as a real child would have changed it between the two
- *   reads.
- * - `subagentRegistryDeps.loadAgentRuntimePluginRegistryHandle` — resolves "no
- *   plugin registry" rather than loading the plugin host. The terminal-hook code
- *   path still executes for real against an empty registry, which is what a real
- *   load would return for this config's zero configured plugins. The reason is
- *   measured, not aesthetic: the real loader compiles the plugin host through
- *   jiti synchronously and blocked the event loop for ~160s on a cold cache.
- *   Plugin-hook deferral itself is covered by unit tests, not by this script.
+ * - The Gateway instance that would reach the child agent's own run. The proof
+ *   activates the registry with a scripted `GatewayRecoveryRuntime` through the
+ *   production `activateSubagentRegistry` binding. `agent.wait` answers
+ *   `{ status: "timeout" }` with no terminal snapshot, which is exactly the
+ *   deadline-only expiry under test. Every request is recorded, so the proof
+ *   asserts on what the production code actually submitted — notably whether any
+ *   `sessions.delete` was sent for a child that may still be live.
+ * - The child's transcript text. Each child's messages are appended through the
+ *   real SQLite transcript writer, and `chat.history` answers from the same
+ *   scripted per-session text, so the proof can tell pre-expiry partial output
+ *   apart from the child's real final output. The seam under test
+ *   (`freezeRunResultAtCompletion`'s first-write-wins capture and the promotion
+ *   that must clear it) is entirely real; only the transcript text is scripted,
+ *   exactly as a real child would have changed it between the two reads.
+ * - The plugin host is the real loader, configured with `plugins.enabled:
+ *   false`. The terminal-hook code path still executes for real against the
+ *   empty registry that load returns. Plugin-hook deferral itself is covered by
+ *   unit tests, not by this script.
  *
  * WHAT IS ADVANCED RATHER THAN WAITED OUT
  * - `delivery.suspendedAt` is rewound past its hard-coded seven-day expiry.
@@ -139,13 +137,13 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
+import type { GatewayRecoveryRuntime } from "../src/gateway/server-instance-runtime.types.js";
 
 type SubagentRegistryModule =
   typeof import("../src/agents/subagents/registry/subagent-registry.js");
 type SubagentRegistryReadModule =
   typeof import("../src/agents/subagents/registry/subagent-registry-read.js");
-type SubagentRegistryDepsModule =
-  typeof import("../src/agents/subagents/registry/subagent-registry-deps.js");
+type ConfigModule = typeof import("../src/config/config.js");
 type SessionReconciliationModule =
   typeof import("../src/agents/subagents/registry/subagent-session-reconciliation.js");
 type SubagentRegistryMemoryModule =
@@ -178,7 +176,12 @@ const ARCHIVE_AFTER_MINUTES = 1;
 fs.writeFileSync(
   configPath,
   `${JSON.stringify(
-    { agents: { defaults: { subagents: { archiveAfterMinutes: ARCHIVE_AFTER_MINUTES } } } },
+    {
+      agents: { defaults: { subagents: { archiveAfterMinutes: ARCHIVE_AFTER_MINUTES } } },
+      // The terminal-hook path runs for real against the empty registry the
+      // production loader returns when plugins are disabled.
+      plugins: { enabled: false },
+    },
     null,
     2,
   )}\n`,
@@ -255,9 +258,7 @@ let exitCode = 0;
 try {
   const bootStartedAt = Date.now();
   log("[boot] importing the production registry, task runtime and session store...");
-  const depsModule = (await importSource(
-    "src/agents/subagents/registry/subagent-registry-deps.js",
-  )) as SubagentRegistryDepsModule;
+  const configModule = (await importSource("src/config/config.js")) as ConfigModule;
   const registry = (await importSource(
     "src/agents/subagents/registry/subagent-registry.js",
   )) as SubagentRegistryModule;
@@ -297,36 +298,51 @@ try {
   const agentEvents = (await importSource("src/infra/agent-events.js")) as AgentEventsModule;
   log(`[boot] production modules imported in ${Math.round((Date.now() - bootStartedAt) / 1_000)}s`);
 
-  // The ONLY stub: the gateway edge that would reach the child agent's own run.
-  // `agent.wait` returning a bare timeout with no terminal snapshot IS the
+  // The ONLY stub: the Gateway instance that would reach the child agent's own
+  // run. `agent.wait` returning a bare timeout with no terminal snapshot IS the
   // deadline-only expiry this PR is about.
   // The child's transcript, scripted. Flipped from partial to final exactly when
   // the child's own session row is flipped to `done` in scenario 4 — i.e. the
   // transcript changes when the child finishes, as it would in production.
   const childTranscript = new Map<string, string>();
-  depsModule.setSubagentRegistryDepsForTest({
-    captureSubagentCompletionReply: (async (sessionKey: string) =>
-      childTranscript.get(
-        sessionKey,
-      )) as SubagentRegistryDepsModule["subagentRegistryDeps"]["captureSubagentCompletionReply"],
-    callGateway: (async (request: { method?: string }) => {
-      gatewayRequests.push(request);
-      if (request.method === "agent.wait") {
-        return { status: "timeout" };
-      }
-      return {};
-    }) as SubagentRegistryDepsModule["subagentRegistryDeps"]["callGateway"],
-    // Second declared stub, at the plugin-host edge: resolve "no plugin registry"
-    // instead of loading the plugin runtime. The terminal-hook path still runs
-    // for real (`emitSubagentEndedHookOnce`, its exactly-once marker, and the
-    // provisional gate above it) — it just runs against an empty registry, which
-    // is what a real load would return anyway for this config's zero configured
-    // plugins. This is here for a measured reason: the real loader compiles the
-    // plugin host through jiti synchronously, which blocked the event loop for
-    // ~160s on a cold cache (profiled: 181s sampled, 12s idle, the rest in
-    // jiti frames) and made this script unrunnable inside a reviewer's harness.
-    loadAgentRuntimePluginRegistryHandle: () => undefined,
-  });
+  const recordGatewayRequest = (method: string, params: unknown) => {
+    gatewayRequests.push({ method });
+    if (method === "chat.history") {
+      const sessionKey = (params as { sessionKey?: string } | undefined)?.sessionKey ?? "";
+      const text = childTranscript.get(sessionKey);
+      return {
+        messages: text ? [{ role: "assistant", content: text, timestamp: Date.now() }] : [],
+      };
+    }
+    return {};
+  };
+  const recoveryRuntime: GatewayRecoveryRuntime = {
+    dispatchSessionMethod: async <T>(method: string, params: unknown) =>
+      recordGatewayRequest(method, params) as T,
+    dispatchAgent: async <T>(params: unknown) => recordGatewayRequest("agent", params) as T,
+    waitForAgent: async <T>() => {
+      gatewayRequests.push({ method: "agent.wait" });
+      return { status: "timeout" } as T;
+    },
+    sendRecoveryNotice: async () => {
+      throw new Error("the proof Gateway sends no recovery notices");
+    },
+  };
+  const proofGateway = {
+    recoveryRuntime,
+    resolveGatewayContext: () => proofGateway as never,
+  };
+  const activateProofGateway = () => registry.activateSubagentRegistry(() => proofGateway as never);
+  activateProofGateway();
+  const setChildTranscript = async (childSessionKey: string, text: string) => {
+    childTranscript.set(childSessionKey, text);
+    // The production capture reads the child's own SQLite transcript whenever
+    // its session row names one; `chat.history` above serves the same text.
+    await sessionAccessor.appendTranscriptMessage(
+      { agentId: "main", sessionKey: childSessionKey, sessionId: `sess-${childSessionKey}` },
+      { message: { role: "assistant", content: text, timestamp: Date.now() } },
+    );
+  };
 
   const writeChildSessionRow = async (
     childSessionKey: string,
@@ -426,7 +442,7 @@ try {
 
   // The live child's transcript as it stands while it is still working. Nothing
   // has observed it stop, so this is the only text any capture can return yet.
-  childTranscript.set(LIVE_CHILD_SESSION_KEY, PARTIAL_OUTPUT);
+  await setChildTranscript(LIVE_CHILD_SESSION_KEY, PARTIAL_OUTPUT);
 
   // A third run for scenario 10: its child session record is deliberately never
   // written, which is the exact condition in which a rejected cancellation
@@ -644,11 +660,9 @@ try {
   // under recent timeouts here would contradict, in the same turn, both the
   // completion warning and the still-`running` detached task — and a parent that
   // believes the listing is the one that spawns the destructive replacement.
-  const unconfirmedListCfg = depsModule.subagentRegistryDeps.getRuntimeConfig();
+  const unconfirmedListCfg = configModule.getRuntimeConfig();
   const unconfirmedListRuns = registryRead.listSubagentRunsForRequester(REQUESTER_SESSION_KEY);
-  const unconfirmedListRunsMap = new Map(
-    unconfirmedListRuns.map((run) => [run.runId, run]),
-  );
+  const unconfirmedListRunsMap = new Map(unconfirmedListRuns.map((run) => [run.runId, run]));
   const unconfirmedListReadIndex = registryQueries.buildSubagentRunReadIndexFromRuns({
     runs: unconfirmedListRunsMap,
     inMemoryRuns: memory.subagentRuns.values(),
@@ -702,7 +716,7 @@ try {
     undefined,
     "wait expiry must not capture partial output as a terminal result",
   );
-  childTranscript.set(LIVE_CHILD_SESSION_KEY, FINAL_OUTPUT);
+  await setChildTranscript(LIVE_CHILD_SESSION_KEY, FINAL_OUTPUT);
   await writeChildSessionRow(LIVE_CHILD_SESSION_KEY, {
     status: "done",
     updatedAt: observedEndedAt,
@@ -948,6 +962,7 @@ try {
   registryTest.resetSubagentRegistryForTests({ persist: false });
   assert.equal(memory.subagentRuns.size, 0);
   registry.initSubagentRegistry();
+  activateProofGateway();
   const restoredCount = memory.subagentRuns.size;
   assert.ok(restoredCount > 0, "scenario 11 requires actual persisted registry rows");
   assert.notEqual(liveRow(ABSENT_RUN_ID), beforeRestore, "the unconfirmed owner must be reloaded");
@@ -1010,13 +1025,14 @@ try {
     "resume must not delete the child's session while its stop is unconfirmed",
   );
   const lateStopEndedAt = Date.now();
-  childTranscript.set(ABSENT_CHILD_SESSION_KEY, FINAL_OUTPUT);
   await writeChildSessionRow(ABSENT_CHILD_SESSION_KEY, {
     status: "done",
     updatedAt: lateStopEndedAt,
     startedAt: startedAtMs,
     endedAt: lateStopEndedAt,
   });
+  // The row must exist first so the transcript writer resolves its session.
+  await setChildTranscript(ABSENT_CHILD_SESSION_KEY, FINAL_OUTPUT);
   await sweep();
   await waitFor(
     "the late authoritative stop to promote the retained row",
