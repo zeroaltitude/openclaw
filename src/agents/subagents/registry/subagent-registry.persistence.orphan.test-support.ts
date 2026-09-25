@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it, vi, type Mock } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { patchSessionEntryCore } from "../../../config/sessions/session-accessor.js";
 import { callGateway } from "../../../gateway/call.js";
@@ -38,7 +38,7 @@ export function registerSubagentOrphanTaskCases({
   waitForRegistryWork,
   settle,
 }: {
-  announceSpy: () => Promise<"delivered" | "retryable">;
+  announceSpy: Mock<() => Promise<"delivered" | "retryable">>;
   flushQueuedRegistryWork: () => Promise<void>;
   readPersistedRegistry: () => { runs: Record<string, SubagentRunRecord> };
   writePersistedRegistry: (

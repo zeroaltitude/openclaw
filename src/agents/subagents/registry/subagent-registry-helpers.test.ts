@@ -322,12 +322,9 @@ describe("safeRemoveAttachmentsDir", () => {
 
   it("removes attachments once an observed stop promotes the run", async () => {
     // Anti-vacuity control for the case above: the same delete-mode row with an
-    // observed disposition does reach the removal, so the refusal is the guard
-    // and not an unrelated early return.
-    const realpathSpy = vi
-      .spyOn(fs, "realpath")
-      .mockRejectedValue(Object.assign(new Error("probe reached"), { code: "EACCES" }));
-
+    // observed disposition is NOT refused, so the refusal there is the guard and
+    // not an unrelated early return. Main retires legacy (attachmentId-less)
+    // rows without traversal, so "not refused" is a true result, with no probe.
     await expect(
       safeRemoveAttachmentsDir(
         createRunEntry({
@@ -342,10 +339,7 @@ describe("safeRemoveAttachmentsDir", () => {
           },
         }),
       ),
-    ).resolves.toBe(false);
-    expect(realpathSpy).toHaveBeenCalled();
-
-    realpathSpy.mockRestore();
+    ).resolves.toBe(true);
   });
 });
 
