@@ -264,6 +264,13 @@ export const safeSetSubagentTaskDeliveryStatus = async (
   const runId = args.entry.runId;
   const generation = args.entry.generation;
   const delivery = args.entry.delivery;
+  // An explicitly suppressed delivery is projected onto the TASK as
+  // `suppressed` while the run itself keeps `delivery.status = "failed"`
+  // (see the terminal non-delivery branch in the announce cleanup flow), so
+  // the owner check compares the run against the status that projection
+  // comes from.
+  const expectedRunDeliveryStatus =
+    args.deliveryStatus === "suppressed" ? "failed" : args.deliveryStatus;
   const assertCurrent = () => {
     if (
       !args.isCurrent() ||
@@ -271,7 +278,7 @@ export const safeSetSubagentTaskDeliveryStatus = async (
       args.entry.runId !== runId ||
       args.entry.generation !== generation ||
       args.entry.delivery !== delivery ||
-      args.entry.delivery?.status !== args.deliveryStatus
+      args.entry.delivery?.status !== expectedRunDeliveryStatus
     ) {
       throw new Error("subagent task delivery owner changed before commit");
     }

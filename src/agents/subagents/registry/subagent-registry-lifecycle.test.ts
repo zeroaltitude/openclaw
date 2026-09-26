@@ -795,6 +795,8 @@ describe("subagent registry lifecycle hardening", () => {
           deliveryStatus: "suppressed",
           error: "requester transcript was closed",
         }),
+        // The async task transition takes the caller's owner guard (main).
+        expect.any(Function),
       );
     } finally {
       controller.clearScheduledResumeTimers();
