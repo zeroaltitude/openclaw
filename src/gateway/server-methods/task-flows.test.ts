@@ -142,7 +142,24 @@ describe("taskFlows.listAll cross-agent visibility", () => {
         controllerId: "tests/task-flows-list-all",
       });
       const profile = ensureProfileForEmail("taskflow-admin@example.test");
-      const [ok, payload] = await request(roles("none"), client(profile.id, ["operator.admin"]));
+      // main refuses a connection whose scopes exceed its role's grant
+      // (authorizeCurrentOperatorRoleScopes), so the admin's role must itself
+      // grant operator.admin while still capping other sessions to "none".
+      const adminCappedRole = {
+        gateway: {
+          roles: {
+            default: "limited",
+            definitions: {
+              limited: {
+                sessions: { others: "none" },
+                agents: ["main"],
+                scopes: ["operator.read", "operator.admin"],
+              },
+            },
+          },
+        },
+      } as OpenClawConfig;
+      const [ok, payload] = await request(adminCappedRole, client(profile.id, ["operator.admin"]));
       expect(ok).toBe(true);
       const flows = (payload as { flows: Array<Record<string, unknown>> }).flows;
       expect(flows.map((f) => f.flowId)).toContain(flow!.flowId);
@@ -225,7 +242,9 @@ describe("taskFlows.clearTerminal operator-governed manual cleanup", () => {
       const [ok, payload, error] = await request(
         {},
         client(undefined, ["operator.admin"]),
-        { status: "cancelled" },
+        // `cancelled` became clearable (with `lost` and genuinely terminal
+        // `blocked`); a non-terminal status is still invalid.
+        { status: "running" },
         "taskFlows.clearTerminal",
       );
       expect(ok).toBe(false);
