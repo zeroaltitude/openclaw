@@ -12,7 +12,7 @@ import {
   buildGroupDisplayName,
   buildGroupDisplayTitle,
   resolveSessionGoalDisplayState,
-  type SessionEntry,
+  type InternalSessionEntry as SessionEntry,
 } from "../config/sessions.js";
 import { resolveProjectedAgentRunProgressState } from "../infra/agent-run-registry.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
@@ -131,6 +131,7 @@ export function projectGatewaySessionRunState(params: {
   const fields: Pick<
     GatewaySessionRow,
     | "status"
+    | "lastRunError"
     | "subagentRunState"
     | "hasActiveSubagentRun"
     | "hasActiveSubagentDescendantRun"
@@ -138,7 +139,8 @@ export function projectGatewaySessionRunState(params: {
     | "endedAt"
     | "runtimeMs"
   > = {
-    status: entry?.status === "interrupted" ? "failed" : entry?.status,
+    status: entry?.status,
+    lastRunError: entry?.lastRunError,
     subagentRunState: undefined,
     hasActiveSubagentRun: subagentRun || hasActiveSubagentRun ? hasActiveSubagentRun : undefined,
     // Emit an explicit false so clients can distinguish a current Gateway with
@@ -150,6 +152,7 @@ export function projectGatewaySessionRunState(params: {
   };
   if (subagentRun) {
     const endedAt = subagentRun.execution.endedAt;
+    const subagentStatus = resolveSubagentSessionStatus(subagentRun);
     fields.subagentRunState = liveSubagentRunActive
       ? "active"
       : typeof endedAt === "number" ||
@@ -158,11 +161,27 @@ export function projectGatewaySessionRunState(params: {
         ? "historical"
         : "interrupted";
     fields.status = liveSubagentRunActive
-      ? resolveSubagentSessionStatus(subagentRun)
+      ? subagentStatus
       : fields.status === "running"
         ? undefined
-        : (fields.status ??
-          (typeof endedAt === "number" ? resolveSubagentSessionStatus(subagentRun) : undefined));
+        : (fields.status ?? (typeof endedAt === "number" ? subagentStatus : undefined));
+    const ownsInterruptedSession =
+      entry?.lifecycleRunId === subagentRun.runId ||
+      (entry?.lifecycleRunId === undefined && entry?.lastRunId === subagentRun.runId) ||
+      (subagentRun.taskRunId !== undefined &&
+        entry?.subagentRecovery?.lastRunId === subagentRun.runId &&
+        entry.lifecycleRunId ===
+          (entry.subagentRecovery.sessionLifecycleRunId ?? subagentRun.taskRunId));
+    if (
+      fields.status === "interrupted" &&
+      subagentStatus === "failed" &&
+      subagentRun.execution.interruptionReason === "gateway-restart" &&
+      ownsInterruptedSession
+    ) {
+      fields.status = "failed";
+      fields.lastRunError ??=
+        "Restart recovery could not reach the parent. Inspect the child session before continuing.";
+    }
     fields.startedAt =
       (liveSubagentRunActive ? undefined : fields.startedAt) ??
       getSubagentSessionStartedAt(subagentRun);
