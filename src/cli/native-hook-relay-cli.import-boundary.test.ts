@@ -46,7 +46,7 @@ describe("native hook relay CLI import boundary", () => {
         "src/agents/harness/native-hook-relay-transport-failure.ts",
         "src/state/openclaw-state-db.ts",
         "src/state/openclaw-state-db-maintenance.ts",
-        "src/infra/state-database-coordinator.ts",
+        "src/infra/state-database-maintenance.ts",
         "src/gateway/call.ts",
       ]),
     ).toEqual([]);
