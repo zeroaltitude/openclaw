@@ -1,7 +1,3 @@
-/**
- * Claude CLI backend descriptor. It configures Claude Code process arguments,
- * MCP bundling, session handling, and credential transport.
- */
 import { createHmac, randomBytes } from "node:crypto";
 import type { ClaudeAgentSdkCliBackendOptions } from "openclaw/plugin-sdk/claude-agent-sdk-runtime";
 import type {
@@ -9,13 +5,15 @@ import type {
   CliBackendPlugin,
   CliBackendPreparedExecution,
 } from "openclaw/plugin-sdk/cli-backend";
-import { parseClaudeCliJsonlEvent, parseClaudeCliJsonlLifecycleEvent } from "./cli-output.js";
 import {
   CLAUDE_CLI_BACKEND_ID,
   CLAUDE_CLI_DEFAULT_MODEL_REF,
   CLAUDE_CLI_CLEAR_ENV,
   CLAUDE_CLI_MODEL_ALIASES,
   CLAUDE_CLI_SESSION_ID_FIELDS,
+} from "./cli-constants.js";
+import { parseClaudeCliJsonlEvent, parseClaudeCliJsonlLifecycleEvent } from "./cli-output.js";
+import {
   normalizeClaudeBackendConfig,
   resolveClaudeCliAutoCompactEnv,
   resolveClaudeCliExecutionArgs,

@@ -235,7 +235,13 @@
   ],
   "contracts": {
     "mediaUnderstandingProviders": ["zai"],
+    "videoGenerationProviders": ["zai"],
     "usageProviders": ["zai"]
+  },
+  "videoGenerationProviderMetadata": {
+    "zai": {
+      "authSignals": [{ "provider": "zai" }]
+    }
   },
   "mediaUnderstandingProviderMetadata": {
     "zai": {
