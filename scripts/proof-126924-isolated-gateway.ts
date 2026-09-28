@@ -9,13 +9,13 @@
  * initial child's model request is in flight when that Gateway is killed.
  * Restart recovery replaces the interrupted run with a higher generation for
  * the SAME child session. The proof follows that explicit replacement instead
- * of waiting on the retired run ID. No registry or task rows are written here.
+ * of waiting on the retired run ID. No registry or signal rows are written here.
  *
  * The only fake is the repository's loopback OpenAI provider. Before restart,
  * its existing hold/release control holds the recovery response. This lets the
  * real recovered run's registry wait expire while its HTTP request remains
- * in flight. After observing the nonterminal marker and retained running task,
- * the proof releases that SAME request and requires a succeeded task. It does
+ * in flight. After observing the nonterminal marker and no published terminal
+ * signal, the proof releases that SAME request and requires a completed signal. It does
  * not create another child turn to manufacture fresh completion evidence.
  *
  * The original process does not survive SIGKILL. The continuous live request
@@ -176,17 +176,29 @@ function readRegistryRows(): RegistryRow[] {
   }
 }
 
-/** The gateway's own detached-task projection — what a parent or operator reads. */
-function readTaskStatus(childSessionKey: string): string | undefined {
+/**
+ * The run's durable terminal signal — what a parent or operator reads through
+ * session status. Undefined until a terminal outcome is published.
+ */
+function readTerminalSignal(runId: string): "succeeded" | "timed_out" | "failed" | undefined {
   if (!fs.existsSync(statePath)) {
     return undefined;
   }
   const db = new DatabaseSync(statePath, { readOnly: true });
   try {
     const row = db
-      .prepare("select status from task_runs where child_session_key = ? order by created_at desc")
-      .get(childSessionKey) as { status?: string } | undefined;
-    return row?.status;
+      .prepare("select kind, payload_json from session_state_events where dedupe_key = ?")
+      .get(`run-terminal:${runId}`) as { kind?: string; payload_json?: string | null } | undefined;
+    if (!row) {
+      return undefined;
+    }
+    if (row.kind === "run_completed") {
+      return "succeeded";
+    }
+    const outcome = row.payload_json
+      ? (JSON.parse(row.payload_json) as { outcome?: string }).outcome
+      : undefined;
+    return outcome === "timeout" ? "timed_out" : "failed";
   } catch {
     return undefined;
   } finally {
@@ -455,7 +467,7 @@ try {
   );
   const expiredRow = readRegistryRows().find((row) => row.runId === childRunId);
   const disposition = expiredRow?.execution.outcome?.disposition ?? "exited";
-  const expiredTaskStatus = readTaskStatus(childSessionKey);
+  const expiredSignal = readTerminalSignal(childRunId);
   if (CONTROL_MODE) {
     assert.equal(
       disposition,
@@ -463,12 +475,12 @@ try {
       `a gateway that observed its own child's stop must record exited (saw ${disposition})`,
     );
     assert.equal(
-      expiredTaskStatus,
+      expiredSignal,
       "timed_out",
       "an observed stop is publishable as a terminal timeout",
     );
     log(
-      `[3/5] control: disposition=exited, detached task=timed_out — the observed-stop path still terminalizes`,
+      `[3/5] control: disposition=exited, terminal signal=timed_out — the observed-stop path still terminalizes`,
     );
     log("");
     log("All isolated-Gateway control assertions passed.");
@@ -489,12 +501,12 @@ try {
       "the row must stay provisional until something observes a stop",
     );
     assert.equal(
-      readTaskStatus(childSessionKey),
-      "running",
-      "the recovered child's task must remain running while its provider response is held",
+      readTerminalSignal(childRunId),
+      undefined,
+      "no terminal signal may be published while the recovered child's provider response is held",
     );
     log(
-      `[4/5] fail-closed: row retained, detached task="${String(readTaskStatus(childSessionKey))}" (the control run reaches "timed_out" here)`,
+      `[4/5] fail-closed: row retained, terminal signal=${String(readTerminalSignal(childRunId))} (the control run reaches "timed_out" here)`,
     );
 
     // ---------------------------------------------------------- assertion 5
@@ -505,17 +517,15 @@ try {
     // actually reads. A row promoted through the ordinary lifecycle is then
     // retired by the ordinary owner, so "the registry row is gone" is not by
     // itself the interesting fact — what the provisional state had to protect is
-    // the task's ability to publish a non-timeout terminal outcome afterwards.
+    // the ability to publish a non-timeout terminal signal afterwards. That
+    // signal is first-write-wins, so a clock-driven `timed_out` would stick.
     await waitFor(
-      "the child's own settled record to terminalize the detached task",
-      () => {
-        const status = readTaskStatus(childSessionKey);
-        return status !== undefined && status !== "running" && status !== "queued";
-      },
+      "the child's own settled record to publish its terminal signal",
+      () => readTerminalSignal(childRunId) !== undefined,
       120_000,
       500,
     );
-    const finalTaskStatus = readTaskStatus(childSessionKey);
+    const finalTaskStatus = readTerminalSignal(childRunId);
     assert.equal(
       finalTaskStatus,
       "succeeded",
@@ -527,7 +537,7 @@ try {
       "the row must not still be provisional after its child settled",
     );
     log(
-      `[5/5] the child's own real completion promoted the run: detached task="${finalTaskStatus}" (not timed_out), registry row ${finalRow ? `promoted to ${JSON.stringify(finalRow.execution.outcome)}` : "retired by the ordinary terminal owner after promotion"}`,
+      `[5/5] the child's own real completion promoted the run: terminal signal="${finalTaskStatus}" (not timed_out), registry row ${finalRow ? `promoted to ${JSON.stringify(finalRow.execution.outcome)}` : "retired by the ordinary terminal owner after promotion"}`,
     );
     log("");
     log("All isolated-Gateway assertions passed.");

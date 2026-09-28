@@ -104,9 +104,8 @@ async function main(): Promise<void> {
     (await import("../src/config/sessions/session-accessor.js")) as SessionAccessorModule;
   const { buildSubagentList, captureSubagentListReadContext, readSubagentListSessionEntries } =
     (await import("../src/agents/subagents/registry/subagent-list.js")) as SubagentListModule;
-  const { buildSubagentRunReadIndexFromRuns } = (await import(
-    "../src/agents/subagents/registry/subagent-registry-queries.js"
-  )) as typeof import("../src/agents/subagents/registry/subagent-registry-queries.js");
+  const { buildSubagentRunReadIndexFromRuns } =
+    (await import("../src/agents/subagents/registry/subagent-registry-queries.js")) as typeof import("../src/agents/subagents/registry/subagent-registry-queries.js");
   const { handleSubagentsListAction } =
     (await import("../src/auto-reply/reply/commands-subagents/action-list.js")) as SubagentsCommandModule;
 
@@ -133,20 +132,19 @@ async function main(): Promise<void> {
     return spawnedCwd;
   };
 
-  const listFor = (storePath: string, runs: SubagentRunRecord[]) => {
+  const listFor = async (storePath: string, runs: SubagentRunRecord[]) => {
     const cfg = { session: { store: storePath } } as OpenClawConfig;
     const runsMap = new Map(runs.map((run) => [run.runId, run]));
     const readIndex = buildSubagentRunReadIndexFromRuns({ runs: runsMap });
     const context = captureSubagentListReadContext(runs, readIndex, runsMap, 30);
     const list = buildSubagentList({
-      cfg,
       context,
-      sessionEntries: readSubagentListSessionEntries(cfg, context),
+      sessionEntries: await readSubagentListSessionEntries(cfg, context),
     });
     // The `/subagents` command surface, driven for real off the same build.
-    const text = handleSubagentsListAction({
+    const text = await handleSubagentsListAction({
       params: { cfg },
-      runs,
+      readContext: { list: context },
     } as never);
     return { list, text };
   };
@@ -172,7 +170,7 @@ async function main(): Promise<void> {
         persistCwd: false,
       });
     }
-    const { list } = listFor(store, runs);
+    const { list } = await listFor(store, runs);
     console.log(`   two live ACP children in ${dir}, field not persisted`);
     check("no advisory — this is the false negative the PR fixes", () => {
       assert.equal(list.active.length, 2);
@@ -195,7 +193,7 @@ async function main(): Promise<void> {
         requestedCwd: dir,
       });
     }
-    const { list, text } = listFor(store, runs);
+    const { list, text } = await listFor(store, runs);
     const first = groupFor(list, runs[0]!.runId);
     console.log(`   run ${runs[0]!.runId} group: ${JSON.stringify(first)}`);
     check("both ACP rows refer to one exact group summary", () => {
@@ -228,7 +226,7 @@ async function main(): Promise<void> {
         requestedCwd: dir,
       });
     }
-    const { list } = listFor(store, [nativeRun, acpRun]);
+    const { list } = await listFor(store, [nativeRun, acpRun]);
     check("the native and ACP rows refer to the same group", () => {
       assert.equal(list.active.find((item) => item.runId === nativeRun.runId)?.sharedCwdGroupId, 1);
       assert.equal(list.active.find((item) => item.runId === acpRun.runId)?.sharedCwdGroupId, 1);
@@ -256,7 +254,7 @@ async function main(): Promise<void> {
       sessionKey: linkRun.childSessionKey,
       requestedCwd: linkDir,
     });
-    const { list } = listFor(store, [realRun, linkRun]);
+    const { list } = await listFor(store, [realRun, linkRun]);
     console.log(`   ${linkDir} -> ${canonical}`);
     console.log(`   alias group: ${JSON.stringify(groupFor(list, linkRun.runId))}`);
     check("aliased runs group together and report the canonical directory", () => {
@@ -277,7 +275,7 @@ async function main(): Promise<void> {
     for (const run of runs) {
       await createChildSession({ storePath: store, sessionKey: run.childSessionKey });
     }
-    const { list } = listFor(store, runs);
+    const { list } = await listFor(store, runs);
     check("no advisory for children that named no directory", () => {
       assert.equal(list.active.length, 2);
       for (const run of runs) {
@@ -305,7 +303,7 @@ async function main(): Promise<void> {
       sessionKey: runB.childSessionKey,
       requestedCwd: dirB,
     });
-    const { list } = listFor(store, [runA, runB]);
+    const { list } = await listFor(store, [runA, runB]);
     check("two different checkouts are not reported as a collision", () => {
       assert.equal(groupFor(list, runA.runId), undefined);
       assert.equal(groupFor(list, runB.runId), undefined);
@@ -326,7 +324,7 @@ async function main(): Promise<void> {
       });
     }
     await fs.rm(dir, { recursive: true, force: true });
-    const { list } = listFor(store, runs);
+    const { list } = await listFor(store, runs);
     console.log(`   ${dir} removed after spawn; advisory still resolves`);
     check("grouping survives an unresolvable directory without throwing", () => {
       for (const run of runs) {
@@ -361,7 +359,7 @@ async function main(): Promise<void> {
           requestedCwd: deepDir,
         });
       }
-      const { list } = listFor(store, runs);
+      const { list } = await listFor(store, runs);
       // Exactly what subagents-tool.ts emits for `action: "list"`: structured
       // rows with `line` stripped, plus the rendered text view.
       const modelVisible = JSON.stringify({
@@ -439,7 +437,7 @@ async function main(): Promise<void> {
         });
       }
     }
-    const siblingList = listFor(siblingStore, [...alphaRuns, ...betaRuns]).list;
+    const siblingList = (await listFor(siblingStore, [...alphaRuns, ...betaRuns])).list;
     const alphaAdvisory = groupFor(siblingList, alphaRuns[0]!.runId);
     const betaAdvisory = groupFor(siblingList, betaRuns[0]!.runId);
     console.log(`   sibling alpha reports: ${alphaAdvisory?.path}`);
@@ -468,7 +466,7 @@ async function main(): Promise<void> {
         });
       }
     }
-    const manyList = listFor(manyStore, manyRuns).list;
+    const manyList = (await listFor(manyStore, manyRuns)).list;
     check("50 children across 25 shared directories emit only eight summaries", () => {
       assert.equal(manyList.sharedCwdGroupTotal, 25);
       assert.equal(manyList.sharedCwdGroups.length, 8);
