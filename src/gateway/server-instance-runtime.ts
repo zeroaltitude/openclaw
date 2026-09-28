@@ -17,7 +17,6 @@ import {
   isBackgroundActivityTypingEnabled,
   listArmedCronWakeSessionKeys,
   listArmedSubagentWaitSessionKeys,
-  listRunningTaskFlowSessionKeys,
   resolveBackgroundActivitySessionDelivery,
   resolveHeartbeatTypingIntervalSeconds,
 } from "../infra/background-activity-sources.js";
@@ -85,13 +84,11 @@ export function createGatewayInstanceRuntime(
     onError: () => options.logError?.("recovery typing unavailable; final delivery continues"),
   });
   // Second, independent typing-style signal for background work that
-  // continues *after* a turn ends (running TaskFlow / armed subagent wait /
-  // armed cron wake) -- see src/infra/background-activity-indicator.ts for
-  // why this never touches the turn-bound TypingController.
+  // continues *after* a turn ends (armed subagent wait / armed cron wake) --
+  // see src/infra/background-activity-indicator.ts for why this never touches the turn-bound TypingController.
   const backgroundActivity = createBackgroundActivityIndicator({
     isAvailable: () => !closed && options.isDispatchAvailable(),
     sources: {
-      listRunningTaskFlowSessionKeys,
       listArmedSubagentWaitSessionKeys,
       listArmedCronWakeSessionKeys: () =>
         listArmedCronWakeSessionKeys({

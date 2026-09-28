@@ -1,93 +1,20 @@
 // Proves each "armed background work" source against the real registry it
-// reads, not a mock of the seam under test: the real TaskFlow registry, the
-// real subagent-registry live-run map cross-checked against the real
-// agent-run-registry liveness state, and the real cron session-binding
-// resolver. Only the cron *service* itself is a minimal fake satisfying the
-// exact narrow contract (`list`/`getDefaultAgentId`) the production wiring
-// consumes -- there is no in-process singleton cron service to drive here.
+// reads, not a mock of the seam under test: the real subagent-registry
+// live-run map cross-checked against the real agent-run-registry liveness
+// state, and the real cron session-binding resolver. Only the cron *service*
+// itself is a minimal fake satisfying the exact narrow contract
+// (`list`/`getDefaultAgentId`) the production wiring consumes -- there is
+// no in-process singleton cron service to drive here.
 import { afterEach, describe, expect, it } from "vitest";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { CronJob } from "../cron/types.js";
-import {
-  createManagedTaskFlow as createManagedTaskFlowOrNull,
-  resumeFlow,
-  setFlowWaiting,
-} from "../tasks/task-flow-registry.js";
-import type { TaskFlowRecord } from "../tasks/task-flow-registry.types.js";
-import { resetTaskFlowRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
-import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { claimAgentRunContext, resetAgentRunRegistryForTest } from "./agent-run-registry.js";
 import {
   listArmedCronWakeSessionKeys,
   listArmedSubagentWaitSessionKeys,
-  listRunningTaskFlowSessionKeys,
 } from "./background-activity-sources.js";
-
-function createManagedTaskFlow(
-  params: Parameters<typeof createManagedTaskFlowOrNull>[0],
-): TaskFlowRecord {
-  const flow = createManagedTaskFlowOrNull(params);
-  if (!flow) {
-    throw new Error("expected managed TaskFlow creation to succeed");
-  }
-  return flow;
-}
-
-async function withFlowRegistryTempDir<T>(run: () => Promise<T>): Promise<T> {
-  return await withOpenClawTestState(
-    { layout: "state-only", prefix: "openclaw-background-activity-taskflow-" },
-    async () => {
-      resetTaskFlowRegistryForTests({ persist: false });
-      try {
-        return await run();
-      } finally {
-        resetTaskFlowRegistryForTests({ persist: false });
-      }
-    },
-  );
-}
-
-describe("listRunningTaskFlowSessionKeys", () => {
-  it("includes a session whose TaskFlow status is running", async () => {
-    await withFlowRegistryTempDir(async () => {
-      const created = createManagedTaskFlow({
-        ownerKey: "agent:main:armed-running",
-        controllerId: "tests/armed-running-controller",
-        goal: "background work",
-      });
-      const resumed = resumeFlow({
-        flowId: created.flowId,
-        expectedRevision: created.revision,
-        status: "running",
-        currentStep: "working",
-      });
-      expect(resumed.applied).toBe(true);
-
-      expect(listRunningTaskFlowSessionKeys()).toContain("agent:main:armed-running");
-    });
-  });
-
-  it("excludes a session whose TaskFlow status is waiting on an approval gate", async () => {
-    await withFlowRegistryTempDir(async () => {
-      const created = createManagedTaskFlow({
-        ownerKey: "agent:main:armed-waiting",
-        controllerId: "tests/armed-waiting-controller",
-        goal: "background work",
-      });
-      const waiting = setFlowWaiting({
-        flowId: created.flowId,
-        expectedRevision: created.revision,
-        currentStep: "await_review",
-        waitJson: { kind: "task", taskId: "task-1" },
-      });
-      expect(waiting.applied).toBe(true);
-
-      expect(listRunningTaskFlowSessionKeys()).not.toContain("agent:main:armed-waiting");
-    });
-  });
-});
 
 describe("listArmedSubagentWaitSessionKeys", () => {
   afterEach(() => {

@@ -1,9 +1,8 @@
 /**
  * Background activity indicator: a periodic, session-scoped signal for
  * genuine background work that continues *after* a turn has ended -- a
- * TaskFlow/Lobster pipeline still running, a subagent dispatch the parent
- * is genuinely still waiting on, or an automation/cron wake that is armed
- * and will fire.
+ * subagent dispatch the parent is genuinely still waiting on, or an
+ * automation/cron wake that is armed and will fire.
  *
  * This is deliberately independent of the turn-bound `TypingController`
  * (../auto-reply/reply/typing.ts). That controller seals itself once a
@@ -30,8 +29,6 @@ import { createHeartbeatTypingCallbacks } from "./heartbeat-typing.js";
 export const DEFAULT_BACKGROUND_ACTIVITY_POLL_MS = 20_000;
 
 export type BackgroundActivitySources = {
-  /** Session (owner) keys with a currently-running TaskFlow. */
-  listRunningTaskFlowSessionKeys: () => readonly string[] | Promise<readonly string[]>;
   /** Session (requester) keys with a live subagent run their parent is genuinely awaiting. */
   listArmedSubagentWaitSessionKeys: () => readonly string[] | Promise<readonly string[]>;
   /** Session keys bound to an enabled automation/cron job with a pending scheduled fire. */
@@ -157,17 +154,11 @@ export function createBackgroundActivityIndicator(
       }
       return;
     }
-    const [taskFlowKeys, subagentKeys, cronKeys] = await Promise.all([
-      resolveList(options.sources.listRunningTaskFlowSessionKeys()),
+    const [subagentKeys, cronKeys] = await Promise.all([
       resolveList(options.sources.listArmedSubagentWaitSessionKeys()),
       resolveList(options.sources.listArmedCronWakeSessionKeys()),
     ]);
     const armed = new Set<string>();
-    for (const sessionKey of taskFlowKeys) {
-      if (sessionKey.trim()) {
-        armed.add(sessionKey.trim());
-      }
-    }
     for (const sessionKey of subagentKeys) {
       if (sessionKey.trim()) {
         armed.add(sessionKey.trim());

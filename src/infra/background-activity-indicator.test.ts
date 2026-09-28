@@ -12,19 +12,14 @@ import {
 } from "./background-activity-indicator.js";
 
 function createMutableSources() {
-  let running: string[] = [];
   let subagent: string[] = [];
   let cron: string[] = [];
   const sources: BackgroundActivitySources = {
-    listRunningTaskFlowSessionKeys: () => running,
     listArmedSubagentWaitSessionKeys: () => subagent,
     listArmedCronWakeSessionKeys: () => cron,
   };
   return {
     sources,
-    setRunning: (keys: string[]) => {
-      running = keys;
-    },
     setSubagent: (keys: string[]) => {
       subagent = keys;
     },
@@ -41,26 +36,6 @@ function createFakePlugin() {
 }
 
 describe("createBackgroundActivityIndicator", () => {
-  it("activates a session's channel indicator once its running TaskFlow is discovered", async () => {
-    const { sources, setRunning } = createMutableSources();
-    setRunning(["agent:main:s1"]);
-    const { plugin, sendTyping } = createFakePlugin();
-    const indicator = createBackgroundActivityIndicator({
-      isAvailable: () => true,
-      sources,
-      target: {
-        getConfig: () => ({}) as OpenClawConfig,
-        resolveDelivery: (sessionKey) =>
-          sessionKey === "agent:main:s1" ? { channel: "discord", to: "chan-1" } : undefined,
-        resolveChannelPlugin: () => plugin,
-      },
-    });
-    await indicator.tick();
-    expect(indicator.isActiveForSession("agent:main:s1")).toBe(true);
-    expect(sendTyping).toHaveBeenCalledTimes(1);
-    indicator.stop();
-  });
-
   it("activates a session's channel indicator once an armed subagent wait is discovered", async () => {
     const { sources, setSubagent } = createMutableSources();
     setSubagent(["agent:main:s2"]);
@@ -101,9 +76,9 @@ describe("createBackgroundActivityIndicator", () => {
     indicator.stop();
   });
 
-  it("deactivates a session once none of the three sources report it armed anymore", async () => {
-    const { sources, setRunning } = createMutableSources();
-    setRunning(["agent:main:s4"]);
+  it("deactivates a session once neither source report it armed anymore", async () => {
+    const { sources, setSubagent } = createMutableSources();
+    setSubagent(["agent:main:s4"]);
     const { plugin, sendTyping, clearTyping } = createFakePlugin();
     const indicator = createBackgroundActivityIndicator({
       isAvailable: () => true,
@@ -120,7 +95,7 @@ describe("createBackgroundActivityIndicator", () => {
     expect(indicator.isActiveForSession("agent:main:s4")).toBe(true);
     expect(sendTyping).toHaveBeenCalledTimes(1);
 
-    setRunning([]);
+    setSubagent([]);
     await indicator.tick();
     expect(indicator.isActiveForSession("agent:main:s4")).toBe(false);
     expect(clearTyping).toHaveBeenCalledTimes(1);
@@ -128,8 +103,8 @@ describe("createBackgroundActivityIndicator", () => {
   });
 
   it("stops every active session when the gateway instance becomes unavailable", async () => {
-    const { sources, setRunning } = createMutableSources();
-    setRunning(["agent:main:s5"]);
+    const { sources, setSubagent } = createMutableSources();
+    setSubagent(["agent:main:s5"]);
     const { plugin, clearTyping } = createFakePlugin();
     let available = true;
     const indicator = createBackgroundActivityIndicator({
@@ -175,8 +150,8 @@ describe("createBackgroundActivityIndicator", () => {
     // Independently, the background indicator activates and deactivates its
     // own instance for the same conceptual destination -- proving the two
     // mechanisms share no state and never call into one another.
-    const { sources, setRunning } = createMutableSources();
-    setRunning(["agent:main:s6"]);
+    const { sources, setSubagent } = createMutableSources();
+    setSubagent(["agent:main:s6"]);
     const { plugin, sendTyping, clearTyping } = createFakePlugin();
     const indicator = createBackgroundActivityIndicator({
       isAvailable: () => true,
@@ -189,7 +164,7 @@ describe("createBackgroundActivityIndicator", () => {
     });
     await indicator.tick();
     expect(sendTyping).toHaveBeenCalledTimes(1);
-    setRunning([]);
+    setSubagent([]);
     await indicator.tick();
     expect(clearTyping).toHaveBeenCalledTimes(1);
 

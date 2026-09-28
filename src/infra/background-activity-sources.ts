@@ -1,15 +1,11 @@
 /**
- * Production wiring for `createBackgroundActivityIndicator`'s three "armed
+ * Production wiring for `createBackgroundActivityIndicator`'s two "armed
  * background work" sources, plus the channel-resolution target adapter.
  *
  * Each source maps directly onto a real, currently-tracked gateway state --
  * never a self-report -- so a session only lights up when there is a
  * genuine mechanism that will bring it back:
  *
- * - TaskFlow: `listTaskFlowRecords()` (src/tasks/task-flow-registry.ts),
- *   filtered to `status === "running"`. `"waiting"` is deliberately excluded:
- *   it means the flow is paused on an approval gate for a human decision,
- *   not "still busy" (see openclaw-4dnf discovery notes).
  * - Subagent wait: `subagentRuns` (src/agents/subagents/registry/
  *   subagent-registry-memory.ts), filtered by `isSubagentRunLive` (src/
  *   agents/subagents/registry/subagent-run-liveness.ts), which requires
@@ -30,7 +26,6 @@ import { resolveCronJobBoundSessionKeys } from "../cron/job-session-bindings.js"
 import type { CronJob } from "../cron/types.js";
 import type { GatewayCronServiceContract } from "../gateway/server-cron-contract.js";
 import { resolveSessionStoreIdentity } from "../gateway/session-store-key.js";
-import { listTaskFlowRecords } from "../tasks/task-flow-registry.js";
 import {
   isHeartbeatTypingEnabled,
   resolveHeartbeatTypingIntervalSeconds,
@@ -40,18 +35,6 @@ import {
  * "armed": the scheduler tick that advances `nextRunAtMs` past the fire it
  * just triggered can lag the fire itself by a few seconds. */
 const CRON_WAKE_PAST_DUE_GRACE_MS = 30_000;
-
-/** Session (owner) keys with a currently-running TaskFlow. */
-export function listRunningTaskFlowSessionKeys(): string[] {
-  const keys = new Set<string>();
-  for (const flow of listTaskFlowRecords()) {
-    const ownerKey = flow.ownerKey?.trim();
-    if (flow.status === "running" && ownerKey) {
-      keys.add(ownerKey);
-    }
-  }
-  return [...keys];
-}
 
 /** Session (requester) keys with a live subagent run their parent is genuinely awaiting. */
 export function listArmedSubagentWaitSessionKeys(): string[] {
