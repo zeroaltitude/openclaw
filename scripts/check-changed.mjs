@@ -5,4 +5,6 @@ await runTsxCliShim(import.meta.url, {
   // terminal marker this wrapper writes reads as the same tool.
   exitTool: "check:changed",
   implementation: "./check-changed.mts",
+  // The implementation must join active checks before the outer wrapper exits.
+  terminationOwner: "implementation",
 });
