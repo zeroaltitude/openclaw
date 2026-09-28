@@ -38,7 +38,7 @@ export const MAX_UNCONFIRMED_ORPHAN_AGE_MS = 24 * 60 * 60_000;
 
 /**
  * Settles one stale active run through the canonical completion owner.
- * The caller stops processing this run; cleanup never bypasses task settlement.
+ * The caller stops processing this run; cleanup never bypasses canonical completion.
  */
 export async function reconcileStaleActiveSubagentRun(params: {
   runId: string;
@@ -141,8 +141,8 @@ export async function reconcileStaleActiveSubagentRun(params: {
   const agedOutError = unconfirmedAgedOut
     ? `subagent run's child stop could not be confirmed after ${formatDurationCompact(unconfirmedForMs) ?? "under 1s"}; treating as orphaned to avoid an indefinite stuck state`
     : undefined;
-  // Main now requires canonical task settlement for every orphan; missing
-  // session metadata no longer permits direct row or attachment pruning.
+  // Every orphan settles through canonical completion; missing session metadata
+  // never permits direct row or attachment pruning.
 
   await params.completeSubagentRunWithRecovery(
     {

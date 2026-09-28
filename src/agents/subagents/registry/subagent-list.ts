@@ -8,12 +8,13 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { resolveSubagentLabel } from "../../../auto-reply/reply/subagents-utils.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
-import { listSessionEntriesReadOnly } from "../../../config/sessions/session-accessor.js";
+import { readSessionEntriesFromStoreInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
+import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target-paths.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { formatDurationCompact } from "../../../infra/format-time/format-duration.js";
 import { resolveUserPath } from "../../../infra/home-dir.js";
-import { parseAgentSessionKey, type ParsedAgentSessionKey } from "../../../routing/session-key.js";
+import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import {
   formatTokenUsageDisplay,
   resolveTotalTokens,
@@ -161,13 +162,27 @@ export function captureSubagentListReadContext(
   };
 }
 
-export function readSubagentListSessionEntries(
+export async function readSubagentListSessionEntries(
   cfg: OpenClawConfig,
   context: SubagentListReadContext,
-): Map<string, SessionEntry> {
-  const runs = [...context.view.active, ...context.view.recent];
+): Promise<Map<string, SessionEntry>> {
+  // The shared-cwd advisory reads `spawnedCwd` for every live or unconfirmed run,
+  // including ones outside the displayed rows.
+  const runs = [
+    ...context.view.active,
+    ...context.view.recent,
+    ...context.view.latest.filter(
+      (run) =>
+        isRetainedUnendedSubagentRun(run, context.now) || isSubagentChildStopUnconfirmed(run),
+    ),
+  ];
+  const seenSessionKeys = new Set<string>();
   const keysByStore = new Map<string, string[]>();
   for (const run of runs) {
+    if (seenSessionKeys.has(run.childSessionKey)) {
+      continue;
+    }
+    seenSessionKeys.add(run.childSessionKey);
     const storePath = resolveSessionStorePathCore(cfg.session?.store, {
       agentId: parseAgentSessionKey(run.childSessionKey)?.agentId,
     });
@@ -180,51 +195,22 @@ export function readSubagentListSessionEntries(
   }
   const entries = new Map<string, SessionEntry>();
   for (const [storePath, sessionKeys] of keysByStore) {
-    // The listing accessor validates the whole snapshot before selecting these rows.
-    for (const { sessionKey, entry } of listSessionEntriesReadOnly({
+    const target = resolveUnsuffixedSqliteTargetFromSessionStorePath(storePath);
+    const agentId = target.agentId ?? parseAgentSessionKey(sessionKeys[0]!)?.agentId;
+    if (!agentId) {
+      throw new Error("Cannot resolve subagent session metadata without an agent id");
+    }
+    const selected = await readSessionEntriesFromStoreInWorker({
+      agentId,
       storePath,
       sessionKeys,
-      clone: false,
       projection: "list",
-    })) {
+    });
+    for (const { sessionKey, entry } of selected.entries) {
       entries.set(sessionKey, entry);
     }
   }
   return entries;
-}
-
-type SessionEntryResolution = {
-  storePath: string;
-  entry: SessionEntry | undefined;
-};
-
-function resolveStorePathForKey(cfg: OpenClawConfig, parsed?: ParsedAgentSessionKey | null) {
-  return resolveSessionStorePathCore(cfg.session?.store, {
-    agentId: parsed?.agentId,
-  });
-}
-
-/** Resolve persisted session metadata for a session key, caching per store path. */
-function resolveSessionEntryForKey(params: {
-  cfg: OpenClawConfig;
-  key: string;
-  cache: Map<string, Record<string, SessionEntry>>;
-}): SessionEntryResolution {
-  const parsed = parseAgentSessionKey(params.key);
-  const storePath = resolveStorePathForKey(params.cfg, parsed);
-  let store = params.cache.get(storePath);
-  if (!store) {
-    store = Object.fromEntries(
-      listSessionEntriesReadOnly({ storePath, clone: false, projection: "list" }).map(
-        ({ sessionKey, entry }) => [sessionKey, entry],
-      ),
-    );
-    params.cache.set(storePath, store);
-  }
-  return {
-    storePath,
-    entry: store[params.key],
-  };
 }
 
 /** Build child-session indexes from the latest run associated with each child key. */
@@ -317,17 +303,16 @@ function capSharedCwdPath(value: string) {
 /**
  * Index live runs by the explicit working directory they were spawned into.
  *
- * Reads `spawnedCwd` off the already-cached session entry, so grouping costs no
- * new session I/O; the only filesystem work is one canonicalization per
- * distinct explicit directory (see `canonicalCwdIdentity`). Runs without an
- * explicit `spawnedCwd`
+ * Reads `spawnedCwd` off the session entries `readSubagentListSessionEntries`
+ * already loaded, so grouping costs no new session I/O; the only filesystem
+ * work is one canonicalization per distinct explicit directory (see
+ * `canonicalCwdIdentity`). Runs without an explicit `spawnedCwd`
  * inherited the parent workspace — the default for `collect` swarms — and are
  * skipped so the advisory stays silent on normal usage.
  */
 function buildSharedCwdIndex(params: {
-  cfg: OpenClawConfig;
   runs: SubagentRunRecord[];
-  cache: Map<string, Record<string, SessionEntry>>;
+  sessionEntries: ReadonlyMap<string, SessionEntry>;
   now: number;
 }) {
   const groups = new Map<string, { path: string; displayPath: string; runIds: string[] }>();
@@ -337,11 +322,7 @@ function buildSharedCwdIndex(params: {
     if (!isRetainedUnendedSubagentRun(run, params.now) && !isSubagentChildStopUnconfirmed(run)) {
       continue;
     }
-    const spawnedCwd = resolveSessionEntryForKey({
-      cfg: params.cfg,
-      key: run.childSessionKey,
-      cache: params.cache,
-    }).entry?.spawnedCwd?.trim();
+    const spawnedCwd = params.sessionEntries.get(run.childSessionKey)?.spawnedCwd?.trim();
     if (!spawnedCwd) {
       continue;
     }
@@ -398,26 +379,6 @@ function buildSharedCwdIndex(params: {
   };
 }
 
-function resolveModelRef(entry?: SessionEntry, fallbackModel?: string) {
-  return resolveModelDisplayRef({
-    runtimeProvider: entry?.modelProvider,
-    runtimeModel: entry?.model,
-    overrideProvider: entry?.providerOverride,
-    overrideModel: entry?.modelOverride,
-    fallbackModel,
-  });
-}
-
-function resolveModelDisplay(entry?: SessionEntry, fallbackModel?: string) {
-  return resolveModelDisplayName({
-    runtimeProvider: entry?.modelProvider,
-    runtimeModel: entry?.model,
-    overrideProvider: entry?.providerOverride,
-    overrideModel: entry?.modelOverride,
-    fallbackModel,
-  });
-}
-
 function buildListText(params: {
   active: Array<{ line: string }>;
   recent: Array<{ line: string }>;
@@ -425,23 +386,16 @@ function buildListText(params: {
   sharedCwdGroupTotal: number;
   sharedCwdGroups: SubagentSharedCwdGroup[];
 }) {
-  const lines: string[] = [];
-  lines.push("active subagents:");
-  if (params.active.length === 0) {
-    lines.push("(none)");
-  } else {
-    lines.push(...params.active.map((entry) => entry.line));
-  }
-  lines.push("");
-  lines.push(`recent (last ${params.recentMinutes}m):`);
-  if (params.recent.length === 0) {
-    lines.push("(none)");
-  } else {
-    lines.push(...params.recent.map((entry) => entry.line));
-  }
+  const lines = [
+    "active subagents:",
+    ...(params.active.length ? params.active.map((entry) => entry.line) : ["(none)"]),
+    "",
+    `recent (last ${params.recentMinutes}m):`,
+    ...(params.recent.length ? params.recent.map((entry) => entry.line) : ["(none)"]),
+  ];
   if (params.sharedCwdGroupTotal > 0) {
-    lines.push("");
     lines.push(
+      "",
       `shared working directories (${params.sharedCwdGroups.length}/${params.sharedCwdGroupTotal} shown):`,
     );
     for (const group of params.sharedCwdGroups) {
@@ -455,25 +409,29 @@ function buildListText(params: {
 
 /** Build structured and text views for active and recent subagent runs. */
 export function buildSubagentList(params: {
-  cfg: OpenClawConfig;
   context: SubagentListReadContext;
   sessionEntries: ReadonlyMap<string, SessionEntry>;
   taskMaxChars?: number;
 }): BuiltSubagentList {
   const { now, view: runView, childSessionsByController } = params.context;
-  const cache = new Map<string, Record<string, SessionEntry>>();
   // `runView.latest` is the full deduped run set (not just the displayed
   // active/recent rows), so the shared-cwd advisory can see unended or
-  // unconfirmed-stop runs that fall outside `params.sessionEntries`.
+  // unconfirmed-stop runs outside the displayed rows.
   const sharedCwdIndex = buildSharedCwdIndex({
-    cfg: params.cfg,
     runs: runView.latest,
-    cache,
+    sessionEntries: params.sessionEntries,
     now,
   });
   let index = 1;
   const buildListEntry = (entry: SubagentRunRecord, runtimeMs: number) => {
     const sessionEntry = params.sessionEntries.get(entry.childSessionKey);
+    const modelSelection = {
+      runtimeProvider: sessionEntry?.modelProvider,
+      runtimeModel: sessionEntry?.model,
+      overrideProvider: sessionEntry?.providerOverride,
+      overrideModel: sessionEntry?.modelOverride,
+      fallbackModel: entry.model,
+    };
     const totalTokens = resolveTotalTokens(sessionEntry);
     const usageText = formatTokenUsageDisplay(sessionEntry);
     const pendingDescendants = params.context.pendingDescendants.get(entry.childSessionKey) ?? 0;
@@ -490,7 +448,7 @@ export function buildSubagentList(params: {
     const taskNamePrefix = taskName ? `${taskName}: ` : "";
     const sharedCwdGroupId = sharedCwdIndex.resolveGroupId(entry.runId);
     const sharedCwdSuffix = sharedCwdGroupId ? ` [shared cwd group ${sharedCwdGroupId}]` : "";
-    const line = `${index}. ${taskNamePrefix}${label} (${resolveModelDisplay(sessionEntry, entry.model)}, ${runtime}${usageText ? `, ${usageText}` : ""}) ${status}${normalizeLowercaseStringOrEmpty(task) !== normalizeLowercaseStringOrEmpty(label) ? ` - ${task}` : ""}${sharedCwdSuffix}`;
+    const line = `${index}. ${taskNamePrefix}${label} (${resolveModelDisplayName(modelSelection)}, ${runtime}${usageText ? `, ${usageText}` : ""}) ${status}${normalizeLowercaseStringOrEmpty(task) !== normalizeLowercaseStringOrEmpty(label) ? ` - ${task}` : ""}${sharedCwdSuffix}`;
     const view: SubagentListItem = {
       index,
       line,
@@ -506,7 +464,7 @@ export function buildSubagentList(params: {
       runtime,
       runtimeMs,
       ...(childSessions.length > 0 ? { childSessions } : {}),
-      model: resolveModelRef(sessionEntry, entry.model),
+      model: resolveModelDisplayRef(modelSelection),
       totalTokens,
       startedAt: getSubagentSessionStartedAt(entry),
       ...(entry.execution.endedAt ? { endedAt: entry.execution.endedAt } : {}),

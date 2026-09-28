@@ -31,9 +31,8 @@ export async function buildSubagentListForTests(params: {
     params.recentMinutes,
   );
   return buildSubagentList({
-    cfg: params.cfg,
     context,
-    sessionEntries: readSubagentListSessionEntries(params.cfg, context),
+    sessionEntries: await readSubagentListSessionEntries(params.cfg, context),
     taskMaxChars: params.taskMaxChars,
   });
 }
