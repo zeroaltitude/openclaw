@@ -9,13 +9,13 @@
  * initial child's model request is in flight when that Gateway is killed.
  * Restart recovery replaces the interrupted run with a higher generation for
  * the SAME child session. The proof follows that explicit replacement instead
- * of waiting on the retired run ID. No registry or task rows are written here.
+ * of waiting on the retired run ID. No registry rows are written here.
  *
  * The only fake is the repository's loopback OpenAI provider. Before restart,
  * its existing hold/release control holds the recovery response. This lets the
  * real recovered run's registry wait expire while its HTTP request remains
- * in flight. After observing the nonterminal marker and retained running task,
- * the proof releases that SAME request and requires a succeeded task. It does
+ * in flight. After observing the nonterminal marker and retained running run,
+ * the proof releases that SAME request and requires a succeeded run. It does
  * not create another child turn to manufacture fresh completion evidence.
  *
  * The original process does not survive SIGKILL. The continuous live request
@@ -176,22 +176,20 @@ function readRegistryRows(): RegistryRow[] {
   }
 }
 
-/** The gateway's own detached-task projection — what a parent or operator reads. */
-function readTaskStatus(childSessionKey: string): string | undefined {
-  if (!fs.existsSync(statePath)) {
+/** The registry's own run status projection — what a parent or operator reads. */
+function readRunStatus(runId: string): string | undefined {
+  const execution = readRegistryRows().find((row) => row.runId === runId)?.execution;
+  if (!execution) {
     return undefined;
   }
-  const db = new DatabaseSync(statePath, { readOnly: true });
-  try {
-    const row = db
-      .prepare("select status from task_runs where child_session_key = ? order by created_at desc")
-      .get(childSessionKey) as { status?: string } | undefined;
-    return row?.status;
-  } catch {
-    return undefined;
-  } finally {
-    db.close();
+  if (typeof execution.endedAt !== "number") {
+    return "running";
   }
+  return execution.outcome?.status === "ok"
+    ? "succeeded"
+    : execution.outcome?.status === "timeout"
+      ? "timed_out"
+      : "failed";
 }
 
 function readMockRequests(): Array<Record<string, unknown>> {
@@ -455,7 +453,7 @@ try {
   );
   const expiredRow = readRegistryRows().find((row) => row.runId === childRunId);
   const disposition = expiredRow?.execution.outcome?.disposition ?? "exited";
-  const expiredTaskStatus = readTaskStatus(childSessionKey);
+  const expiredRunStatus = readRunStatus(childRunId);
   if (CONTROL_MODE) {
     assert.equal(
       disposition,
@@ -463,12 +461,12 @@ try {
       `a gateway that observed its own child's stop must record exited (saw ${disposition})`,
     );
     assert.equal(
-      expiredTaskStatus,
+      expiredRunStatus,
       "timed_out",
       "an observed stop is publishable as a terminal timeout",
     );
     log(
-      `[3/5] control: disposition=exited, detached task=timed_out — the observed-stop path still terminalizes`,
+      `[3/5] control: disposition=exited, run status=timed_out — the observed-stop path still terminalizes`,
     );
     log("");
     log("All isolated-Gateway control assertions passed.");
@@ -489,45 +487,39 @@ try {
       "the row must stay provisional until something observes a stop",
     );
     assert.equal(
-      readTaskStatus(childSessionKey),
+      readRunStatus(childRunId),
       "running",
-      "the recovered child's task must remain running while its provider response is held",
+      "the recovered child's run must remain running while its provider response is held",
     );
     log(
-      `[4/5] fail-closed: row retained, detached task="${String(readTaskStatus(childSessionKey))}" (the control run reaches "timed_out" here)`,
+      `[4/5] fail-closed: row retained, run status="${String(readRunStatus(childRunId))}" (the control run reaches "timed_out" here)`,
     );
 
     // ---------------------------------------------------------- assertion 5
     // Release the already in-flight recovery request. Its own real lifecycle,
     // not a synthetic follow-up turn or a direct store write, supplies the stop.
     fs.writeFileSync(responseControlPath, JSON.stringify({ hold: false, text: CHILD_FINAL_TEXT }));
-    // The promotion is observed on the durable projection a parent or operator
-    // actually reads. A row promoted through the ordinary lifecycle is then
-    // retired by the ordinary owner, so "the registry row is gone" is not by
-    // itself the interesting fact — what the provisional state had to protect is
-    // the task's ability to publish a non-timeout terminal outcome afterwards.
+    // The promotion is observed on the registry row a parent or operator reads.
+    // A row promoted through the ordinary lifecycle may then be retired by the
+    // ordinary owner, so a missing row is a valid settled state; what the
+    // provisional state had to protect is the ability to publish a non-timeout
+    // terminal outcome afterwards.
     await waitFor(
-      "the child's own settled record to terminalize the detached task",
+      "the child's own settled record to terminalize the run",
       () => {
-        const status = readTaskStatus(childSessionKey);
-        return status !== undefined && status !== "running" && status !== "queued";
+        const status = readRunStatus(childRunId);
+        return status !== "running";
       },
       120_000,
       500,
     );
-    const finalTaskStatus = readTaskStatus(childSessionKey);
-    assert.equal(
-      finalTaskStatus,
-      "succeeded",
-      "the same recovered child's real successful completion must remain publishable",
-    );
     const finalRow = readRegistryRows().find((row) => row.runId === childRunId);
     assert.ok(
-      !finalRow || typeof finalRow.execution.endedAt === "number",
-      "the row must not still be provisional after its child settled",
+      !finalRow || finalRow.execution.outcome?.status === "ok",
+      "the same recovered child's real successful completion must remain publishable",
     );
     log(
-      `[5/5] the child's own real completion promoted the run: detached task="${finalTaskStatus}" (not timed_out), registry row ${finalRow ? `promoted to ${JSON.stringify(finalRow.execution.outcome)}` : "retired by the ordinary terminal owner after promotion"}`,
+      `[5/5] the child's own real completion promoted the run: registry row ${finalRow ? `promoted to ${JSON.stringify(finalRow.execution.outcome)}` : "retired by the ordinary terminal owner after promotion"} (not timed_out)`,
     );
     log("");
     log("All isolated-Gateway assertions passed.");

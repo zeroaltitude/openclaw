@@ -20,95 +20,81 @@ describe("applySubagentWaitOutcome", () => {
     },
   );
 
-  it("treats blocked ok wait snapshots as errors", () => {
-    const applied = applySubagentWaitOutcome({
+  it.each([
+    {
+      name: "treats blocked ok waits as errors",
       wait: {
         status: "ok",
-        startedAt: 100,
-        endedAt: 150,
         livenessState: "blocked",
         error: "Context overflow: prompt too large for the model.",
       },
-      outcome: undefined,
-    });
-
-    expect(applied.outcome).toEqual({
-      status: "error",
-      error: "Context overflow: prompt too large for the model.",
-      startedAt: 100,
-      endedAt: 150,
-      elapsedMs: 50,
-    });
-  });
-
-  it("treats abandoned ok wait snapshots as incomplete failures", () => {
-    const applied = applySubagentWaitOutcome({
-      wait: {
-        status: "ok",
-        startedAt: 100,
-        endedAt: 150,
-        livenessState: "abandoned",
-      },
-      outcome: undefined,
-    });
-
-    expect(applied.outcome).toEqual({
-      status: "error",
-      error: "Agent run ended before producing a complete result.",
-      startedAt: 100,
-      endedAt: 150,
-      elapsedMs: 50,
-    });
-  });
-
-  it("keeps provider hard timeouts stronger than blocked wait metadata", () => {
-    const applied = applySubagentWaitOutcome({
+      expected: { status: "error", error: "Context overflow: prompt too large for the model." },
+    },
+    {
+      name: "treats abandoned ok waits as incomplete failures",
+      wait: { status: "ok", livenessState: "abandoned" },
+      expected: { status: "error", error: "Agent run ended before producing a complete result." },
+    },
+    {
+      // A provider hard timeout is the run's own budget firing, so unlike a bare
+      // wait timeout it does prove the child stopped.
+      name: "keeps provider hard timeouts stronger than blocked metadata",
       wait: {
         status: "error",
-        startedAt: 100,
-        endedAt: 150,
         livenessState: "blocked",
         timeoutPhase: "provider",
         providerStarted: true,
         error: "model timed out",
       },
+      expected: { status: "timeout", disposition: "exited" },
+    },
+    ...(["rpc", "superseded"] as const).map((stopReason) => ({
+      name: `keeps explicit ${stopReason} cancellation distinct from timeouts`,
+      wait: { status: "timeout", stopReason },
+      expected: { status: "error", error: "subagent run terminated", disposition: "killed" },
+    })),
+    // Explicit cancellation must outrank blocked liveness (openclaw#125407).
+    ...(["restart", "aborted"] as const).map((stopReason) => ({
+      name: `keeps ${stopReason} as cancellation even when liveness is blocked`,
+      wait: {
+        status: "ok",
+        stopReason,
+        livenessState: "blocked",
+        error: "Context overflow: prompt too large for the model.",
+      },
+      expected: { status: "error", error: "subagent run terminated", disposition: "killed" },
+    })),
+    {
+      name: "keeps the failure cause on pending-error timeout waits",
+      wait: {
+        status: "timeout",
+        pendingError: true,
+        error: "model returned an unrecoverable tool-call sequence",
+      },
+      expected: {
+        status: "timeout",
+        error: "model returned an unrecoverable tool-call sequence",
+        disposition: "exited",
+      },
+    },
+    {
+      name: "ignores error text when the run did not end in a pending error",
+      wait: { status: "timeout", error: "waited too long" },
+      expected: { status: "timeout", disposition: "exited" },
+    },
+  ])("$name", ({ wait, expected }) => {
+    const applied = applySubagentWaitOutcome({
+      wait: { ...wait, startedAt: 100, endedAt: 150 },
       outcome: undefined,
     });
 
-    // A provider hard timeout is the run's own budget firing, so unlike a bare
-    // wait timeout it does prove the child stopped.
     expect(applied.outcome).toEqual({
-      status: "timeout",
-      disposition: "exited",
+      ...expected,
       startedAt: 100,
       endedAt: 150,
       elapsedMs: 50,
     });
   });
-
-  it.each(["rpc", "superseded"] as const)(
-    "keeps explicit %s cancellation distinct from timeout outcomes",
-    (stopReason) => {
-      const applied = applySubagentWaitOutcome({
-        wait: {
-          status: "timeout",
-          startedAt: 100,
-          endedAt: 150,
-          stopReason,
-        },
-        outcome: undefined,
-      });
-
-      expect(applied.outcome).toEqual({
-        status: "error",
-        error: "subagent run terminated",
-        disposition: "killed",
-        startedAt: 100,
-        endedAt: 150,
-        elapsedMs: 50,
-      });
-    },
-  );
 
   // Regression (openclaw-kkv1): a wait expiry and a dead child both arrived as
   // a bare `status: "timeout"`, so the announce layer could only report one
@@ -165,116 +151,5 @@ describe("applySubagentWaitOutcome", () => {
     });
 
     expect(applied.outcome?.disposition).toBe("exited");
-  });
-
-  it("treats aborted ok wait snapshots as terminated subagent errors", () => {
-    const applied = applySubagentWaitOutcome({
-      wait: {
-        status: "ok",
-        startedAt: 100,
-        endedAt: 150,
-        stopReason: "aborted",
-      },
-      outcome: undefined,
-    });
-
-    expect(applied.outcome).toEqual({
-      status: "error",
-      error: "subagent run terminated",
-      disposition: "killed",
-      startedAt: 100,
-      endedAt: 150,
-      elapsedMs: 50,
-    });
-  });
-
-  it.each(["restart", "aborted"] as const)(
-    "keeps %s stop reasons as cancellation even when liveness is blocked",
-    (stopReason) => {
-      // classifySubagentTerminalOutcome must win over the generic classifier
-      // here: blocked liveness alone would read as a failure, but an explicit
-      // restart/aborted stop reason owns the outcome (openclaw#125407).
-      const applied = applySubagentWaitOutcome({
-        wait: {
-          status: "ok",
-          startedAt: 100,
-          endedAt: 150,
-          stopReason,
-          livenessState: "blocked",
-          error: "Context overflow: prompt too large for the model.",
-        },
-        outcome: undefined,
-      });
-
-      expect(applied.outcome).toEqual({
-        status: "error",
-        error: "subagent run terminated",
-        disposition: "killed",
-        startedAt: 100,
-        endedAt: 150,
-        elapsedMs: 50,
-      });
-    },
-  );
-
-  it("keeps the failure cause on pending-error timeout wait snapshots", () => {
-    const applied = applySubagentWaitOutcome({
-      wait: {
-        status: "timeout",
-        startedAt: 100,
-        endedAt: 150,
-        pendingError: true,
-        error: "model returned an unrecoverable tool-call sequence",
-      },
-      outcome: undefined,
-    });
-
-    expect(applied.outcome).toEqual({
-      status: "timeout",
-      error: "model returned an unrecoverable tool-call sequence",
-      disposition: "exited",
-      startedAt: 100,
-      endedAt: 150,
-      elapsedMs: 50,
-    });
-  });
-
-  it("leaves genuine budget timeouts without a cause", () => {
-    const applied = applySubagentWaitOutcome({
-      wait: {
-        status: "timeout",
-        startedAt: 100,
-        endedAt: 150,
-      },
-      outcome: undefined,
-    });
-
-    expect(applied.outcome).toEqual({
-      status: "timeout",
-      disposition: "exited",
-      startedAt: 100,
-      endedAt: 150,
-      elapsedMs: 50,
-    });
-  });
-
-  it("ignores wait error text when the run did not end in a pending error", () => {
-    const applied = applySubagentWaitOutcome({
-      wait: {
-        status: "timeout",
-        startedAt: 100,
-        endedAt: 150,
-        error: "waited too long",
-      },
-      outcome: undefined,
-    });
-
-    expect(applied.outcome).toEqual({
-      status: "timeout",
-      disposition: "exited",
-      startedAt: 100,
-      endedAt: 150,
-      elapsedMs: 50,
-    });
   });
 });
