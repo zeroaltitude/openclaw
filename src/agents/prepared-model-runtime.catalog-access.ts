@@ -106,8 +106,8 @@ export function createFullModelCatalogAccess(
         for (const provider of pending?.providers ?? providers.keys()) {
           const facts = providers.get(provider);
           if (facts) {
-            const { source, credentials } = facts;
-            providers.set(provider, { source, credentials });
+            const { expiresAt: _expiresAt, ...retained } = facts;
+            providers.set(provider, retained);
           }
         }
         published = {
@@ -232,7 +232,7 @@ export function createFullModelCatalogAccess(
     const catalog = project(nextInventory.catalog, configuredRuntimeModels);
     setCatalogAuth(catalog, getPreparedModelFullCatalogAuth(nextInventory.catalog) ?? currentAuth);
     catalog.authoritative =
-      acquiredNative && !catalog.refreshFailed ? nextInventory.catalog.authoritative : false;
+      acquiredNative && !catalog.refreshFailed ? catalog.authoritative : false;
     if (
       acquiredNative &&
       eligibleProviders.every((provider) => nextInventory.providers.has(provider))
@@ -310,6 +310,7 @@ export function createFullModelCatalogAccess(
         configuredRuntimeModels,
         runtimeModels,
         providerExpiries,
+        hookRows,
       } = await worker.loadCatalog(
         providerIds,
         (providerIds ?? providers).some((provider) => published.inventory?.providers.has(provider))
@@ -338,7 +339,7 @@ export function createFullModelCatalogAccess(
             scope.has(normalizeProvider(provider)),
           )
         : discoveredAuth;
-      const publication = prepareModelCatalogPublication(
+      const { legacyRows, ...publication } = prepareModelCatalogPublication(
         providerIds
           ? filterPreparedProviderCatalog(workerCatalog, (provider) =>
               scope.has(normalizeProvider(provider)),
@@ -348,6 +349,7 @@ export function createFullModelCatalogAccess(
         retained,
         auth,
         normalizeProvider,
+        hookRows,
       );
       const renewalFloor = Date.now() + CATALOG_BACKGROUND_RENEWAL_INTERVAL_MS;
       const completedProviders = new Map(
@@ -365,6 +367,7 @@ export function createFullModelCatalogAccess(
               source: providerSource(provider),
               credentials: preparedProviderCatalogCredentials(auth, provider, normalizeProvider),
               ...(!failed && expiresAt !== undefined ? { expiresAt } : {}),
+              ...(legacyRows.get(provider)?.size ? { legacyRows: legacyRows.get(provider) } : {}),
             },
           ] as const;
         }),
