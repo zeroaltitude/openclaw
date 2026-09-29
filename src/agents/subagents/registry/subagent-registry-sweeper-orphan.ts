@@ -132,6 +132,10 @@ export async function reconcileStaleActiveSubagentRun(params: {
       },
       reason: SUBAGENT_ENDED_REASON_ERROR,
       ...(attribution ? { recoverInterrupted: true as const } : {}),
+      // A freshly dispatched remote worker claim can still be forming when the
+      // terminal completion lock resolves; only this attributed host-reboot
+      // orphan path needs a settle window before trusting isRecoveryCurrent.
+      ...(attribution && isRecoveryCurrent ? { hostRebootRecovery: true as const } : {}),
       ...(isRecoveryCurrent ? { isRecoveryCurrent } : {}),
       sendFarewell: true,
       accountId,
