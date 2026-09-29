@@ -38,6 +38,17 @@ type BrowserCleanup = BrowserCleanupModule["cleanupBrowserSessionsForLifecycleEn
 
 const MISSING_REQUIRED_FINAL_REPLY_ERROR = "subagent run ended before producing a final reply";
 
+// Acquiring the terminal completion lock only serializes against other local
+// completions. A remote owner's durable claim (a worker session placement
+// dispatch) still has to land asynchronously through its own writer, so it can
+// still be forming at the exact instant the lock is granted here. Host-reboot
+// and orphan recovery is the one completion path that can run concurrently
+// with a fresh remote claim (that is the whole point of "recovering" a run
+// nothing local has heard from), so give it one short, bounded window to
+// settle before finalizing local recovery -- mirroring the existing
+// wait-expiry announce grace in subagent-registry.ts.
+const RECOVERY_REMOTE_OWNER_SETTLE_GRACE_MS = 2000;
+
 const browserCleanupLoader = createLazyImportLoader<BrowserCleanupModule>(
   () => import("../../../browser-lifecycle-cleanup.js"),
 );
@@ -135,6 +146,19 @@ export async function completeSubagentRunAttempt(
       completeParams.isRecoveryCurrent?.() === false
     ) {
       return;
+    }
+    if (completeParams.recoverInterrupted === true && completeParams.isRecoveryCurrent) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, RECOVERY_REMOTE_OWNER_SETTLE_GRACE_MS);
+        timer.unref?.();
+      });
+      if (
+        params.runs.get(completeParams.runId) !== entry ||
+        (completeParams.expectedEntry && entry !== completeParams.expectedEntry) ||
+        completeParams.isRecoveryCurrent() === false
+      ) {
+        return;
+      }
     }
     context.bindTerminalSessionEffects(entry, completeParams.isChildSessionEffectsCurrent);
     suppressSessionEffects ||= context.shouldSuppressSessionEffects(entry);
