@@ -77,6 +77,7 @@ export function registerSubagentOrphanTaskCases({
   });
   it.each([
     "host reboot",
+    // Pre-existing failure: also fails on the pre-merge branch tip (f8d21f14377).
     "remote worker",
     "same host",
     "unknown host",

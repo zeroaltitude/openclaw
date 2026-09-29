@@ -4991,6 +4991,7 @@ describe("subagent registry lifecycle hardening", () => {
     },
   );
 
+  // Pre-existing failure: also fails on the pre-merge branch tip (f8d21f14377).
   it("defers host-reboot recovery when a remote owner appears while waiting for the terminal lock", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const entry = createRunEntry({ generation: 1, waitExpiryObservedAt: 3_000 });

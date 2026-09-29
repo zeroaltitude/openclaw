@@ -2292,6 +2292,7 @@ describe("subagent registry seam flow", () => {
 
   it.each([
     {
+      // Pre-existing failure: also fails on the pre-merge branch tip (f8d21f14377).
       name: "keeps published explicit timeout stable when pre-deadline lifecycle success arrives late",
       runId: "run-timeout-late-lifecycle-predeadline-ok",
       task: "published timeout should stay stable",
@@ -2862,6 +2863,7 @@ describe("subagent registry seam flow", () => {
       runId: "run-plain-timeout-session-store-start",
       task: "do not timeout before session store start deadline",
       initialNowAfterMs: 0,
+      waitStartedAfterMs: undefined,
       sessionStartedAfterMs: 10_000,
       observedStartedAfterMs: 10_000,
       sessionUpdatedAfterMs: 61_000,
@@ -2873,6 +2875,7 @@ describe("subagent registry seam flow", () => {
       runId,
       task,
       initialNowAfterMs,
+      waitStartedAfterMs,
       sessionStartedAfterMs,
       observedStartedAfterMs,
       sessionUpdatedAfterMs,
@@ -2890,7 +2893,12 @@ describe("subagent registry seam flow", () => {
         if (advanceOnFirstWait && waitAttempts === 1) {
           vi.setSystemTime(createdAt + 61_000);
         }
-        return { status: "timeout" };
+        return {
+          status: "timeout",
+          ...(waitStartedAfterMs === undefined
+            ? {}
+            : { startedAt: createdAt + waitStartedAfterMs }),
+        };
       });
       mocks.entries = {
         "agent:main:subagent:child": createSessionEntry({

@@ -660,44 +660,40 @@ describe("subagent registry sqlite store", () => {
   it.each(["observation", "legacy"] as const)(
     "preserves %s expiry evidence in lean reads until the child's own completion",
     async (kind) => {
-      await withTempStateEnv(async () => {
-        const run = createRun({
-          waitExpiryObservedAt: 250,
-          completion: { required: true },
-          delivery: { status: "pending" },
-          execution:
-            kind === "observation"
-              ? { status: "running", startedAt: 110 }
-              : {
-                  status: "terminal",
-                  startedAt: 110,
-                  endedAt: 250,
-                  outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
-                },
-        });
-        saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
-        closeOpenClawStateDatabaseForTest();
-        const pending = loadSubagentSessionListRunsFromSqlite().get(run.runId);
-        expect(pending?.waitExpiryObservedAt).toBe(250);
-        expect(isSubagentChildStopUnconfirmed(pending)).toBe(true);
-        expect(pending && resolveSubagentDisplayStatus(pending)).toContain(
-          "child stop unconfirmed",
-        );
-
-        run.execution = {
-          status: "terminal",
-          startedAt: 110,
-          endedAt: 300,
-          outcome: { status: "timeout", disposition: "exited" },
-        };
-        saveSubagentRegistryChangesToSqlite(new Map([[run.runId, run]]), [run.runId]);
-        closeOpenClawStateDatabaseForTest();
-        const completed = loadSubagentSessionListRunsFromSqlite().get(run.runId);
-        expect(completed?.waitExpiryObservedAt).toBe(250);
-        expect(completed?.execution.outcome?.disposition).toBe("exited");
-        expect(isSubagentChildStopUnconfirmed(completed)).toBe(false);
-        expect(completed && resolveSubagentDisplayStatus(completed)).toBe("timeout");
+      const run = createRun({
+        waitExpiryObservedAt: 250,
+        completion: { required: true },
+        delivery: { status: "pending" },
+        execution:
+          kind === "observation"
+            ? { status: "running", startedAt: 110 }
+            : {
+                status: "terminal",
+                startedAt: 110,
+                endedAt: 250,
+                outcome: { status: "timeout", timeoutDisposition: "child-unconfirmed" },
+              },
       });
+      saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
+      closeOpenClawStateDatabaseForTest();
+      const pending = loadSubagentSessionListRunsFromSqlite().get(run.runId);
+      expect(pending?.waitExpiryObservedAt).toBe(250);
+      expect(isSubagentChildStopUnconfirmed(pending)).toBe(true);
+      expect(pending && resolveSubagentDisplayStatus(pending)).toContain("child stop unconfirmed");
+
+      run.execution = {
+        status: "terminal",
+        startedAt: 110,
+        endedAt: 300,
+        outcome: { status: "timeout", disposition: "exited" },
+      };
+      saveSubagentRegistryChangesToSqlite(new Map([[run.runId, run]]), [run.runId]);
+      closeOpenClawStateDatabaseForTest();
+      const completed = loadSubagentSessionListRunsFromSqlite().get(run.runId);
+      expect(completed?.waitExpiryObservedAt).toBe(250);
+      expect(completed?.execution.outcome?.disposition).toBe("exited");
+      expect(isSubagentChildStopUnconfirmed(completed)).toBe(false);
+      expect(completed && resolveSubagentDisplayStatus(completed)).toBe("timeout");
     },
   );
 
