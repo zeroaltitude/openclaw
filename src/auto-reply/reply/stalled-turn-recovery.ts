@@ -4,8 +4,11 @@ import type { FollowupRun } from "./queue/types.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 
 /** Last-resort feedback once no continuation can answer a stalled turn. */
-export const STALLED_TURN_NOTICE_TEXT =
-  "⚠️ This turn was interrupted because it stopped making progress. Please try again.";
+export function resolveStalledTurnNoticeText(operation: ReplyOperation | undefined): string {
+  return operation?.staleExpiryReason === "stuck_recovery"
+    ? "⚠️ Your reply was dropped: the run made no progress and was reclaimed by stuck-session recovery. The session is intact — please retry."
+    : "⚠️ Your reply was dropped: the run showed no activity past the stale threshold and was reclaimed. The session is intact — please retry.";
+}
 export const STALLED_TURN_GUIDANCE =
   "Your previous turn stopped making progress and was stopped before you replied, so the " +
   "user's request from that turn is still unanswered. Answer it now, together with any newer " +
