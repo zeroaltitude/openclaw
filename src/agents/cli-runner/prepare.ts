@@ -104,6 +104,7 @@ import { remapSkillReferencePaths } from "../embedded-agent-runner/sandbox-skill
 import { selectContextEngineForTranscriptHost } from "../harness/context-engine-logical-turn.js";
 import { drainPendingContextEngineTurnsBeforeRun } from "../harness/context-engine-turn-attempt.js";
 import { createAgentQuestionAnswerAuthority } from "../harness/host-private-capabilities.js";
+import { resolveApiKeyForProviderCore } from "../model-auth-provider.js";
 import type { ResolvedProviderAuth } from "../model-auth-runtime-shared.js";
 import { loadManifestModelCatalog, overlayConfiguredModelCatalog } from "../model-catalog.js";
 import { resolveModelContextWindowProfile } from "../model-context-window.js";
@@ -227,6 +228,7 @@ const defaultPrepareDeps = {
   claudeCliSessionTranscriptHasOrphanedToolUse,
   getCliLiveSessionGeneration,
   resolveApiKeyForProfile,
+  resolveApiKeyForProviderCore,
   loadManifestModelCatalog,
 };
 const prepareDeps = { ...defaultPrepareDeps };
@@ -387,6 +389,7 @@ async function prepareCliRunContextWithinReadFence(
   }
   params = prepareCliRunModelAuthority(params);
   const backendAuthPolicy = resolveBundledCliBackendAuthPolicy(backendResolved.id);
+  const backendAuthProvider = backendResolved.modelProvider?.trim() || params.provider;
   const canEnforceExactToolAvailability =
     backendResolved.nativeToolMode === "selectable" &&
     ((backendResolved.toolAvailabilityEnforcement === "execution-args" &&
@@ -567,6 +570,21 @@ async function prepareCliRunContextWithinReadFence(
     })
   ) {
     throw new Error("This saved sign-in is inactive. Test and activate it in Model Setup.");
+  }
+  if (!authCredential && backendAuthPolicy?.providerConfigApiKey) {
+    const resolvedAuth = await prepareDeps.resolveApiKeyForProviderCore({
+      provider: backendAuthProvider,
+      cfg: params.config,
+      agentDir,
+      allowAuthProfileFallback: false,
+    });
+    params.assertCurrent?.();
+    authCredential = {
+      type: "api_key",
+      provider: backendAuthProvider,
+      key: resolvedAuth.apiKey,
+    };
+    resolvedProfileAuth = resolvedAuth;
   }
   // Claude owns its native login and single-use refresh-token family. Never
   // preflight, refresh, or forward OpenClaw's snapshot; the installed Claude
