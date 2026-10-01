@@ -136,6 +136,7 @@ function buildGatewaySessionEventFields(params: {
     providerReview: sessionRow.providerReview ?? null,
     lastRunId: sessionRow.lastRunId ?? null,
     hasAutomation: sessionRow.hasAutomation ?? false,
+    hasActiveSubagentDescendantRun: sessionRow.hasActiveSubagentDescendantRun ?? false,
     ...(params.hasActiveRun === undefined ? {} : { hasActiveRun: params.hasActiveRun }),
     ...(params.activeRunIds === undefined ? {} : { activeRunIds: params.activeRunIds }),
     startedAt: sessionRow.startedAt,
