@@ -9,7 +9,7 @@ import type { AgentRunTerminalReplySnapshot } from "../../agent-run-terminal-rep
 import type { AgentRunSessionTarget } from "../../run-session-target.types.js";
 import type { SubagentLaunchAuthorization } from "../spawn/subagent-launch-authorization.js";
 import type { SpawnSubagentMode } from "../spawn/subagent-spawn.types.js";
-import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
+import type { SubagentRunOutcome } from "../subagent-terminal-outcome.js";
 import type { SubagentLifecycleEndedReason } from "./subagent-lifecycle-events.js";
 import type {
   SubagentCompletionDeliveryState,
@@ -192,6 +192,11 @@ export type SubagentRunRecord = Omit<SubagentRunReadRecord, "execution" | "colle
   label?: string;
   agentDir?: string;
   workspaceDir?: string;
+  runTimeoutSeconds?: number;
+  /** First clock-derived wait expiry observed without terminalizing the child. */
+  waitExpiryObservedAt?: number;
+  /** Notification attempt settled; not proof of delivery or of child completion. */
+  waitExpiryAnnouncedAt?: number;
   spawnMode?: SpawnSubagentMode;
   archiveAtMs?: number;
   cleanupHandled?: boolean;

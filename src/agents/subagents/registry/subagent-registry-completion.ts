@@ -1,7 +1,7 @@
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
-import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
+import type { SubagentRunOutcome } from "../subagent-terminal-outcome.js";
 import { SUBAGENT_KILL_TASK_ERROR, type SubagentTerminalState } from "./subagent-control.types.js";
 import {
   SUBAGENT_ENDED_OUTCOME_ERROR,
@@ -12,11 +12,15 @@ import {
   type SubagentLifecycleEndedOutcome,
   type SubagentLifecycleEndedReason,
 } from "./subagent-lifecycle-events.js";
+import { shouldDeferTerminalCleanupForUnconfirmedChild } from "./subagent-registry-cleanup.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const log = createSubsystemLogger("agents/subagent-registry-completion");
 
-/** Returns terminal execution facts only after completion capture has settled. */
+/**
+ * Returns terminal execution facts only after completion capture has settled
+ * **and** the child's stop has actually been observed.
+ */
 export function resolveFinalizedSubagentTaskState(
   entry: SubagentRunRecord,
 ): SubagentTerminalState | undefined {
@@ -40,6 +44,18 @@ export function resolveFinalizedSubagentTaskState(
         : outcome.status === "timeout"
           ? "timed_out"
           : "failed";
+  if (
+    status !== "cancelled" &&
+    status !== "succeeded" &&
+    shouldDeferTerminalCleanupForUnconfirmedChild(entry)
+  ) {
+    // A deadline-only expiry observed nothing about the child, so publishing a
+    // terminal failure/timeout here would be a provisional effect that cannot
+    // be taken back: a later observed success would be unrepresentable. Stay
+    // nonterminal; promotion resolves through this same function with an
+    // observed outcome and publishes the real terminal state exactly once.
+    return undefined;
+  }
   return {
     status,
     endedAt,

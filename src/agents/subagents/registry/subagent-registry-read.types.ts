@@ -1,7 +1,7 @@
 import type { DeliveryContext } from "../../../utils/delivery-context.types.js";
 import type { AgentRunTerminalReplySnapshot } from "../../agent-run-terminal-reply.types.js";
 import type { SpawnSubagentMode } from "../spawn/subagent-spawn.types.js";
-import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
+import type { SubagentRunOutcome } from "../subagent-terminal-outcome.js";
 import type { SubagentLifecycleEndedReason } from "./subagent-lifecycle-events.js";
 
 export type PendingFinalDeliveryPayload = {
@@ -115,6 +115,8 @@ export type SubagentRunReadRecord = {
   endedReason?: SubagentLifecycleEndedReason;
   pauseReason?: "sessions_yield";
   cleanupCompletedAt?: number;
+  /** First clock-derived wait expiry observed without terminalizing the child. */
+  waitExpiryObservedAt?: number;
   /** Durable outbox marker for parent/external completion delivery. */
   delivery?: SubagentCompletionDeliveryState;
   execution: {

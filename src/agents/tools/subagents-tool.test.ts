@@ -7,6 +7,7 @@ const owner = vi.hoisted(() => ({
   listeners: new Set<() => void>(),
   cancel: vi.fn(),
   list: undefined as Record<string, unknown> | undefined,
+  sharedCwdGroups: [] as Array<{ id: number; path: string; runCount: number; runIds: string[] }>,
 }));
 vi.mock("../subagents/registry/subagent-control.js", () => ({
   DEFAULT_RECENT_MINUTES: 30,
@@ -63,8 +64,8 @@ vi.mock("../subagents/registry/subagent-list.js", () => ({
     total: owner.runs.length,
     active: [],
     recent: [],
-    sharedCwdGroupTotal: 0,
-    sharedCwdGroups: [],
+    sharedCwdGroupTotal: owner.sharedCwdGroups.length,
+    sharedCwdGroups: owner.sharedCwdGroups,
     text: "native subagents",
     ...owner.list,
   }),
@@ -74,6 +75,7 @@ beforeEach(() => {
   owner.listeners.clear();
   owner.cancel.mockReset();
   owner.list = undefined;
+  owner.sharedCwdGroups = [];
 });
 function run() {
   const entry = createSubagentRunRecord({
@@ -90,6 +92,17 @@ function tool() {
   return createSubagentsTool({ config: {}, agentId: "main", agentSessionKey: "agent:main:main" });
 }
 describe("subagents native run contract", () => {
+  it("surfaces the bounded shared-cwd advisory in structured list output", async () => {
+    owner.sharedCwdGroups = [
+      { id: 1, path: "/work/shared-tree", runCount: 2, runIds: ["run-a", "run-b"] },
+    ];
+
+    expect((await tool().execute("list", { action: "list" })).details).toMatchObject({
+      sharedCwdGroupTotal: 1,
+      sharedCwdGroups: owner.sharedCwdGroups,
+    });
+  });
+
   it("subscribes before reading and does not consume the completed result's delivery obligation", async () => {
     const entry = run();
     entry.delivery = { status: "pending" };

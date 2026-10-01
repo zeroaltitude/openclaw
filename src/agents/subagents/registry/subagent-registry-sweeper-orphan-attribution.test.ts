@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../../config/sessions.js";
+import * as placementStore from "../../../gateway/worker-environments/placement-store.js";
 import type { GatewayBootLifecycleSegment } from "../../../infra/gateway-boot-lifecycle.js";
 import { resetGatewayWorkAdmission } from "../../../process/gateway-work-admission.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
+import { MAX_UNCONFIRMED_ORPHAN_AGE_MS } from "./subagent-registry-sweeper-orphan.js";
 import { createSubagentRegistrySweeper } from "./subagent-registry-sweeper.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -18,6 +20,7 @@ const bootSegments = vi.hoisted(() => ({
   onEnter: undefined as (() => void) | undefined,
   gate: undefined as Promise<void> | undefined,
 }));
+const liveContext = vi.hoisted(() => ({ present: false }));
 const orphanReason = vi.hoisted(() => ({
   current: undefined as string | undefined,
 }));
@@ -50,7 +53,7 @@ vi.mock("../../../infra/agent-run-registry.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../infra/agent-run-registry.js")>();
   return {
     ...actual,
-    getAgentRunContext: () => undefined,
+    getAgentRunContext: () => (liveContext.present ? {} : undefined),
   };
 });
 // Restart recovery is offered the row first; "ignored" is its decline, which is
@@ -140,6 +143,7 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
     resetGatewayWorkAdmission();
     // Reap long after the death, exactly as the real 34-minute outage did.
     vi.useFakeTimers({ now: RUN_REAPED_AT });
+    liveContext.present = false;
     orphanReason.current = "missing-session-entry";
     childSessionEntry.current = undefined;
     bootSegments.onEnter = undefined;
@@ -160,11 +164,78 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
     vi.clearAllMocks();
   });
 
+  it("defers host-reboot recovery when placement ownership cannot be read", async () => {
+    const read = vi
+      .spyOn(placementStore, "createWorkerSessionPlacementStore")
+      .mockImplementation(() => {
+        throw new Error("injected placement store failure");
+      });
+    const { completeSubagentRunWithRecovery, sweeper } = createHarness({
+      waitExpiryObservedAt: RUN_DIED_AT,
+    });
+    try {
+      await sweeper.sweepOnce();
+      expect(read).toHaveBeenCalled();
+      expect(completeSubagentRunWithRecovery).not.toHaveBeenCalled();
+    } finally {
+      await sweeper.reset();
+      read.mockRestore();
+    }
+  });
+
+  it("does not attribute an unconfirmed wait to a reboot while its live context remains", async () => {
+    liveContext.present = true;
+    const { entry, completeSubagentRunWithRecovery, sweeper } = createHarness({
+      waitExpiryObservedAt: RUN_DIED_AT,
+    });
+    const before = structuredClone(entry);
+    await sweeper.sweepOnce();
+    await sweeper.reset();
+    expect(completeSubagentRunWithRecovery).not.toHaveBeenCalled();
+    expect(entry).toEqual(before);
+  });
+
+  it("still defers an unconfirmed wait past the age ceiling while its live context remains", async () => {
+    // No boot history at all, so there is no host-reboot attribution to fall
+    // back on either — isolates the ceiling+liveness interaction from the
+    // attribution path exercised by the other tests in this suite.
+    bootSegments.current = [];
+    // Same real-time liveness recheck as the un-aged case above: age alone
+    // never overrides positive evidence the child is still there.
+    vi.setSystemTime(RUN_DIED_AT + MAX_UNCONFIRMED_ORPHAN_AGE_MS + 60_000);
+    liveContext.present = true;
+    const { entry, completeSubagentRunWithRecovery, sweeper } = createHarness({
+      waitExpiryObservedAt: RUN_DIED_AT,
+    });
+    const before = structuredClone(entry);
+    await sweeper.sweepOnce();
+    await sweeper.reset();
+    expect(completeSubagentRunWithRecovery).not.toHaveBeenCalled();
+    expect(entry).toEqual(before);
+  });
+
+  it("settles an unconfirmed wait once it has aged past the ceiling with no live context", async () => {
+    bootSegments.current = [];
+    vi.setSystemTime(RUN_DIED_AT + MAX_UNCONFIRMED_ORPHAN_AGE_MS + 60_000);
+    const { completeSubagentRunWithRecovery, sweeper } = createHarness({
+      waitExpiryObservedAt: RUN_DIED_AT,
+    });
+    await sweeper.sweepOnce();
+    await sweeper.reset();
+    expect(completeSubagentRunWithRecovery).toHaveBeenCalledTimes(1);
+    const [completion, source] = completeSubagentRunWithRecovery.mock.calls[0]!;
+    expect(source).toBe("sweeper-lost-context");
+    expect(completion.outcome.status).toBe("error");
+    expect(completion.outcome.error).toContain("could not be confirmed after");
+    expect(completion.outcome.error).toContain("treating as orphaned");
+    expect(completion.recoverInterrupted).toBeUndefined();
+  });
+
   it("notifies the spawning session instead of silently pruning a run that said nothing", async () => {
     const { entry, completeSubagentRunWithRecovery, runs, sweeper } = createHarness();
 
     await sweeper.sweepOnce();
-    sweeper.reset();
+    await sweeper.reset();
 
     expect(completeSubagentRunWithRecovery).toHaveBeenCalledTimes(1);
     const [completion, source] = completeSubagentRunWithRecovery.mock.calls[0]!;
@@ -186,7 +257,7 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
     const { completeSubagentRunWithRecovery, sweeper } = createHarness();
 
     await sweeper.sweepOnce();
-    sweeper.reset();
+    await sweeper.reset();
 
     const [completion] = completeSubagentRunWithRecovery.mock.calls[0]!;
     // No last-activity evidence beyond the start, so the death is bounded by
@@ -201,7 +272,7 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
     });
 
     await sweeper.sweepOnce();
-    sweeper.reset();
+    await sweeper.reset();
 
     const [completion] = completeSubagentRunWithRecovery.mock.calls[0]!;
     expect(completion.endedAt).toBe(GATEWAY_RESTARTED_AT);
@@ -219,7 +290,7 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
     });
 
     await sweeper.sweepOnce();
-    sweeper.reset();
+    await sweeper.reset();
 
     const [completion] = completeSubagentRunWithRecovery.mock.calls[0]!;
     expect(completion.endedAt).toBe(RUN_DIED_AT);
@@ -240,7 +311,7 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
     const { entry, completeSubagentRunWithRecovery, runs, sweeper } = createHarness();
 
     await sweeper.sweepOnce();
-    sweeper.reset();
+    await sweeper.reset();
 
     expect(completeSubagentRunWithRecovery).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
@@ -261,7 +332,7 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
     const { entry, completeSubagentRunWithRecovery, runs, sweeper } = createHarness();
 
     await sweeper.sweepOnce();
-    sweeper.reset();
+    await sweeper.reset();
 
     expect(completeSubagentRunWithRecovery).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
@@ -283,7 +354,7 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
     });
 
     await sweeper.sweepOnce();
-    sweeper.reset();
+    await sweeper.reset();
 
     // Captured output is not a terminal outcome. Pass the exact output-bearing
     // row to canonical recovery; that owner controls payload replacement.
@@ -376,10 +447,12 @@ describe("sweeper attribution for runs orphaned by a gateway death", () => {
       updatedAt: RUN_DIED_AT,
       endedAt: RUN_DIED_AT,
     } as SessionEntry;
-    const { completeSubagentRunWithRecovery, sweeper } = createHarness();
+    const { completeSubagentRunWithRecovery, sweeper } = createHarness({
+      waitExpiryObservedAt: RUN_DIED_AT - 1,
+    });
 
     await sweeper.sweepOnce();
-    sweeper.reset();
+    await sweeper.reset();
 
     expect(completeSubagentRunWithRecovery).toHaveBeenCalledTimes(1);
     const [completion, source] = completeSubagentRunWithRecovery.mock.calls[0]!;

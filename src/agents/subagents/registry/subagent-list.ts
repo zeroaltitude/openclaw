@@ -31,6 +31,7 @@ import { buildSubagentRunView } from "./subagent-run-view.js";
 import {
   getSubagentSessionRuntimeMs,
   getSubagentSessionStartedAt,
+  isSubagentChildStopUnconfirmed,
   resolveSubagentDisplayStatus,
 } from "./subagent-session-metrics.js";
 
@@ -53,7 +54,7 @@ const SHARED_CWD_RUN_SAMPLE_MAX = 3;
 const SHARED_CWD_PATH_MAX_CHARS = 72;
 
 /**
- * Advisory marker for live sibling runs spawned into one working directory.
+ * Advisory marker for sibling runs without confirmed stop sharing one working directory.
  * Present only when the spawner passed an explicit `cwd`; inherited workspaces
  * are shared by design and are never reported.
  */
@@ -65,7 +66,7 @@ type SubagentSharedCwdGroup = {
    * untruncated path stays internal to grouping and is never emitted per row.
    */
   path: string;
-  /** Exact live-run count for the group. */
+  /** Exact group count, including children whose stop remains unconfirmed. */
   runCount: number;
   /**
    * At most `SHARED_CWD_RUN_SAMPLE_MAX` run ids, ordered by run id. A sample,
@@ -129,9 +130,23 @@ export async function readSubagentListSessionEntries(
   cfg: OpenClawConfig,
   context: SubagentListReadContext,
 ): Promise<Map<string, SessionEntry>> {
-  const runs = [...context.view.active, ...context.view.recent];
+  // The shared-cwd advisory reads `spawnedCwd` for every live or unconfirmed run,
+  // including ones outside the displayed rows.
+  const runs = [
+    ...context.view.active,
+    ...context.view.recent,
+    ...context.view.latest.filter(
+      (run) =>
+        isRetainedUnendedSubagentRun(run, context.now) || isSubagentChildStopUnconfirmed(run),
+    ),
+  ];
+  const seenSessionKeys = new Set<string>();
   const keysByStore = new Map<string, string[]>();
   for (const run of runs) {
+    if (seenSessionKeys.has(run.childSessionKey)) {
+      continue;
+    }
+    seenSessionKeys.add(run.childSessionKey);
     const storePath = resolveSessionStorePathCore(cfg.session?.store, {
       agentId: parseAgentSessionKey(run.childSessionKey)?.agentId,
     });
@@ -262,8 +277,8 @@ function capSharedCwdPath(value: string) {
  * Reads `spawnedCwd` off `sessionEntries`, the selection the caller already
  * loaded via `readSubagentListSessionEntries` for the visible children, so
  * grouping performs no session I/O of its own. That reuse is sound rather than
- * best-effort: every run this function considers passes
- * `isRetainedUnendedSubagentRun` at the same `now`, and `buildSubagentRunView`
+ * best-effort: every run this function considers is either retained-unended at the
+ * same `now` or has an unconfirmed child stop, and `buildSubagentRunView`
  * puts exactly those runs in `active` — so their child session keys are always
  * part of the selection `readSubagentListSessionEntries` requested. A second
  * whole-store read would materialize a summary object per unrelated session on
@@ -284,7 +299,8 @@ function buildSharedCwdIndex(params: {
   const groups = new Map<string, { path: string; displayPath: string; runIds: string[] }>();
   const identityMemo = new Map<string, string>();
   for (const run of params.runs) {
-    if (!isRetainedUnendedSubagentRun(run, params.now)) {
+    // A wait expiry does not prove the child stopped accessing its directory.
+    if (!isRetainedUnendedSubagentRun(run, params.now) && !isSubagentChildStopUnconfirmed(run)) {
       continue;
     }
     const spawnedCwd = params.sessionEntries.get(run.childSessionKey)?.spawnedCwd?.trim();
@@ -384,7 +400,7 @@ function buildListText(params: {
       `shared working directories (${params.sharedCwdGroups.length}/${params.sharedCwdGroupTotal} shown):`,
       ...params.sharedCwdGroups.map(
         (group) =>
-          `[cwd ${group.id}] ${group.runCount} live runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
+          `[cwd ${group.id}] ${group.runCount} runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
       ),
     );
   }

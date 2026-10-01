@@ -1,8 +1,14 @@
-import { expect, it, vi } from "vitest";
+import { expect, it, vi, type Mock } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import { callGateway } from "../../../gateway/call.js";
+import { createWorkerSessionPlacementStore } from "../../../gateway/worker-environments/placement-store.js";
 import { recordGatewayBootStart } from "../../../infra/gateway-boot-lifecycle.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../../infra/kysely-sync.js";
+import type { DB } from "../../../state/openclaw-state-db.generated.js";
+import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import { loadGatewayBootSegmentsForAttribution } from "./subagent-orphan-attribution.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
+import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite.js";
 import { getSubagentRunByChildSessionKey, testing } from "./subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { resolveSubagentSessionStatus } from "./subagent-session-metrics.js";
@@ -15,7 +21,7 @@ export function registerSubagentOrphanTaskCases({
   restartRegistry,
   waitForRegistryWork,
 }: {
-  announceSpy: () => Promise<"delivered" | "retryable">;
+  announceSpy: Mock<() => Promise<"delivered" | "retryable">>;
   flushQueuedRegistryWork: () => Promise<void>;
   readPersistedRegistry: () => { runs: Record<string, SubagentRunRecord> };
   writePersistedRegistry: (
@@ -51,7 +57,7 @@ export function registerSubagentOrphanTaskCases({
     // rows so the production sweeper observes this test's persisted state.
     await loadGatewayBootSegmentsForAttribution(Date.now(), { forceRefresh: true });
 
-    restartRegistry();
+    await restartRegistry();
     await flushQueuedRegistryWork();
 
     expect(callGateway).not.toHaveBeenCalled();
@@ -71,6 +77,196 @@ export function registerSubagentOrphanTaskCases({
       interval: 10,
     });
   });
+  it.each([
+    "host reboot",
+    "remote worker",
+    "same host",
+    "unknown host",
+    "inferred host",
+    "clean stop",
+    "current boot",
+    "later activity",
+    "no history",
+  ] as const)(
+    "recovers an unconfirmed wait only with authoritative death: %s",
+    async (evidence) => {
+      const now = Date.now();
+      const startedAt = now - 10_000;
+      const successorAt = now - 2_000;
+      const runId = `run-wait-boot-${evidence.replaceAll(" ", "-")}`;
+      const childSessionKey = `agent:main:subagent:${runId}`;
+      await writePersistedRegistry(
+        {
+          runs: {
+            [runId]: {
+              runId,
+              taskRunId: runId,
+              generation: 1,
+              childSessionKey,
+              requesterSessionKey: "agent:main:main",
+              requesterDisplayKey: "main",
+              task: "recover only a child stopped by host reboot",
+              cleanup: "keep",
+              expectsCompletionMessage: false,
+              createdAt: startedAt,
+              execution: { status: "running", startedAt },
+              waitExpiryObservedAt: now - 5_000,
+              ...(evidence === "later activity"
+                ? {
+                    completion: {
+                      required: false,
+                      capturedAt: successorAt + 1,
+                      resultText: "still working",
+                    },
+                  }
+                : {}),
+            },
+          },
+        },
+        { seedChildSessions: false },
+      );
+      const { db } = openOpenClawStateDatabase();
+      const kysely = getNodeSqliteKysely<Pick<DB, "gateway_boot_lifecycle">>(db);
+      if (evidence !== "no history") {
+        executeSqliteQuerySync(
+          db,
+          kysely.insertInto("gateway_boot_lifecycle").values([
+            {
+              boot_id: "prior",
+              pid: evidence === "current boot" ? process.pid : 1,
+              started_at_ms: startedAt - 1_000,
+              completed_at_ms: evidence === "clean stop" ? successorAt - 1 : null,
+              outcome: evidence === "clean stop" ? "clean" : null,
+              host_boot_id:
+                evidence === "unknown host"
+                  ? null
+                  : evidence === "inferred host"
+                    ? "uptime:100"
+                    : "kernel:prior",
+            },
+            {
+              boot_id: "successor",
+              pid: evidence === "current boot" ? 2 : process.pid,
+              started_at_ms: successorAt,
+              completed_at_ms: null,
+              outcome: null,
+              host_boot_id: evidence === "same host" ? "kernel:prior" : "kernel:successor",
+            },
+          ]),
+        );
+      }
+      if (evidence === "remote worker") {
+        createWorkerSessionPlacementStore().startDispatch({
+          sessionId: "remote-child",
+          sessionKey: childSessionKey,
+          agentId: "main",
+        });
+      }
+      await loadGatewayBootSegmentsForAttribution(now, { forceRefresh: true });
+      const childResult = createDeferred<{ status: "ok"; startedAt: number; endedAt: number }>();
+      vi.mocked(callGateway).mockImplementation(async (request) =>
+        request.method === "agent.wait" ? await childResult.promise : {},
+      );
+      try {
+        await restartRegistry();
+        await waitForRegistryWork(() =>
+          vi.mocked(callGateway).mock.calls.some(([request]) => request.method === "agent.wait"),
+        );
+        await testing.sweepOnceForTests();
+        await flushQueuedRegistryWork();
+        if (evidence === "host reboot") {
+          expect(loadSubagentRegistryFromSqlite().get(runId)).toMatchObject({
+            execution: {
+              status: "terminal",
+              endedAt: successorAt,
+              outcome: {
+                status: "error",
+                error: expect.stringContaining("host rebooted under the gateway"),
+              },
+            },
+            cleanupCompletedAt: expect.any(Number),
+          });
+        } else {
+          const retained = loadSubagentRegistryFromSqlite().get(runId);
+          expect(retained?.execution.endedAt).toBeUndefined();
+          expect(retained?.cleanupCompletedAt).toBeUndefined();
+        }
+      } finally {
+        childResult.resolve({ status: "ok", startedAt, endedAt: now });
+        await flushQueuedRegistryWork();
+      }
+    },
+  );
+
+  it.each(["observation-only", "ordinary"] as const)(
+    "handles a missing-session restored %s run without inventing child stop evidence",
+    async (representation) => {
+      const now = Date.now();
+      const runId = `run-missing-session-${representation}`;
+      const childSessionKey = `agent:main:subagent:missing-session-${representation}`;
+      const observed = representation === "observation-only";
+      await writePersistedRegistry(
+        {
+          runs: {
+            [runId]: {
+              runId,
+              taskRunId: runId,
+              generation: 1,
+              childSessionKey,
+              requesterSessionKey: "agent:main:main",
+              requesterDisplayKey: "main",
+              task: "restore missing session without stop evidence",
+              cleanup: "keep",
+              expectsCompletionMessage: false,
+              createdAt: now - 10_000,
+              execution: { status: "running", startedAt: now - 10_000 },
+              ...(observed ? { waitExpiryObservedAt: now - 1_000 } : {}),
+            },
+          },
+        },
+        { seedChildSessions: false },
+      );
+      const childResult = createDeferred<{ status: "ok"; startedAt: number; endedAt: number }>();
+      vi.mocked(callGateway).mockImplementation(async (request) =>
+        request.method === "agent.wait" ? await childResult.promise : {},
+      );
+      const hasWait = () =>
+        vi.mocked(callGateway).mock.calls.some(([request]) => request.method === "agent.wait");
+      try {
+        await restartRegistry();
+        await testing.sweepOnceForTests();
+        // Reach either the legitimate re-wait or the erroneous terminal path;
+        // do not use a sleep to infer absence of asynchronous completion.
+        await waitForRegistryWork(
+          () => hasWait() || resolveSubagentSessionStatus(subagentRuns.get(runId)) === "failed",
+        );
+        if (observed) {
+          expect(hasWait(), "unconfirmed child is re-waited after restore").toBe(true);
+          const retained = loadSubagentRegistryFromSqlite().get(runId);
+          expect(retained?.waitExpiryObservedAt).toBe(now - 1_000);
+          expect(retained?.execution.endedAt).toBeUndefined();
+          expect(retained?.execution.outcome).toBeUndefined();
+          expect(retained?.cleanupCompletedAt).toBeUndefined();
+          childResult.resolve({ status: "ok", startedAt: now - 10_000, endedAt: now });
+          await waitForRegistryWork(
+            () => loadSubagentRegistryFromSqlite().get(runId)?.execution.outcome?.status === "ok",
+          );
+        } else {
+          expect(hasWait(), "ordinary orphan still reaches canonical completion").toBe(false);
+          await waitForRegistryWork(
+            () => loadSubagentRegistryFromSqlite().get(runId)?.cleanupCompletedAt !== undefined,
+          );
+          expect(loadSubagentRegistryFromSqlite().get(runId)?.execution.outcome).toMatchObject({
+            status: "error",
+            error: "subagent run orphaned: missing-session-entry",
+          });
+        }
+      } finally {
+        childResult.resolve({ status: "ok", startedAt: now - 10_000, endedAt: now });
+        await flushQueuedRegistryWork();
+      }
+    },
+  );
 
   it("terminalizes a stale restored orphan without replaying its provider", async () => {
     const now = Date.now();
@@ -100,6 +296,10 @@ export function registerSubagentOrphanTaskCases({
     await waitForRegistryWork(
       () => resolveSubagentSessionStatus(subagentRuns.get(runId)) === "failed",
     );
+    expect(subagentRuns.get(runId)?.execution).toMatchObject({
+      outcome: { status: "error", error: "subagent run lost active execution context" },
+      endedAt: expect.any(Number),
+    });
     expect(callGateway).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
   });
 }

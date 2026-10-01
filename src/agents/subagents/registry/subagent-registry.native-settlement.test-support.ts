@@ -207,7 +207,7 @@ export function registerRestartDrainCompletionSettlementTest({
     resetGatewayWorkAdmission();
     const settleRootWork = observeRootWork();
     try {
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
     } finally {
       await settleRootWork();
     }

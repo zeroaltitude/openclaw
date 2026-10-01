@@ -19,7 +19,7 @@ import {
 } from "../../announce-idempotency.js";
 import { isSilentAgentReplyText } from "../../embedded-agent-runner/message-visibility.js";
 import type { SubagentAnnounceDeliveryResult } from "../announce/subagent-announce-dispatch.js";
-import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
+import type { SubagentRunOutcome } from "../subagent-terminal-outcome.js";
 import {
   ensureCompletionState,
   ensureDeliveryState,

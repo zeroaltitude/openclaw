@@ -53,6 +53,8 @@ vi.mock("./subagent-session-reconciliation.js", () => ({
     sessionId: fixture.sessionId,
     lifecycleRevision: fixture.lifecycleRevision,
   }),
+  // Restore consults the staleness ceiling; these fixtures are live, never orphaned.
+  resolveSubagentRunOrphanReason: () => null,
 }));
 
 beforeEach(() => {
@@ -110,6 +112,7 @@ function createRegistrationFixture() {
     notifyContextEngineSubagentEnded: async () => {},
     completeCleanupBookkeeping: async () => {},
     completeSubagentRun: async () => {},
+    reportSubagentWaitExpiry: async () => {},
   };
   const manager = createSubagentRunManager(options);
   return { stored, persist, options, manager };

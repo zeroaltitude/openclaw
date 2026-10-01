@@ -10,7 +10,11 @@ import {
   SUBAGENT_ENDED_REASON_COMPLETE,
   type SubagentLifecycleEndedReason,
 } from "./subagent-lifecycle-events.js";
-import { shouldSuspendPendingFinalDelivery } from "./subagent-registry-cleanup.js";
+import {
+  resolveEffectiveCleanupMode,
+  shouldDeleteSubagentAttachments,
+  shouldSuspendPendingFinalDelivery,
+} from "./subagent-registry-cleanup.js";
 import { logAnnounceGiveUp, safeRemoveAttachmentsDir } from "./subagent-registry-helpers.js";
 import { retireSupersededCleanupIfNeeded } from "./subagent-registry-lifecycle-attempt.js";
 import { suspendPendingFinalDelivery } from "./subagent-registry-lifecycle-cleanup.js";
@@ -115,8 +119,11 @@ export async function finishSubagentCleanup(
     giveUpReason?: "expiry" | "permanent_failure";
   },
 ): Promise<void> {
-  const { runId, entry, cleanup, cleanupGeneration, stateContext, isCurrent } = args;
-  if (cleanup === "delete" || !entry.retainAttachmentsOnKeep) {
+  const { runId, entry, cleanupGeneration, stateContext, isCurrent } = args;
+  // Re-resolved against the committed outcome: an unconfirmed child must not
+  // have its session or attachments destroyed by this attempt.
+  const cleanup = resolveEffectiveCleanupMode(entry, args.cleanup);
+  if (shouldDeleteSubagentAttachments(entry, cleanup)) {
     await safeRemoveAttachmentsDir(entry, isCurrent);
   }
   if (!isCurrent()) {
