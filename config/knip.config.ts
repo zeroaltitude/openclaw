@@ -244,6 +244,8 @@ const repositoryScriptEntries = [
   // Maintainer proof harnesses are invoked manually from PR evidence.
   "scripts/proof-117074-concurrent-write-latency.ts!",
   "scripts/proof-117074-tombstone-shared-owners.ts!",
+  // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
   // qa/README.md delegates campaign Git execution to this guarded CLI by path.
