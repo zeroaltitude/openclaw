@@ -7,13 +7,23 @@ import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { runOutsidePluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { enqueueCommandInLane, setCommandLaneConcurrency } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
-import type { RuntimeEnv } from "../../runtime.js";
+import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
 import type {
   ActivateSetupInferenceParams,
   ActivateSetupInferenceResult,
   VerifySetupInferenceResult,
 } from "../../system-agent/setup-inference.js";
 import type { GatewayRequestContext } from "./types.js";
+
+// Hosted setup must reject a failing sub-step without exiting the Gateway.
+export function createSystemAgentGatewayRuntime(): RuntimeEnv {
+  return {
+    ...defaultRuntime,
+    exit: (code: number | undefined): never => {
+      throw new Error(`setup step exited with code ${String(code)}`);
+    },
+  };
+}
 
 const SYSTEM_AGENT_GATEWAY_EXECUTION_KEY = "gateway";
 const systemAgentGatewayExecutionQueue = new KeyedAsyncQueue();
