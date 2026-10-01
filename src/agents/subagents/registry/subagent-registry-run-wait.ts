@@ -234,7 +234,6 @@ export class SubagentWaitManager {
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const stateContext = captureOpenClawStateWorkerContext();
     let waitedEntry: SubagentRunRecord | undefined;
-    let waitExpiryForRetry: Parameters<typeof this.options.reportSubagentWaitExpiry>[0] | undefined;
     let completionAttempted = false;
     let waitExpiryForRetry: Parameters<typeof this.options.reportSubagentWaitExpiry>[0] | undefined;
     let releaseCompletionWork: (() => void) | null = null;
@@ -442,9 +441,16 @@ export class SubagentWaitManager {
           // it earns the parent a wake, but must stay outside terminal completion
           // because that path owns browser/MCP/session cleanup.
           if (!isTerminalWaitTimeout) {
+            // The recorded observation is this row's publication identity, and
+            // the registry accepts a retry only under that exact value. A child
+            // that starts between attempts moves the computed deadline from
+            // `createdAt + timeout` to `startedAt + timeout`, so a recomputed
+            // timestamp would be refused and the parent would never be woken.
+            // Republish the persisted observation; the lifecycle fences still
+            // decide whether this wait may speak for the row at all.
             waitExpiryForRetry = {
               entry,
-              observedAt: timeoutEndedAt ?? now,
+              observedAt: entry.waitExpiryObservedAt ?? timeoutEndedAt ?? now,
               startedAt: observedStartedAt,
               lifecycleGeneration,
             };

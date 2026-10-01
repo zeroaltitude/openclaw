@@ -21,6 +21,7 @@ import {
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import { prependAgentSteeringPrompt } from "../../agent-steering-queue.js";
+import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import { reconcileRetiredSubagentCancellation } from "../completion/subagent-completion-admission.store.js";
 import { terminateAcceptedCollectorRun } from "../spawn/subagent-spawn-cleanup.js";
@@ -628,6 +629,7 @@ const subagentRunManager = createSubagentRunManager({
     const isCurrent = () =>
       isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) &&
       subagentRuns.get(entry.runId) === entry &&
+      !subagentRuns.isCompletionAuthorityRetired(entry) &&
       typeof entry.execution.endedAt !== "number";
     const ownsObservation = () => isCurrent() && entry.waitExpiryObservedAt === observedAt;
     if (
@@ -664,7 +666,7 @@ const subagentRunManager = createSubagentRunManager({
       childSessionKey: entry.childSessionKey,
       childRunId: entry.runId,
       requesterSessionKey: entry.requesterSessionKey,
-      requesterAgentId: entry.requesterAgentId,
+      requesterAgentId: resolveSubagentRequesterAgentId(getRuntimeConfig(), entry),
       requesterOrigin: entry.requesterOrigin,
       task: entry.task,
       timeoutMs: SUBAGENT_ANNOUNCE_TIMEOUT_MS,

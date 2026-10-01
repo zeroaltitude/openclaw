@@ -414,7 +414,11 @@ export function buildSubagentList(params: {
 }) {
   const { now, view: runView, childSessionsByController } = params.context;
   // `runView.latest` is this function's former `dedupedRuns`: same sort, same
-  // dedup by childSessionKey, same authority.
+  // dedup by childSessionKey, same authority. It is a superset of
+  // `active`/`recent` (every deduped run lands here first); the session
+  // entries the caller already loaded for active/recent cover it too, since
+  // the advisory's own filter below only ever admits runs that also qualify
+  // for `active`.
   const sharedCwdIndex = buildSharedCwdIndex({
     runs: runView.latest,
     sessionEntries: params.sessionEntries,

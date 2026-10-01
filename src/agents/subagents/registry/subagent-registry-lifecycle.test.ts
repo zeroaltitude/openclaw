@@ -717,7 +717,7 @@ describe("subagent registry lifecycle hardening", () => {
     // Regression (round 3, finding 2): the legacy completion path freezes
     // whatever partial text existed when the WAIT expired, and
     // `freezeRunResultAtCompletion` is first-write-wins on `resultText`. Without
-    // clearing it at promotion, the promoted successful task publishes
+    // clearing it at promotion, the promoted successful run publishes
     // pre-expiry output as the finished run's result.
     const entry = createRunEntry({ expectsCompletionMessage: false });
     await completeRun(
@@ -792,7 +792,7 @@ describe("subagent registry lifecycle hardening", () => {
     // The strict post-deadline timestamp test rejected the hard run-timeout kill,
     // whose authoritative `endedAt` lands exactly ON the deadline, leaving the
     // row `child-unconfirmed` forever whenever the child's session record was
-    // absent or unreadable — cleanup, hooks and task finalization deferred
+    // absent or unreadable — cleanup and hooks deferred
     // permanently even though the cancellation proved the child stopped.
     const startedAt = 2_000;
     const runTimeoutSeconds = 3;
@@ -2008,6 +2008,50 @@ describe("subagent registry lifecycle hardening", () => {
       },
     });
     expect(persistOrThrow).toHaveBeenCalled();
+  });
+
+  // Every cancellation producer other than the entry.killIntent path reaches
+  // this boundary with the killed reason and no disposition. The default read
+  // of an absent disposition is `exited`, so each of these used to publish
+  // `exited` for a child that was killed.
+  it.each([
+    {
+      label: "the wait manager's cancellation completion",
+      outcome: { status: "error", error: "agent run aborted" } as const,
+    },
+    {
+      label: "the pending lifecycle scheduler's cancellation completion",
+      outcome: { status: "error", error: "killed" } as const,
+    },
+    {
+      label: "persisted killed-session reconciliation",
+      outcome: { status: "error", error: "subagent run terminated" } as const,
+    },
+  ])("stamps killed disposition for $label", async ({ outcome }) => {
+    const entry = createRunEntry();
+    const controller = createLifecycleController({ entry });
+
+    await controller.completeSubagentRun(makeKilledSubagentCompletion(entry, { outcome }));
+
+    expect(entry.endedReason).toBe(SUBAGENT_ENDED_REASON_KILLED);
+    expect(entry.execution.outcome).toMatchObject({ ...outcome, disposition: "killed" });
+    expect(resolveSubagentRunDisposition(entry.execution.outcome)).toBe("killed");
+  });
+
+  it("replaces a provisional still-running disposition on a cancellation completion", async () => {
+    const entry = createRunEntry();
+    const controller = createLifecycleController({ entry });
+
+    await controller.completeSubagentRun(
+      makeKilledSubagentCompletion(entry, {
+        // A wait-expiry publication describes the waiter, not the run. Carrying
+        // it onto a cancellation would tell the parent a killed child is still
+        // live and harvestable.
+        outcome: { status: "error", error: "agent run aborted", disposition: "still-running" },
+      }),
+    );
+
+    expect(resolveSubagentRunDisposition(entry.execution.outcome)).toBe("killed");
   });
 
   it("keeps the shared task writable when a steer restart aborts its old run", async () => {

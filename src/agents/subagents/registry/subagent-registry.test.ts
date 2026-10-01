@@ -46,6 +46,7 @@ import {
   SUBAGENT_ENDED_REASON_ERROR,
   SUBAGENT_ENDED_REASON_KILLED,
 } from "./subagent-lifecycle-events.js";
+import { resolveFinalizedSubagentTaskState } from "./subagent-registry-completion.js";
 import { mockRegistryRequesterWakeMutation } from "./subagent-registry-lifecycle-completion.test-support.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { registerSubagentResultRefreshCases } from "./subagent-registry-result-refresh.test-support.js";
@@ -1541,7 +1542,7 @@ describe("subagent registry seam flow", () => {
       lifecycleRevision: "rev-unconfirmed",
     });
 
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-unconfirmed-delete-cleanup",
       task: "unconfirmed child keeps its session",
       cleanup: "delete",
@@ -1639,7 +1640,7 @@ describe("subagent registry seam flow", () => {
       status: "running",
     });
 
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-unconfirmed-private-child",
       task: "private child keeps its provisional wake parent-only",
       expectsCompletionMessage: true,
@@ -1690,7 +1691,7 @@ describe("subagent registry seam flow", () => {
       lifecycleRevision: "rev-no-tails",
     });
 
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-unconfirmed-no-tails",
       task: "unconfirmed child runs no terminal tails",
       cleanup: "keep",
@@ -1754,7 +1755,7 @@ describe("subagent registry seam flow", () => {
       lifecycleRevision: "rev-terminal-signal",
     });
 
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-unconfirmed-terminal-signal",
       task: "unconfirmed child publishes no terminal signal",
       cleanup: "keep",
@@ -1834,7 +1835,7 @@ describe("subagent registry seam flow", () => {
       lifecycleRevision: "rev-terminal-hooks",
     });
 
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-unconfirmed-terminal-hooks",
       task: "unconfirmed child emits no terminal plugin hooks",
       cleanup: "keep",
@@ -1925,6 +1926,8 @@ describe("subagent registry seam flow", () => {
     // truthful answer: the wait ended, the child did not.
     expect(findRequesterRun(runId)?.execution.endedAt).toBeUndefined();
     expect(resolveSubagentSessionStatus(findRequesterRun(runId))).toBe("running");
+    const provisional = findRequesterRun(runId);
+    expect(provisional && resolveFinalizedSubagentTaskState(provisional)).toBeUndefined();
 
     // The child's own record turns out to say it finished *successfully*,
     // 100ms before the deadline the wait expired on. That is the whole point
@@ -1975,7 +1978,7 @@ describe("subagent registry seam flow", () => {
       lifecycleRevision: "rev-absent",
     });
 
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId,
       task: "unconfirmed child with a vanishing session entry",
       // delete-mode is what makes the row reach retention teardown at all; a
@@ -2043,7 +2046,7 @@ describe("subagent registry seam flow", () => {
       return {};
     });
     mocks.entries = sessionStore();
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-unconfirmed-silent-cleanup",
       task: "unconfirmed silent cleanup",
       cleanup: "delete",
@@ -2074,7 +2077,7 @@ describe("subagent registry seam flow", () => {
       return {};
     });
     mocks.entries = sessionStore();
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-observed-silent-cleanup",
       task: "observed silent cleanup",
       cleanup: "delete",
@@ -2098,7 +2101,7 @@ describe("subagent registry seam flow", () => {
     });
     mocks.entries = createSessionStore({ status: "running" });
 
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-observed-timeout",
       task: "observed stop",
     });
@@ -2449,6 +2452,7 @@ describe("subagent registry seam flow", () => {
         "FINAL after completion",
       );
     });
+    await settleRootWork();
     expect(mocks.runSubagentAnnounceFlow).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
@@ -2478,7 +2482,7 @@ describe("subagent registry seam flow", () => {
           return rotationPhase === "rejected-delivery" ? "retryable" : "delivered";
         });
       }
-      mod.registerSubagentRun({
+      await mod.registerSubagentRun({
         runId: "run-expiry-retired-lifecycle",
         task: "do not let the retired waiter publish into the new Gateway generation",
         runTimeoutSeconds: 1,
@@ -2520,7 +2524,7 @@ describe("subagent registry seam flow", () => {
       return { status: "timeout", startedAt };
     });
     mocks.entries = createSessionStore({ updatedAt: startedAt, status: "running" });
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-expiry-grace-sweep",
       task: "preserve uncertainty before the provisional announcement",
       runTimeoutSeconds: 1,
@@ -2558,7 +2562,7 @@ describe("subagent registry seam flow", () => {
       request.method === "agent.wait" ? { status: "timeout", startedAt } : {},
     );
     mocks.runSubagentAnnounceFlow.mockResolvedValue("retryable");
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-expiry-retired-retry",
       task: "do not re-admit a retired wait after failed delivery",
       runTimeoutSeconds: 1,
@@ -2589,7 +2593,7 @@ describe("subagent registry seam flow", () => {
         request.method === "agent.wait" ? { status: "timeout", startedAt } : {},
       );
       mocks.runSubagentAnnounceFlow.mockResolvedValue(notificationOutcome);
-      mod.registerSubagentRun({
+      await mod.registerSubagentRun({
         runId,
         task: "do not retry a settled notification or finalize its live child",
         runTimeoutSeconds: 1,
@@ -2635,7 +2639,7 @@ describe("subagent registry seam flow", () => {
       .mockResolvedValueOnce("retryable")
       .mockResolvedValueOnce("delivered");
 
-    mod.registerSubagentRun({
+    await mod.registerSubagentRun({
       runId: "run-wait-expiry-retryable-announce",
       task: "retry a deferred provisional wake",
       runTimeoutSeconds: 1,

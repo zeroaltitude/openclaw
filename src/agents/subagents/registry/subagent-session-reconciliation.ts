@@ -249,24 +249,29 @@ export async function settleSubagentRunFromSessionStore(
     entry: SubagentRunRecord;
     now: number;
     source: string;
+    assertCurrent?: () => void;
   },
 ): Promise<"settled" | "live" | "absent"> {
-  const read = await withSubagentSessionEntry(args.entry, (sessionEntry) =>
-    sessionEntry
-      ? {
-          completion: resolveCompletionFromSessionEntry(sessionEntry, args.now, {
+  const completion = await withSubagentSessionEntry(
+    {
+      childSessionKey: args.entry.childSessionKey,
+      childAgentId: args.entry.childAgentId,
+      assertCurrent: args.assertCurrent,
+    },
+    (sessionEntry) =>
+      sessionEntry
+        ? resolveCompletionFromSessionEntry(sessionEntry, args.now, {
             notBeforeMs: args.entry.execution.startedAt ?? args.entry.createdAt,
-          }),
-        }
-      : undefined,
+          })
+        : "absent",
   );
-  if (!read) {
+  if (completion === "absent") {
     return "absent";
   }
-  const { completion } = read;
   if (!completion) {
     return "live";
   }
+  args.assertCurrent?.();
   await completeSubagentRunWithRecovery(
     {
       runId: args.runId,

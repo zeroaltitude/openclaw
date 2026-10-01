@@ -326,15 +326,16 @@ describe("safeRemoveAttachmentsDir", () => {
 
   it("removes attachments once an observed stop promotes the run", async () => {
     // Anti-vacuity control for the case above: the same delete-mode row with an
-    // observed disposition is NOT refused, so the refusal there is the guard and
-    // not an unrelated early return. Main retires legacy (attachmentId-less)
-    // rows without traversal, so "not refused" is a true result, with no probe.
+    // observed disposition does reach the removal, so the refusal is the guard
+    // and not an unrelated early return. An invalid attachment identity fails
+    // inside the real removal call instead of the pre-flight guard, proving
+    // execution got past it.
     await expect(
       safeRemoveAttachmentsDir(
         createRunEntry({
           cleanup: "delete",
-          attachmentsDir: "/tmp/openclaw-child-attachments",
-          attachmentsRootDir: "/tmp/openclaw-attachments",
+          attachmentId: "not-a-valid-attachment-id",
+          childSessionKey: "agent:main:subagent:child",
           execution: {
             status: "terminal",
             startedAt: 1_000,
@@ -343,7 +344,7 @@ describe("safeRemoveAttachmentsDir", () => {
           },
         }),
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
   });
 });
 

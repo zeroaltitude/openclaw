@@ -1664,6 +1664,66 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expectDeliveryPath(result, "direct");
   });
 
+  // A wait-expiry publication describes the waiter, not the run. It is
+  // provisional and owes no terminal visible result, so an intentionally silent
+  // requester turn settles it; the announce owner used to map the missing reply
+  // to `retryable` and the wait manager scheduled another attempt.
+  it.each([
+    {
+      name: "a terminal completion still owes a visible reply",
+      disposition: "exited" as const,
+      expected: {
+        delivered: false,
+        path: "direct",
+        reason: "visible_reply_missing",
+        error: "completion agent did not produce a visible reply",
+      },
+    },
+    {
+      name: "a provisional still-running expiry notification settles silently",
+      disposition: "still-running" as const,
+      // Settled silently; representation varies (delivered, or a terminal
+      // intentional non-delivery where the delivery layer records suppression).
+      expected: undefined,
+    },
+  ])("%s", async ({ disposition, expected }) => {
+    const dispatchGatewayMethodInProcess = createInProcessGatewayMock({
+      result: { payloads: [{ text: "NO_REPLY" }] },
+    });
+    testing.setDepsForTest({
+      dispatchGatewayMethodInProcess,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-local",
+        isActive: false,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:main:local-session",
+      targetRequesterSessionKey: "agent:main:local-session",
+      triggerMessage: "child done",
+      steerMessage: "child done",
+      requesterIsSubagent: false,
+      expectsCompletionMessage: true,
+      bestEffortDeliver: true,
+      directIdempotencyKey: `announce-local-subagent-silent-${disposition}`,
+      sourceTool: "subagent_announce",
+      sourceSessionKey: "agent:worker:subagent:child",
+      internalEvents: taskCompletionEvents({ disposition, noVisibleResult: true }),
+    });
+
+    if (expected) {
+      expectRecordFields(result, expected);
+      return;
+    }
+    // The contract: the parent's intended silence settles the provisional
+    // notification. It must never read as a missing visible reply, which is
+    // what makes the wait manager re-announce while the child still works.
+    expect(result.reason).not.toBe("visible_reply_missing");
+    expect(result.delivered === true || result.terminal === true).toBe(true);
+  });
+
   it.each([
     { name: "session spawn", evidence: committedSessionSpawnEvidence },
     { name: "cron add", evidence: { successfulCronAdds: 1 } },

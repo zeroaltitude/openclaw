@@ -146,7 +146,7 @@ export async function finishSubagentCleanup(
   await context.completeCleanupBookkeeping({
     runId,
     entry,
-    cleanup,
+    cleanup: resolveEffectiveCleanupMode(entry, cleanup),
     completedAt: args.completedAt ?? Date.now(),
     skipRequesterSettleWake: args.skipRequesterSettleWake,
     stateContext,

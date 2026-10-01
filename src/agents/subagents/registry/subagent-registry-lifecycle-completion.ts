@@ -13,7 +13,7 @@ import {
   resolveSubagentRunDisposition,
   withSubagentOutcomeTiming,
 } from "../announce/subagent-announce-output.js";
-import type { SubagentRunOutcome } from "../subagent-terminal-outcome.js";
+import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
 import { updateSwarmCollectorCompletion } from "../swarm/swarm-collector.js";
 import {
   prepareSubagentKillSession,
@@ -355,7 +355,7 @@ export async function completeSubagentRunAttempt(
         : undefined;
     // Once only the wait expired, the later child result is authoritative.
     // Reapplying that clock here would turn a real success into a terminal
-    // timeout after we deliberately kept the task open for its actual result.
+    // timeout after we deliberately kept the run open for its actual result.
     // Abort/error/timeout outcomes retain their existing deadline attribution.
     const preserveObservedResult =
       shouldDeferTerminalCleanupForUnconfirmedChild(entry) && completionOutcome.status === "ok";
@@ -388,7 +388,7 @@ export async function completeSubagentRunAttempt(
       // The provisional completion capture goes with it. `freezeRunResultAtCompletion`
       // is first-write-wins on `resultText`, so whatever partial text (or `null`)
       // was captured when the WAIT expired would survive this promotion and be
-      // published as the finished run's result — a successful task exposing
+      // published as the finished run's result — a successful run exposing
       // pre-expiry output. Clearing it here is what lets the ordinary capture
       // below run again against the child's settled transcript. Producer-owned
       // evidence is untouched: `terminalReply`, and any `completionSnapshot` or

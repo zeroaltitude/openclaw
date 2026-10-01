@@ -589,7 +589,17 @@ describe("subagent registry persistence", () => {
   it.each([false, true])(
     "finalizes restored interrupted runs without replay (wait expired: %s)",
     async (waitExpired) => {
-      vi.mocked(callGateway).mockResolvedValueOnce({ status: "pending" });
+      vi.mocked(callGateway).mockImplementationOnce(async (request) => {
+        expect(request).toMatchObject({
+          method: "agent.wait",
+        });
+        expect((request as { params?: unknown }).params).toMatchObject({
+          runId: "run-stale-aborted-restore",
+        });
+        return {
+          status: "pending",
+        };
+      });
       const now = Date.now();
       const runId = "run-stale-aborted-restore";
       const childSessionKey = "agent:main:subagent:stale-aborted-restore";
