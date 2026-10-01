@@ -264,6 +264,8 @@ const repositoryScriptEntries = [
   "scripts/proof-w91n-followup-drain-terminal.ts!",
   // Maintainer proof harnesses are invoked manually from PR evidence.
   "scripts/proof-136476-orphan-owner-binding.ts!",
+  // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-136474-blocked-hook-registrations.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
   // qa/README.md delegates campaign Git execution to this guarded CLI by path.
