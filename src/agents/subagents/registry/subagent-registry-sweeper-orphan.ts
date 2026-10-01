@@ -1,4 +1,3 @@
-import { createWorkerSessionPlacementStore } from "../../../gateway/worker-environments/placement-store.js";
 /**
  * Sweep handling for runs that are still marked active but have no execution
  * context left — the shape a subagent run is left in when the gateway dies
@@ -7,6 +6,7 @@ import { createWorkerSessionPlacementStore } from "../../../gateway/worker-envir
  * Split out of the sweeper so the reap decision, which has to reason about boot
  * history and about who still needs to be told, reads as one thing.
  */
+import { createWorkerSessionPlacementStore } from "../../../gateway/worker-environments/placement-store.js";
 import { getAgentRunContext } from "../../../infra/agent-run-registry.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import {
@@ -16,7 +16,11 @@ import {
   resolveSubagentOrphanAttribution,
   resolveSubagentRunLastActivityMs,
 } from "./subagent-orphan-attribution.js";
-import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
+import type {
+  SubagentCompletionRequest,
+  SubagentRecoveryCurrent,
+  SubagentRunRecord,
+} from "./subagent-registry.types.js";
 import { isSubagentChildStopUnconfirmed } from "./subagent-session-metrics.js";
 import {
   loadSubagentSessionEntry,
@@ -92,24 +96,25 @@ export async function reconcileStaleActiveSubagentRun(params: {
   if (isSubagentChildStopUnconfirmed(entry) && attribution?.cause !== "host_reboot") {
     return;
   }
-  const isRecoveryCurrent = isSubagentChildStopUnconfirmed(entry)
-    ? () => {
-        try {
-          // Remote worker ownership survives missing session metadata. Default
-          // dispatch is local only when no unreconciled worker placement exists.
-          return (
-            !getAgentRunContext(runId) &&
-            !createWorkerSessionPlacementStore()
-              .listForReconcile()
-              .some((placement) => placement.sessionKey === entry.childSessionKey)
-          );
-        } catch {
-          // Unknown placement state is not positive local-child stop evidence.
-          return false;
-        }
+  // Remote worker ownership survives missing session metadata. Default dispatch
+  // is local only when no unreconciled worker placement exists; unknown
+  // placement state is not positive local-child stop evidence.
+  const hasNoRemoteOwner = () => {
+    try {
+      return !createWorkerSessionPlacementStore()
+        .listForReconcile()
+        .some((placement) => placement.sessionKey === entry.childSessionKey);
+    } catch {
+      return false;
+    }
+  };
+  const recoveryCurrent: SubagentRecoveryCurrent | undefined = isSubagentChildStopUnconfirmed(entry)
+    ? {
+        isHostCurrent: () => !getAgentRunContext(runId),
+        prepare: async () => !getAgentRunContext(runId) && hasNoRemoteOwner(),
       }
     : undefined;
-  if (isRecoveryCurrent && !isRecoveryCurrent()) {
+  if (recoveryCurrent && !(await recoveryCurrent.prepare())) {
     return;
   }
   const attributedError = attribution ? formatSubagentOrphanErrorMessage(attribution) : undefined;
@@ -134,9 +139,9 @@ export async function reconcileStaleActiveSubagentRun(params: {
       ...(attribution ? { recoverInterrupted: true as const } : {}),
       // A freshly dispatched remote worker claim can still be forming when the
       // terminal completion lock resolves; only this attributed host-reboot
-      // orphan path needs a settle window before trusting isRecoveryCurrent.
-      ...(attribution && isRecoveryCurrent ? { hostRebootRecovery: true as const } : {}),
-      ...(isRecoveryCurrent ? { isRecoveryCurrent } : {}),
+      // orphan path needs a settle window before trusting recoveryCurrent.
+      ...(attribution && recoveryCurrent ? { hostRebootRecovery: true as const } : {}),
+      ...(recoveryCurrent ? { recoveryCurrent } : {}),
       sendFarewell: true,
       accountId,
       triggerCleanup: true,

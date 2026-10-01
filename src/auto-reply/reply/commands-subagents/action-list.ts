@@ -1,6 +1,7 @@
 // Lists subagent runs with lifecycle status.
 import {
   buildSubagentList,
+  formatSharedCwdSummaryLines,
   readSubagentListSessionEntries,
 } from "../../../agents/subagents/registry/subagent-list.js";
 import { commandReply } from "../command-gates.js";
@@ -16,29 +17,18 @@ export async function handleSubagentsListAction(
     sessionEntries: await readSubagentListSessionEntries(params.cfg, readContext.list),
     taskMaxChars: 110,
   });
-  const lines = ["active subagents:", "-----"];
-  if (list.active.length === 0) {
-    lines.push("(none)");
-  } else {
-    lines.push(list.active.map((entry) => entry.line).join("\n"));
-  }
-  lines.push("", `recent subagents (last ${RECENT_WINDOW_MINUTES}m):`, "-----");
-  if (list.recent.length === 0) {
-    lines.push("(none)");
-  } else {
-    lines.push(list.recent.map((entry) => entry.line).join("\n"));
-  }
-  if (list.sharedCwdGroupTotal > 0) {
-    lines.push(
+  const formatRows = (rows: typeof list.active) =>
+    rows.length ? rows.map((entry) => entry.line).join("\n") : "(none)";
+  return commandReply(
+    [
+      "active subagents:",
+      "-----",
+      formatRows(list.active),
       "",
-      `shared working directories (${list.sharedCwdGroups.length}/${list.sharedCwdGroupTotal} shown):`,
-    );
-    for (const group of list.sharedCwdGroups) {
-      lines.push(
-        `[cwd ${group.id}] ${group.runCount} runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
-      );
-    }
-  }
-
-  return commandReply(lines.join("\n"));
+      `recent subagents (last ${RECENT_WINDOW_MINUTES}m):`,
+      "-----",
+      formatRows(list.recent),
+      ...formatSharedCwdSummaryLines(list),
+    ].join("\n"),
+  );
 }
