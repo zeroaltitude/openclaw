@@ -249,6 +249,8 @@ const repositoryScriptEntries = [
   // Maintainer proof harnesses are invoked manually from PR evidence.
   "scripts/proof-app-server-runtime-chooser-bindings.ts!",
   // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-cli-stream-post-budget-cost.ts!",
+  "scripts/proof-cli-stream-process-boundary.ts!",
   "scripts/proof-cli-stream-turn-budget.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
