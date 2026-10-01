@@ -234,6 +234,7 @@ export class SubagentWaitManager {
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const stateContext = captureOpenClawStateWorkerContext();
     let waitedEntry: SubagentRunRecord | undefined;
+    let waitExpiryForRetry: Parameters<typeof this.options.reportSubagentWaitExpiry>[0] | undefined;
     let completionAttempted = false;
     let waitExpiryForRetry: Parameters<typeof this.options.reportSubagentWaitExpiry>[0] | undefined;
     let releaseCompletionWork: (() => void) | null = null;
@@ -487,7 +488,9 @@ export class SubagentWaitManager {
         ? "subagent run terminated"
         : (waitTerminalOutcome?.error ?? rawWaitError);
       const baseOutcome: SubagentRunOutcome =
-        waitStatus === "error" ? { status: "error", error: waitError } : { status: "ok" };
+        waitStatus === "error"
+          ? { status: "error", error: waitError, ...(waitAborted ? { disposition: "killed" } : {}) }
+          : { status: "ok" };
       const outcome = withSubagentOutcomeTiming(baseOutcome, {
         startedAt: observedStartedAt ?? entry.execution.startedAt,
         endedAt,
