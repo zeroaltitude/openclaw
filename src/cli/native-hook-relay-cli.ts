@@ -122,7 +122,7 @@ export async function runNativeHookRelayCli(
     // "failed" means the relay could not be reached at all; a policy deny
     // carries no disposition, which is what keeps the two distinguishable.
     failureDisposition: NativeHookRelayProcessResponse["failureDisposition"] = "failed",
-  ) => {
+  ): number => {
     const response = renderNativeHookRelayUnavailableResponse({
       provider,
       event,
