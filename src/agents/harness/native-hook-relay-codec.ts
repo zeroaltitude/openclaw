@@ -48,7 +48,7 @@ export function normalizeNativeHookInvocation(params: {
   };
 }
 
-function normalizeCodexHookMetadata(rawPayload: JsonValue): NativeHookRelayInvocationMetadata {
+export function normalizeCodexHookMetadata(rawPayload: JsonValue): NativeHookRelayInvocationMetadata {
   const payload = isJsonObject(rawPayload) ? rawPayload : {};
   const metadata: NativeHookRelayInvocationMetadata = {};
   for (const [key, source] of [
