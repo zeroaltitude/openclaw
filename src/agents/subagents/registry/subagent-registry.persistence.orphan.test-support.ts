@@ -28,7 +28,7 @@ export function registerSubagentOrphanTaskCases({
     persisted: Record<string, unknown>,
     opts?: { seedChildSessions?: boolean },
   ) => Promise<void>;
-  restartRegistry: () => void;
+  restartRegistry: () => Promise<void>;
   waitForRegistryWork: (predicate: () => boolean | Promise<boolean>) => Promise<void>;
 }) {
   it("preserves stale unended restored runs for attributed sweeper recovery", async () => {
@@ -57,7 +57,7 @@ export function registerSubagentOrphanTaskCases({
     // rows so the production sweeper observes this test's persisted state.
     loadGatewayBootSegmentsForAttribution(Date.now(), { forceRefresh: true });
 
-    restartRegistry();
+    await restartRegistry();
     await flushQueuedRegistryWork();
 
     expect(callGateway).not.toHaveBeenCalled();
@@ -166,7 +166,7 @@ export function registerSubagentOrphanTaskCases({
         request.method === "agent.wait" ? await childResult.promise : {},
       );
       try {
-        restartRegistry();
+        await restartRegistry();
         await waitForRegistryWork(() =>
           vi.mocked(callGateway).mock.calls.some(([request]) => request.method === "agent.wait"),
         );
@@ -231,7 +231,7 @@ export function registerSubagentOrphanTaskCases({
       const hasWait = () =>
         vi.mocked(callGateway).mock.calls.some(([request]) => request.method === "agent.wait");
       try {
-        restartRegistry();
+        await restartRegistry();
         await testing.sweepOnceForTests();
         // Reach either the legitimate re-wait or the erroneous terminal path;
         // do not use a sleep to infer absence of asynchronous completion.
@@ -286,7 +286,7 @@ export function registerSubagentOrphanTaskCases({
       },
     });
 
-    restartRegistry();
+    await restartRegistry();
     await testing.sweepOnceForTests();
     await waitForRegistryWork(
       () => resolveSubagentSessionStatus(subagentRuns.get(runId)) === "failed",
