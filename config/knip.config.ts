@@ -254,6 +254,8 @@ const repositoryScriptEntries = [
   "scripts/proof-cli-stream-turn-budget.ts!",
   // Maintainer proof harnesses are invoked manually from PR evidence.
   "scripts/proof-3i95-cron-restart-interrupt-budget.ts!",
+  // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-w91n-followup-drain-terminal.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
   // qa/README.md delegates campaign Git execution to this guarded CLI by path.
