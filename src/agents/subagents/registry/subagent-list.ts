@@ -140,13 +140,13 @@ export async function readSubagentListSessionEntries(
         isRetainedUnendedSubagentRun(run, context.now) || isSubagentChildStopUnconfirmed(run),
     ),
   ];
-  const seenSessionKeys = new Set<string>();
+  const seen = new Set<string>();
   const keysByStore = new Map<string, string[]>();
   for (const run of runs) {
-    if (seenSessionKeys.has(run.childSessionKey)) {
+    if (seen.has(run.childSessionKey)) {
       continue;
     }
-    seenSessionKeys.add(run.childSessionKey);
+    seen.add(run.childSessionKey);
     const storePath = resolveSessionStorePathCore(cfg.session?.store, {
       agentId: parseAgentSessionKey(run.childSessionKey)?.agentId,
     });
@@ -380,6 +380,24 @@ function buildSharedCwdIndex(params: {
   };
 }
 
+/** Bounded advisory block for shared explicit working directories; empty when none. */
+export function formatSharedCwdSummaryLines(params: {
+  sharedCwdGroupTotal: number;
+  sharedCwdGroups: SubagentSharedCwdGroup[];
+}): string[] {
+  if (params.sharedCwdGroupTotal <= 0) {
+    return [];
+  }
+  return [
+    "",
+    `shared working directories (${params.sharedCwdGroups.length}/${params.sharedCwdGroupTotal} shown):`,
+    ...params.sharedCwdGroups.map(
+      (group) =>
+        `[cwd ${group.id}] ${group.runCount} runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
+    ),
+  ];
+}
+
 function buildListText(params: {
   active: Array<{ line: string }>;
   recent: Array<{ line: string }>;
@@ -387,23 +405,21 @@ function buildListText(params: {
   sharedCwdGroupTotal: number;
   sharedCwdGroups: SubagentSharedCwdGroup[];
 }) {
-  const lines = [
-    "active subagents:",
-    ...(params.active.length ? params.active.map((entry) => entry.line) : ["(none)"]),
-    "",
-    `recent (last ${params.recentMinutes}m):`,
-    ...(params.recent.length ? params.recent.map((entry) => entry.line) : ["(none)"]),
-  ];
-  if (params.sharedCwdGroupTotal > 0) {
-    lines.push(
-      "",
-      `shared working directories (${params.sharedCwdGroups.length}/${params.sharedCwdGroupTotal} shown):`,
-      ...params.sharedCwdGroups.map(
-        (group) =>
-          `[cwd ${group.id}] ${group.runCount} runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
-      ),
-    );
+  const lines: string[] = [];
+  lines.push("active subagents:");
+  if (params.active.length === 0) {
+    lines.push("(none)");
+  } else {
+    lines.push(...params.active.map((entry) => entry.line));
   }
+  lines.push("");
+  lines.push(`recent (last ${params.recentMinutes}m):`);
+  if (params.recent.length === 0) {
+    lines.push("(none)");
+  } else {
+    lines.push(...params.recent.map((entry) => entry.line));
+  }
+  lines.push(...formatSharedCwdSummaryLines(params));
   return lines.join("\n");
 }
 
@@ -413,12 +429,9 @@ export function buildSubagentList(params: {
   taskMaxChars?: number;
 }) {
   const { now, view: runView, childSessionsByController } = params.context;
-  // `runView.latest` is this function's former `dedupedRuns`: same sort, same
-  // dedup by childSessionKey, same authority. It is a superset of
-  // `active`/`recent` (every deduped run lands here first); the session
-  // entries the caller already loaded for active/recent cover it too, since
-  // the advisory's own filter below only ever admits runs that also qualify
-  // for `active`.
+  // `runView.latest` is the full deduped run set (not just the displayed
+  // active/recent rows), so the shared-cwd advisory can see unended or
+  // unconfirmed-stop runs; readSubagentListSessionEntries loads their entries.
   const sharedCwdIndex = buildSharedCwdIndex({
     runs: runView.latest,
     sessionEntries: params.sessionEntries,

@@ -280,6 +280,7 @@ export async function persistSubagentSessionTiming(
   }
 }
 
+/** Best-effort async removal for a subagent attachment directory. */
 export async function safeRemoveAttachmentsDir(
   entry: SubagentRunRecord,
   isCurrent?: () => boolean,

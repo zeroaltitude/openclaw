@@ -17,7 +17,11 @@ import {
   resolveSubagentOrphanAttribution,
   resolveSubagentRunLastActivityMs,
 } from "./subagent-orphan-attribution.js";
-import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
+import type {
+  SubagentCompletionRequest,
+  SubagentRecoveryCurrent,
+  SubagentRunRecord,
+} from "./subagent-registry.types.js";
 import { isSubagentChildStopUnconfirmed } from "./subagent-session-metrics.js";
 import {
   loadSubagentSessionEntry,
@@ -123,24 +127,25 @@ export async function reconcileStaleActiveSubagentRun(params: {
   ) {
     return;
   }
-  const isRecoveryCurrent = isSubagentChildStopUnconfirmed(entry)
-    ? () => {
-        try {
-          // Remote worker ownership survives missing session metadata. Default
-          // dispatch is local only when no unreconciled worker placement exists.
-          return (
-            !getAgentRunContext(runId) &&
-            !createWorkerSessionPlacementStore()
-              .listForReconcile()
-              .some((placement) => placement.sessionKey === entry.childSessionKey)
-          );
-        } catch {
-          // Unknown placement state is not positive local-child stop evidence.
-          return false;
-        }
+  // Remote worker ownership survives missing session metadata. Default dispatch
+  // is local only when no unreconciled worker placement exists; unknown
+  // placement state is not positive local-child stop evidence.
+  const hasNoRemoteOwner = () => {
+    try {
+      return !createWorkerSessionPlacementStore()
+        .listForReconcile()
+        .some((placement) => placement.sessionKey === entry.childSessionKey);
+    } catch {
+      return false;
+    }
+  };
+  const recoveryCurrent: SubagentRecoveryCurrent | undefined = isSubagentChildStopUnconfirmed(entry)
+    ? {
+        isHostCurrent: () => !getAgentRunContext(runId),
+        prepare: async () => !getAgentRunContext(runId) && hasNoRemoteOwner(),
       }
     : undefined;
-  if (isRecoveryCurrent && !isRecoveryCurrent()) {
+  if (recoveryCurrent && !(await recoveryCurrent.prepare())) {
     return;
   }
   const attributedError = attribution ? formatSubagentOrphanErrorMessage(attribution) : undefined;
@@ -170,7 +175,11 @@ export async function reconcileStaleActiveSubagentRun(params: {
       },
       reason: SUBAGENT_ENDED_REASON_ERROR,
       ...(attribution ? { recoverInterrupted: true as const } : {}),
-      ...(isRecoveryCurrent ? { isRecoveryCurrent } : {}),
+      // A freshly dispatched remote worker claim can still be forming when the
+      // terminal completion lock resolves; only this attributed host-reboot
+      // orphan path needs a settle window before trusting recoveryCurrent.
+      ...(attribution && recoveryCurrent ? { hostRebootRecovery: true as const } : {}),
+      ...(recoveryCurrent ? { recoveryCurrent } : {}),
       sendFarewell: true,
       accountId,
       triggerCleanup: true,

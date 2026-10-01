@@ -258,7 +258,7 @@ vi.mock("../announce/subagent-announce.js", () => ({
   runSubagentAnnounceFlow: vi.fn(async () => "retryable" as const),
 }));
 
-// Only the two decision seams are stubbed. The cleanup-mode resolvers stay real
+// Only the deferred-cleanup decision seam is stubbed. The cleanup-mode resolvers stay real
 // so a deferred unconfirmed-child cleanup is decided here exactly as in
 // production rather than by a stub that can drift from it.
 vi.mock("./subagent-registry-cleanup.js", async (importOriginal) => ({
@@ -556,6 +556,8 @@ describe("subagent registry lifecycle hardening", () => {
     sessionEntryReadMocks.loadSessionEntryByKey
       .mockReset()
       .mockImplementation(nativeSessionEntryRuntime.loadSessionEntryByKey);
+    sessionReconciliationMocks.loadSubagentSessionEntry.mockReset().mockReturnValue(undefined);
+    sessionReconciliationMocks.resolveSubagentRunOrphanReason.mockReset().mockReturnValue(null);
     vi.spyOn(terminalState, "recordSubagentTerminalState").mockResolvedValue();
   });
 
@@ -4722,6 +4724,7 @@ describe("subagent registry lifecycle hardening", () => {
     },
   );
 
+  // Pre-existing failure: also fails on the pre-merge branch tip (f8d21f14377).
   it("defers host-reboot recovery when a remote owner appears while waiting for the terminal lock", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const entry = createRunEntry({ generation: 1, waitExpiryObservedAt: 3_000 });

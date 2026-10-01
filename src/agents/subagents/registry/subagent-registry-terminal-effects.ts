@@ -327,6 +327,8 @@ export async function completeTerminalEffects(
   if (!completeParams.triggerCleanup || suppressedForSteerRestart) {
     return;
   }
+  // Browser sessions and the run-mode MCP runtime are resources a still-live
+  // child is using; they wait for the observed stop that promotes this row.
 
   // Closing the child's browser sessions and retiring its run-mode MCP runtime
   // both tear down resources a still-live child is using. A bare deadline is

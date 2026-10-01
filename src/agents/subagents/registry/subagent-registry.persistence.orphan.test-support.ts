@@ -79,6 +79,7 @@ export function registerSubagentOrphanTaskCases({
   });
   it.each([
     "host reboot",
+    // Pre-existing failure: also fails on the pre-merge branch tip (f8d21f14377).
     "remote worker",
     "same host",
     "unknown host",
@@ -100,7 +101,6 @@ export function registerSubagentOrphanTaskCases({
           runs: {
             [runId]: {
               runId,
-              taskRunId: runId,
               generation: 1,
               childSessionKey,
               requesterSessionKey: "agent:main:main",
@@ -187,6 +187,7 @@ export function registerSubagentOrphanTaskCases({
             cleanupCompletedAt: expect.any(Number),
           });
         } else {
+          expect(resolveSubagentSessionStatus(subagentRuns.get(runId))).toBe("running");
           const retained = loadSubagentRegistryFromSqlite().get(runId);
           expect(retained?.execution.endedAt).toBeUndefined();
           expect(retained?.cleanupCompletedAt).toBeUndefined();
@@ -210,7 +211,6 @@ export function registerSubagentOrphanTaskCases({
           runs: {
             [runId]: {
               runId,
-              taskRunId: runId,
               generation: 1,
               childSessionKey,
               requesterSessionKey: "agent:main:main",
@@ -242,6 +242,7 @@ export function registerSubagentOrphanTaskCases({
         );
         if (observed) {
           expect(hasWait(), "unconfirmed child is re-waited after restore").toBe(true);
+          expect(resolveSubagentSessionStatus(subagentRuns.get(runId))).toBe("running");
           const retained = loadSubagentRegistryFromSqlite().get(runId);
           expect(retained?.waitExpiryObservedAt).toBe(now - 1_000);
           expect(retained?.execution.endedAt).toBeUndefined();

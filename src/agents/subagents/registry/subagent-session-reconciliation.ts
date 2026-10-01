@@ -235,8 +235,8 @@ async function withSubagentSessionEntry<T>(
  *   run against it.
  * - `absent` — no usable session entry, so there is nothing to reconcile from.
  *   This is the absence of evidence, not evidence of a stop: the entry is
- *   best-effort and also reads absent when the store is unreadable or has not
- *   been written yet. Callers deciding whether a child may still be alive must
+ *   best-effort and also reads absent when it has not been written yet (an
+ *   unreadable store rejects instead). Callers deciding whether a child may still be alive must
  *   fail closed on it rather than treat it as `settled`.
  */
 export async function settleSubagentRunFromSessionStore(

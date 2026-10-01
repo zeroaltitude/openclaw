@@ -67,8 +67,7 @@ export function isSubagentChildStopUnconfirmed(
   // The observation is not terminal evidence and must stop matching after the
   // actual completion. Legacy provisional rows can already carry an endedAt.
   return (
-    (typeof entry.waitExpiryObservedAt === "number" &&
-      Number.isFinite(entry.waitExpiryObservedAt) &&
+    (asFiniteNumber(entry.waitExpiryObservedAt) !== undefined &&
       entry.execution.endedAt === undefined) ||
     resolveSubagentRunDisposition(entry.execution.outcome) === "still-running"
   );

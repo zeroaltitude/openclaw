@@ -411,7 +411,7 @@ describe("subagent registry seam flow", () => {
     const now = Date.now();
     mocks.getRuntimeConfig.mockReturnValue({
       agents: { defaults: { subagents: { archiveAfterMinutes: 1 } } },
-      session: { mainKey: "main", scope: "per-sender" },
+      session: { mainKey: "main", scope: "per-sender", store: mocks.resolveStorePath() },
     });
     mocks.entries = createSessionStore(
       {
@@ -2119,6 +2119,7 @@ describe("subagent registry seam flow", () => {
 
   it.each([
     {
+      // Pre-existing failure: also fails on the pre-merge branch tip (f8d21f14377).
       name: "keeps published explicit timeout stable when pre-deadline lifecycle success arrives late",
       runId: "run-timeout-late-lifecycle-predeadline-ok",
       task: "published timeout should stay stable",

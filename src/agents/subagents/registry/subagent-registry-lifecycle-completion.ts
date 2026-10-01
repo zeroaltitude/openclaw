@@ -52,6 +52,22 @@ type BrowserCleanup = BrowserCleanupModule["cleanupBrowserSessionsForLifecycleEn
 
 const MISSING_REQUIRED_FINAL_REPLY_ERROR = "subagent run ended before producing a final reply";
 
+// Acquiring the terminal completion lock only serializes against other local
+// completions. A remote owner's durable claim (a worker session placement
+// dispatch) still has to land asynchronously through its own writer, so it can
+// still be forming at the exact instant the lock is granted here. The
+// host-reboot/orphan attribution sweep (subagent-registry-sweeper-orphan.ts)
+// is the one completion path that can run concurrently with a *fresh* remote
+// claim (that is the whole point of "recovering" a run nothing local has
+// heard from), so give it one short, bounded window to settle before
+// finalizing local recovery -- mirroring the existing wait-expiry announce
+// grace in subagent-registry.ts. This must stay scoped to `hostRebootRecovery`
+// specifically (not the broader `recoverInterrupted`): ordinary gateway
+// restart-drain/restart-abort completions also set `recoverInterrupted` +
+// `recoveryCurrent`, but never race a newly forming remote claim, so they
+// must not pay this settle window.
+const RECOVERY_REMOTE_OWNER_SETTLE_GRACE_MS = 2000;
+
 const browserCleanupLoader = createLazyImportLoader<BrowserCleanupModule>(
   () => import("../../../browser-lifecycle-cleanup.js"),
 );
@@ -163,6 +179,19 @@ export async function completeSubagentRunAttempt(
       currentEntry.pauseReason !== ownerPauseReason
     ) {
       return;
+    }
+    if (completeParams.hostRebootRecovery === true && completeParams.recoveryCurrent) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, RECOVERY_REMOTE_OWNER_SETTLE_GRACE_MS);
+        timer.unref?.();
+      });
+      if (
+        !(await completeParams.recoveryCurrent.prepare()) ||
+        !isSelectedEntryCurrent() ||
+        currentEntry.pauseReason !== ownerPauseReason
+      ) {
+        return;
+      }
     }
     assertCurrent();
     if (entry.collect && !entry.collectorCompletion) {

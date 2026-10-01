@@ -41,6 +41,17 @@ export type SubagentCompletionRequest = {
   startedAt?: number;
   suppressSessionEffects?: boolean;
   recoverInterrupted?: true;
+  /**
+   * Set only by the host-reboot/orphan attribution sweep (never by ordinary
+   * gateway restart-recovery), so the completion attempt knows a freshly
+   * dispatched remote worker claim can legitimately still be forming when the
+   * terminal completion lock is granted, and gives it a short settle window
+   * before finalizing. Ordinary restart-drain/restart-abort completions also
+   * set `recoverInterrupted` + `recoveryCurrent`, but never race a *new*
+   * remote claim the way an attributed host-reboot orphan does, so they must
+   * not pay (or need to fake-timer-advance past) this settle window.
+   */
+  hostRebootRecovery?: true;
   /** Prepare database currency asynchronously; publication rechecks live host authority. */
   recoveryCurrent?: SubagentRecoveryCurrent;
   /** Child effects may be fenced while the recorded result still owes requester delivery. */
