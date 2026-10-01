@@ -80,12 +80,8 @@ export async function buildActiveSubagentRuntimeContext(params: {
   if (!rawControllerSessionKey) {
     return undefined;
   }
-  const { mainKey, alias } = resolveMainSessionAlias(params.cfg);
-  const controllerSessionKey = resolveInternalSessionKey({
-    key: rawControllerSessionKey,
-    alias,
-    mainKey,
-  });
+  const { alias } = resolveMainSessionAlias(params.cfg);
+  const controllerSessionKey = resolveInternalSessionKey({ key: rawControllerSessionKey, alias });
   const agentId = params.controllerAgentId ?? parseAgentSessionKey(controllerSessionKey)?.agentId;
   if (!agentId) {
     return undefined;
@@ -105,7 +101,7 @@ export async function buildActiveSubagentRuntimeContext(params: {
     (snapshot) => {
       const index = buildSubagentRunReadIndexFromRuns({
         runs: snapshot,
-        inMemoryRuns: subagentRuns.values(),
+        inMemoryRuns: [...snapshot.keys()].flatMap((id) => subagentRuns.get(id) ?? []),
       });
       const yielded = [...index.latestRunsByChildSessionKey.values()].filter(
         (entry) => isVisible(entry) && entry.pauseReason === "sessions_yield",
@@ -211,5 +207,6 @@ export async function buildActiveSubagentRuntimeContext(params: {
       }
       return lines.join("\n");
     },
+    { sessionKeys: [controllerSessionKey], descendants: true },
   );
 }
