@@ -23,7 +23,10 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../../../process/gateway-work-admission.js";
-import { listSessionStateEventsSince } from "../../../sessions/session-state-events.js";
+import {
+  listSessionStateEventsSince,
+  recordSessionStateEventAsync,
+} from "../../../sessions/session-state-events.js";
 vi.mocked(cleanupBrowserSessionsForLifecycleEnd).mockReset();
 import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "../../agent-run-terminal-outcome.js";
 import type { SubagentRegistryHarness } from "../../subagent-test-fixtures.test-helpers.js";
@@ -284,6 +287,16 @@ describe("subagent registry seam flow", () => {
   beforeAll(async () => {
     const registry = await import("./subagent-registry.test-helpers.js");
     mod = createSubagentRegistryHarness(registry);
+    // Terminal effects record the real signal log. Boot its SQLite worker once so
+    // the first terminal promotion does not spend the cold start inside a test's
+    // waitForFast window.
+    await recordSessionStateEventAsync({
+      sessionKey: "agent:main:warm-fixture",
+      agentId: "main",
+      kind: "compacted",
+      actorType: "system",
+      summary: "warm signal worker",
+    });
   });
 
   beforeEach(async () => {
@@ -1585,7 +1598,7 @@ describe("subagent registry seam flow", () => {
     expect(completedRun?.archiveAtMs).toBeUndefined();
     // The child's own session entry must not have been stamped terminal by our
     // guess either — it is the only independent record of the child's liveness.
-    expect(mocks.patchSessionEntryCore).not.toHaveBeenCalled();
+    expect(mocks.applySessionEntryExactReplacements).not.toHaveBeenCalled();
 
     expect(mocks.getAgentRunContext("run-unconfirmed-delete-cleanup")).toBeUndefined();
     // Long past any retention window, with the child session still reporting
@@ -1620,7 +1633,7 @@ describe("subagent registry seam flow", () => {
     });
     // The child's session entry gets its real terminal timing only now, from an
     // observed stop rather than from our own deadline guess.
-    expect(mocks.patchSessionEntryCore).toHaveBeenCalled();
+    expect(mocks.applySessionEntryExactReplacements).toHaveBeenCalled();
     // The actual completion must follow the provisional wake.
     expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(2);
   });
@@ -1711,7 +1724,7 @@ describe("subagent registry seam flow", () => {
     // …but nothing the child owns may be torn down yet.
     expect(mocks.removeInternalSessionEffectsSession).not.toHaveBeenCalled();
     expect(mocks.onSubagentEnded).not.toHaveBeenCalled();
-    expect(mocks.patchSessionEntryCore).not.toHaveBeenCalled();
+    expect(mocks.applySessionEntryExactReplacements).not.toHaveBeenCalled();
 
     // An observed stop promotes the row, and only then do the tails run.
     mocks.entries = createSessionStore({
@@ -2119,7 +2132,6 @@ describe("subagent registry seam flow", () => {
 
   it.each([
     {
-      // Pre-existing failure: also fails on the pre-merge branch tip (f8d21f14377).
       name: "keeps published explicit timeout stable when pre-deadline lifecycle success arrives late",
       runId: "run-timeout-late-lifecycle-predeadline-ok",
       task: "published timeout should stay stable",
@@ -2131,8 +2143,19 @@ describe("subagent registry seam flow", () => {
     "$name",
     async ({ runId, task, eventStartedAfterMs, eventEndedAfterMs, expectCapturedReply }) => {
       const startedAt = Date.now();
+      // The first wait ends early as a bare nonterminal timeout, so the registry
+      // must retry. The retry's window reaches the run deadline: it blocks until
+      // the child's run timer fires and returns that terminal snapshot.
+      let waitCalls = 0;
       mockGatewayMethods(mocks.callGateway, {
-        "agent.wait": { status: "timeout", startedAt, endedAt: startedAt + 1_000 },
+        "agent.wait": async (request: { params?: Record<string, unknown> }) => {
+          waitCalls += 1;
+          if (waitCalls === 1) {
+            return { status: "timeout" };
+          }
+          await new Promise((resolve) => setTimeout(resolve, Number(request.params?.timeoutMs)));
+          return { status: "timeout", startedAt, endedAt: startedAt + 1_000 };
+        },
       });
       mocks.entries = createSessionStore({ updatedAt: startedAt, status: "running" });
       const settleRootWork = observeRootWork();

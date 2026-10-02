@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRuntimeConfig } from "../../../config/config.js";
 import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
-import * as sessionEntryReads from "../../../config/sessions/session-entry-read-runtime.js";
+import * as sessionEntryRead from "../../../config/sessions/session-entry-read-runtime.js";
 import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
 import {
   runWithOwnedSessionTranscriptWrite,
@@ -4511,11 +4511,12 @@ describe("subagent registry lifecycle hardening", () => {
         queued.resolve();
         return result;
       });
-      // Supply the child's persisted observation at the current accessor boundary.
+      // Supply the child's persisted observation at the worker read boundary.
       // Completion, retry wrapper, terminal lock and effect owners remain real.
-      vi.spyOn(sessionEntryReads, "withSessionEntryReadOnlyInWorker").mockImplementation(
-        async (_scope, assertCurrent, consume) =>
-          consume(
+      vi.spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker").mockImplementation(
+        async (_scope, assertCurrent, consume) => {
+          assertCurrent();
+          return consume(
             {
               ok: true,
               value: {
@@ -4527,7 +4528,8 @@ describe("subagent registry lifecycle hardening", () => {
               },
             },
             { kind: "native", assertCurrent },
-          ),
+          );
+        },
       );
       const completion = settleSubagentRunFromSessionStore(
         runtime.completeSubagentRunWithRecovery,
@@ -4718,7 +4720,7 @@ describe("subagent registry lifecycle hardening", () => {
           expect(gatewayMocks.callGateway).not.toHaveBeenCalled();
         }
         expect(retryTimers.size).toBe(0);
-        expect(getActiveGatewayRootWorkCount()).toBe(0);
+        await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
       } finally {
         unlock();
         await completion;
@@ -4733,7 +4735,6 @@ describe("subagent registry lifecycle hardening", () => {
     },
   );
 
-  // Pre-existing failure: also fails on the pre-merge branch tip (f8d21f14377).
   it("defers host-reboot recovery when a remote owner appears while waiting for the terminal lock", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const entry = createRunEntry({ generation: 1, waitExpiryObservedAt: 3_000 });
@@ -4776,6 +4777,9 @@ describe("subagent registry lifecycle hardening", () => {
         runId: entry.runId,
         entry,
         now: 6_000,
+        // No registry map in this direct-call test; the one entry in play
+        // is never replaced, so staying current is the fact being modeled.
+        isCurrent: () => true,
         completeSubagentRunWithRecovery: controller.completeSubagentRun,
       });
       try {
