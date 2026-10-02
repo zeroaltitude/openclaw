@@ -1525,6 +1525,7 @@ describe("subagent registry seam flow", () => {
     });
   });
 
+  // Pre-existing failure: also fails on the pre-merge branch tip (8003a232bf9).
   it("keeps a delete-cleanup child session alive when only the wait deadline expired", async () => {
     const startedAt = Date.now();
     let waitAttempts = 0;

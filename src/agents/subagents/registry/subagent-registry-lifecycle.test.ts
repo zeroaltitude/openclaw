@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRuntimeConfig } from "../../../config/config.js";
 import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
+import * as sessionEntryRead from "../../../config/sessions/session-entry-read-runtime.js";
 import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
 import {
   runWithOwnedSessionTranscriptWrite,
@@ -709,7 +710,7 @@ describe("subagent registry lifecycle hardening", () => {
     } finally {
       swarmScheduler.releaseSwarmRun(entry.runId);
       swarmScheduler.releaseSwarmRun("run-collector-sibling");
-      swarmScheduler.removeQueuedSwarmRun("run-collector-sibling");
+      swarmScheduler.holdQueuedSwarmRun("run-collector-sibling")?.withdraw();
     }
   });
 
@@ -4422,15 +4423,26 @@ describe("subagent registry lifecycle hardening", () => {
         queued.resolve();
         return result;
       });
-      // Supply the child's persisted observation at the current accessor boundary.
+      // Supply the child's persisted observation at the worker read boundary.
       // Completion, retry wrapper, terminal lock and effect owners remain real.
-      vi.spyOn(sessionAccessor, "loadSessionEntryReadOnly").mockReturnValue({
-        sessionId: "child-session-id",
-        status: "failed",
-        startedAt: 2_000,
-        endedAt: 4_000,
-        updatedAt: 4_000,
-      });
+      vi.spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker").mockImplementation(
+        async (_scope, assertCurrent, consume) => {
+          assertCurrent();
+          return consume(
+            {
+              ok: true,
+              value: {
+                sessionId: "child-session-id",
+                status: "failed",
+                startedAt: 2_000,
+                endedAt: 4_000,
+                updatedAt: 4_000,
+              },
+            },
+            { kind: "native", assertCurrent },
+          );
+        },
+      );
       const completion = settleSubagentRunFromSessionStore(
         runtime.completeSubagentRunWithRecovery,
         { runId: entry.runId, entry, now: 6_000, source: "session-store-lock-test" },
@@ -4467,7 +4479,7 @@ describe("subagent registry lifecycle hardening", () => {
           expect(gatewayMocks.callGateway).not.toHaveBeenCalled();
         }
         expect(retryTimers.size).toBe(0);
-        expect(getActiveGatewayRootWorkCount()).toBe(0);
+        await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
       } finally {
         unlock();
         await completion;
@@ -4617,7 +4629,7 @@ describe("subagent registry lifecycle hardening", () => {
           expect(gatewayMocks.callGateway).not.toHaveBeenCalled();
         }
         expect(retryTimers.size).toBe(0);
-        expect(getActiveGatewayRootWorkCount()).toBe(0);
+        await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
       } finally {
         unlock();
         await completion;
@@ -4632,7 +4644,6 @@ describe("subagent registry lifecycle hardening", () => {
     },
   );
 
-  // Pre-existing failure: also fails on the pre-merge branch tip (f8d21f14377).
   it("defers host-reboot recovery when a remote owner appears while waiting for the terminal lock", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const entry = createRunEntry({ generation: 1, waitExpiryObservedAt: 3_000 });

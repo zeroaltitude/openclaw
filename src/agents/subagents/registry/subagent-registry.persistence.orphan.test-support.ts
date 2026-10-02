@@ -252,6 +252,10 @@ export function registerSubagentOrphanTaskCases({
           await waitForRegistryWork(
             () => resolveSubagentSessionStatus(subagentRuns.get(runId)) === "done",
           );
+          // The durable row commits after the resident status flips.
+          await waitForRegistryWork(
+            () => loadSubagentRegistryFromSqlite().get(runId)?.execution.outcome !== undefined,
+          );
           expect(loadSubagentRegistryFromSqlite().get(runId)?.execution.outcome).toMatchObject({
             status: "ok",
           });
