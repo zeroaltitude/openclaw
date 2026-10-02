@@ -748,6 +748,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/tui/embedded-prepared-runtime.test.ts",
   "src/agents/prepared-model-runtime.hot-reload-dispatch.test.ts",
   "src/agents/prepared-model-runtime.run-resources.test.ts",
+  "src/agents/prepared-model-runtime.system-agent.test.ts",
   "src/agents/sessions/sdk.auth-migration.test.ts",
   "src/agents/sandbox/registry-read.test.ts",
   "src/agents/sandbox/registry.test.ts",
