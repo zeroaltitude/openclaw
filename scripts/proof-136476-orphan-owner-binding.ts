@@ -80,6 +80,8 @@ const { loadGatewayBootSegmentsForAttribution } =
 
 type SubagentRunRecord =
   import("../src/agents/subagents/registry/subagent-registry.types.js").SubagentRunRecord;
+type SubagentLifecycleOptions =
+  import("../src/agents/subagents/registry/subagent-registry-lifecycle-context.js").SubagentLifecycleOptions;
 
 const failures: string[] = [];
 let checks = 0;
@@ -155,6 +157,11 @@ function createController(runs: Map<string, SubagentRunRecord>, edges: EdgeRecor
   const persistOrThrow = (...runIds: string[]) => {
     persistSubagentRunsToDiskOrThrow(runs, runIds);
   };
+  const persistAsyncOrThrow: SubagentLifecycleOptions["persistAsyncOrThrow"] = (
+    context,
+    callbacks,
+    ...runIds
+  ) => persistSubagentRunsToDiskAsyncOrThrow(runs, runIds, { context, ...callbacks });
   // Mirrors the production wiring in src/agents/subagents/registry/subagent-registry.ts.
   const controller = new SubagentLifecycleController({
     runs,

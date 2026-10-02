@@ -315,7 +315,6 @@ describe("subagent registry seam flow", () => {
     mocks.loadSessionEntry.mockReset();
     resetSubagentRegistrySessionMocks(mocks);
     mocks.listSessionEntriesCore.mockReset();
-    mocks.patchSessionEntryCore.mockReset();
     mocks.readSessionCurrent.mockReset();
     mocks.applySessionEntryExactReplacements.mockReset();
     mocks.runSubagentAnnounceFlow.mockReset().mockResolvedValue("delivered");
@@ -1538,6 +1537,7 @@ describe("subagent registry seam flow", () => {
     });
   });
 
+  // Pre-existing failure on this branch (also fails before the main merge).
   it("keeps a delete-cleanup child session alive when only the wait deadline expired", async () => {
     const startedAt = Date.now();
     let waitAttempts = 0;

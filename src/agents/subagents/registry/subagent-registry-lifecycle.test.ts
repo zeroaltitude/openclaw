@@ -4735,6 +4735,7 @@ describe("subagent registry lifecycle hardening", () => {
     },
   );
 
+  // Pre-existing failure on this branch; fixed by 657e50057ef/8003a232bf9 on fix/subagent-wait-reboot-recovery.
   it("defers host-reboot recovery when a remote owner appears while waiting for the terminal lock", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const entry = createRunEntry({ generation: 1, waitExpiryObservedAt: 3_000 });
