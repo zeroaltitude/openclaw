@@ -237,7 +237,7 @@ describe("subagent run wait disposition", () => {
       wait: { status: "timeout" },
       laterWaits: [{ status: "timeout", startedAt: observedStartedAt }],
       reportSubagentWaitExpiry,
-      resolveSubagentSessionStartedAt: () => entry.execution.startedAt,
+      resolveSubagentSessionStartedAt: async () => entry.execution.startedAt,
     });
 
     await manager.waitForSubagentCompletion(RUN_ID, 50, entry);
