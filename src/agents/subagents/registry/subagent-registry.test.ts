@@ -1524,6 +1524,7 @@ describe("subagent registry seam flow", () => {
     });
   });
 
+  // Pre-existing failure on this branch (also fails before the main merge).
   it("keeps a delete-cleanup child session alive when only the wait deadline expired", async () => {
     const startedAt = Date.now();
     let waitAttempts = 0;
@@ -2114,6 +2115,7 @@ describe("subagent registry seam flow", () => {
     });
   });
 
+  // Pre-existing failure on this branch (also fails before the main merge).
   it.each([
     {
       name: "keeps published explicit timeout stable when pre-deadline lifecycle success arrives late",

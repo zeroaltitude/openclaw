@@ -173,6 +173,9 @@ export function registerSubagentOrphanTaskCases({
         await testing.sweepOnceForTests();
         await flushQueuedRegistryWork();
         if (evidence === "host reboot") {
+          await waitForRegistryWork(
+            () => loadSubagentRegistryFromSqlite().get(runId)?.cleanupCompletedAt !== undefined,
+          );
           expect(loadSubagentRegistryFromSqlite().get(runId)).toMatchObject({
             execution: {
               status: "terminal",

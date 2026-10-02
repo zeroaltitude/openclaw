@@ -340,6 +340,10 @@ function expectGatewayMethodNotCalled(method: string): void {
   expect(gatewayRequests().some((request) => request.method === method)).toBe(false);
 }
 
+function expectCreatedSessionFields(expected: Record<string, unknown>): void {
+  expectRecordFields(firstMockCall(hoisted.upsertSessionEntryMock, "session create")[1], expected);
+}
+
 function expectInitializeSessionFields(expected: Record<string, unknown>): Record<string, unknown> {
   return expectRecordFields(
     firstMockCall(hoisted.initializeSessionMock, "session initialization")[0],

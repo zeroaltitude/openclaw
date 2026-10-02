@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRuntimeConfig } from "../../../config/config.js";
 import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
+import * as sessionEntryReadRuntime from "../../../config/sessions/session-entry-read-runtime.js";
 import { resolveSessionStorePathForScope } from "../../../config/sessions/session-store-path.js";
 import {
   runWithOwnedSessionTranscriptWrite,
@@ -66,6 +67,7 @@ import {
   withRequesterCronAuthority,
 } from "../requester-cron-authority.js";
 import * as swarmScheduler from "../swarm/swarm-scheduler.js";
+import { testing as swarmSchedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "./subagent-control.types.js";
 import { loadPendingFinalDeliveryPayload } from "./subagent-delivery-state.js";
 import {
@@ -705,9 +707,7 @@ describe("subagent registry lifecycle hardening", () => {
       });
       expect(swarmScheduler.isSwarmRunActive(entry.runId)).toBe(false);
     } finally {
-      swarmScheduler.releaseSwarmRun(entry.runId);
-      swarmScheduler.releaseSwarmRun("run-collector-sibling");
-      swarmScheduler.removeQueuedSwarmRun("run-collector-sibling");
+      swarmSchedulerTesting.reset();
     }
   });
 
@@ -4422,13 +4422,22 @@ describe("subagent registry lifecycle hardening", () => {
       });
       // Supply the child's persisted observation at the current accessor boundary.
       // Completion, retry wrapper, terminal lock and effect owners remain real.
-      vi.spyOn(sessionAccessor, "loadSessionEntryReadOnly").mockReturnValue({
-        sessionId: "child-session-id",
-        status: "failed",
-        startedAt: 2_000,
-        endedAt: 4_000,
-        updatedAt: 4_000,
-      });
+      vi.spyOn(sessionEntryReadRuntime, "withSessionEntryReadOnlyInWorker").mockImplementation(
+        async (_input, assertCurrent, consume) =>
+          await consume(
+            {
+              ok: true,
+              value: {
+                sessionId: "child-session-id",
+                status: "failed",
+                startedAt: 2_000,
+                endedAt: 4_000,
+                updatedAt: 4_000,
+              },
+            },
+            { kind: "native", assertCurrent },
+          ),
+      );
       const completion = settleSubagentRunFromSessionStore(
         runtime.completeSubagentRunWithRecovery,
         { runId: entry.runId, entry, now: 6_000, source: "session-store-lock-test" },
@@ -4465,7 +4474,7 @@ describe("subagent registry lifecycle hardening", () => {
           expect(gatewayMocks.callGateway).not.toHaveBeenCalled();
         }
         expect(retryTimers.size).toBe(0);
-        expect(getActiveGatewayRootWorkCount()).toBe(0);
+        await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
       } finally {
         unlock();
         await completion;
@@ -4615,7 +4624,7 @@ describe("subagent registry lifecycle hardening", () => {
           expect(gatewayMocks.callGateway).not.toHaveBeenCalled();
         }
         expect(retryTimers.size).toBe(0);
-        expect(getActiveGatewayRootWorkCount()).toBe(0);
+        await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
       } finally {
         unlock();
         await completion;
@@ -4630,6 +4639,7 @@ describe("subagent registry lifecycle hardening", () => {
     },
   );
 
+  // Pre-existing failure on this branch; fixed by 657e50057ef/8003a232bf9 on fix/subagent-wait-reboot-recovery.
   it("defers host-reboot recovery when a remote owner appears while waiting for the terminal lock", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const entry = createRunEntry({ generation: 1, waitExpiryObservedAt: 3_000 });
