@@ -378,6 +378,13 @@ async function scenarioAcceptedCommandRecovery(): Promise<void> {
   const cfg = {
     agents: { entries: { agent: { workspace: workspaceDir } } },
     messages: { queue: { mode: "followup", debounceMsByChannel: { [PROOF_CHANNEL]: 0 } } },
+    // The real reply path in this scenario only needs the inline loopback
+    // provider below. Without this, every bundled provider plugin lacking
+    // credentials in this isolated harness still gets probed and individually
+    // forced-retired after its own 5s grace period during workspace-plugin
+    // preparation -- cumulative cost grows with the plugin count and can
+    // approach prepared-model-runtime's own build timeout.
+    plugins: { allow: ["__proof_w91n_no_real_plugins__"] },
     models: {
       providers: {
         proofprovider: {
