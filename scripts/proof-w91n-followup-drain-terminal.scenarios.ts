@@ -17,12 +17,12 @@ import { parseInlineSessionDirectives } from "../src/auto-reply/reply/directive-
 import { createFollowupRunner } from "../src/auto-reply/reply/followup-runner.js";
 import type { FollowupRun, QueueSettings } from "../src/auto-reply/reply/queue.js";
 import {
-  clearSessionQueues,
   enqueueFollowupRun,
   FollowupRunDeferredError,
   scheduleFollowupDrain,
 } from "../src/auto-reply/reply/queue.js";
-import { FOLLOWUP_QUEUES } from "../src/auto-reply/reply/queue/state.js";
+import { clearFollowupDrainCallback } from "../src/auto-reply/reply/queue/drain.js";
+import { clearFollowupQueue, FOLLOWUP_QUEUES } from "../src/auto-reply/reply/queue/state.js";
 import { CONFIG_PATH, STATE_DIR } from "../src/config/paths.js";
 import {
   ensureSessionEntrySync,
@@ -655,7 +655,10 @@ export async function runProofScenarios(): Promise<void> {
     await scenarioAcceptedCommandRecovery();
   } finally {
     clearInterval(keepAlive);
-    clearSessionQueues([...FOLLOWUP_QUEUES.keys()]);
+    for (const key of [...FOLLOWUP_QUEUES.keys()]) {
+      clearFollowupQueue(key);
+      clearFollowupDrainCallback(key);
+    }
     resetGatewayWorkAdmission();
     restoreRuntimeError();
   }
