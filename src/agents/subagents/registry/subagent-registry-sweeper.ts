@@ -359,6 +359,10 @@ export function createSubagentRegistrySweeper(params: SubagentRegistrySweeperOpt
               runId,
               entry,
               now,
+              isCurrent: () =>
+                runs.get(runId) === entry &&
+                shouldDeferTerminalCleanupForUnconfirmedChild(entry) &&
+                !getAgentRunContext(runId),
               completeSubagentRunWithRecovery: params.completeSubagentRunWithRecovery,
             });
           } else {
