@@ -60,8 +60,11 @@ const { createSubagentRegistryCompletionRuntime } =
   await import("../src/agents/subagents/registry/subagent-registry-completion-runtime.js");
 const { reconcileStaleActiveSubagentRun } =
   await import("../src/agents/subagents/registry/subagent-registry-sweeper-orphan.js");
-const { persistSubagentRunsToDisk, persistSubagentRunsToDiskOrThrow } =
-  await import("../src/agents/subagents/registry/subagent-registry-state.js");
+const {
+  persistSubagentRunsToDisk,
+  persistSubagentRunsToDiskOrThrow,
+  persistSubagentRunsToDiskAsyncOrThrow,
+} = await import("../src/agents/subagents/registry/subagent-registry-state.js");
 const { getLatestSubagentRunByChildSessionKeyFromRuns } =
   await import("../src/agents/subagents/registry/subagent-registry-queries.js");
 const { loadSubagentRegistryFromSqlite } =
@@ -71,6 +74,8 @@ const { loadGatewayBootSegmentsForAttribution } =
 
 type SubagentRunRecord =
   import("../src/agents/subagents/registry/subagent-registry.types.js").SubagentRunRecord;
+type SubagentLifecycleOptions =
+  import("../src/agents/subagents/registry/subagent-registry-lifecycle-context.js").SubagentLifecycleOptions;
 
 const failures: string[] = [];
 let checks = 0;
@@ -141,11 +146,16 @@ type EdgeRecorder = {
 function createController(runs: Map<string, SubagentRunRecord>, edges: EdgeRecorder) {
   const resumedRuns = new Set<string>();
   const persist = (...runIds: string[]) => {
-    persistSubagentRunsToDisk(runs, runIds.length > 0 ? runIds : undefined);
+    persistSubagentRunsToDisk(runs, runIds);
   };
   const persistOrThrow = (...runIds: string[]) => {
-    persistSubagentRunsToDiskOrThrow(runs, runIds.length > 0 ? runIds : undefined);
+    persistSubagentRunsToDiskOrThrow(runs, runIds);
   };
+  const persistAsyncOrThrow: SubagentLifecycleOptions["persistAsyncOrThrow"] = (
+    context,
+    callbacks,
+    ...runIds
+  ) => persistSubagentRunsToDiskAsyncOrThrow(runs, runIds, { context, ...callbacks });
   // Mirrors the production wiring in src/agents/subagents/registry/subagent-registry.ts.
   const controller = new SubagentLifecycleController({
     runs,
@@ -154,8 +164,9 @@ function createController(runs: Map<string, SubagentRunRecord>, edges: EdgeRecor
     getRuntimeConfig: () => ({}) as never,
     persist,
     persistOrThrow,
+    persistAsyncOrThrow,
     clearPendingLifecycleError: () => {},
-    countPendingDescendantRuns: () => 0,
+    countPendingDescendantRuns: async () => 0,
     getLatestRunForChildSession: (key, matches) =>
       getLatestSubagentRunByChildSessionKeyFromRuns(runs, key, matches) ?? null,
     suppressAnnounceForSteerRestart: () => false,
@@ -297,7 +308,7 @@ async function runScenario(ownership: "current" | "replaced" | "released"): Prom
   const { controller, runtime, retryTimers } = createController(runs, edges);
 
   // Seed the durable row exactly as a crashed Gateway would have left it.
-  persistSubagentRunsToDisk(runs);
+  persistSubagentRunsToDisk(runs, [runId]);
   const seeded = readDurableRun(runId);
   check(
     "stale active run is durably present before recovery",
