@@ -18,7 +18,7 @@ import { pluginInstanceInvocation } from "../../plugins/plugin-instance-invocati
 import { resolveBundledChannelRootScope, type BundledChannelRootScope } from "./bundled-root.js";
 import { normalizeChannelMeta } from "./meta-normalization.js";
 import { loadChannelPluginModule } from "./module-loader.js";
-import type { ChannelPlugin } from "./types.plugin.js";
+import type { AnyChannelPlugin as ChannelPlugin } from "./types.plugin.js";
 import type { ChannelId } from "./types.public.js";
 
 type PluginRuntime = import("../../plugins/runtime/types.js").PluginRuntime;
@@ -71,6 +71,7 @@ type BundledChannelEntryKind = "entry" | "setupEntry";
 type BundledChannelArtifactLoadParams = {
   id: ChannelId;
   rootScope: BundledChannelRootScope;
+  metadata: BundledChannelPluginMetadata;
 };
 
 const log = createSubsystemLogger("channels");
@@ -298,8 +299,8 @@ function rememberBundledChannelArtifact<TKind extends BundledChannelArtifactKind
   kind: TKind,
   id: ChannelId,
   artifact: BundledChannelArtifactValues[TKind] | undefined,
+  metadata = resolveBundledChannelMetadata(id, rootScope),
 ): void {
-  const metadata = resolveBundledChannelMetadata(id, rootScope);
   if (metadata) {
     getPluginCacheSource(path.resolve(metadata.rootDir, metadata.source.source)).variants.set(
       `bundled-channel:${kind}:${id}`,
@@ -336,9 +337,9 @@ function getBundledChannelArtifactForRoot<TKind extends BundledChannelArtifactKi
     // These entries belong to the host bundled cache, not the plugin calling it.
     // Keep its Gateway scope, but never borrow its captured graph for companions.
     const artifact = pluginInstanceInvocation.exit(() =>
-      bundledChannelArtifactLoaders[kind]({ id, rootScope }),
+      bundledChannelArtifactLoaders[kind]({ id, rootScope, metadata }),
     );
-    rememberBundledChannelArtifact(rootScope, kind, id, artifact);
+    rememberBundledChannelArtifact(rootScope, kind, id, artifact, metadata);
     return artifact;
   } catch (error) {
     if (kind === "entry" || kind === "setupEntry") {
@@ -355,7 +356,7 @@ function getBundledChannelArtifactForRoot<TKind extends BundledChannelArtifactKi
     };
     const detail = describeBundledChannelLoadError(error, id);
     log.warn(`[channels] failed to load bundled channel${descriptions[kind]} ${id}: ${detail}`);
-    rememberBundledChannelArtifact(rootScope, kind, id, undefined);
+    rememberBundledChannelArtifact(rootScope, kind, id, undefined, metadata);
     return undefined;
   } finally {
     artifactLoadsInProgress.delete(loadKey);
@@ -367,22 +368,14 @@ const bundledChannelArtifactLoaders: {
     params: BundledChannelArtifactLoadParams,
   ) => BundledChannelArtifactValues[Kind] | undefined;
 } = {
-  entry({ id, rootScope }) {
-    const metadata = resolveBundledChannelMetadata(id, rootScope);
-    if (!metadata) {
-      return undefined;
-    }
+  entry({ id, rootScope, metadata }) {
     const entry = loadGeneratedBundledChannelEntry("entry", rootScope, metadata);
     if (entry && entry.id !== id) {
       rememberBundledChannelArtifact(rootScope, "entry", entry.id, entry);
     }
     return entry;
   },
-  setupEntry({ id, rootScope }) {
-    const metadata = resolveBundledChannelMetadata(id, rootScope);
-    if (!metadata) {
-      return undefined;
-    }
+  setupEntry({ id, rootScope, metadata }) {
     const entry = loadGeneratedBundledChannelEntry("setupEntry", rootScope, metadata);
     const aliases = new Set<ChannelId>([
       metadata.manifest.id,
@@ -394,12 +387,11 @@ const bundledChannelArtifactLoaders: {
     }
     return entry;
   },
-  plugin({ id, rootScope }) {
+  plugin({ id, rootScope, metadata }) {
     const entry = getBundledChannelArtifactForRoot("entry", id, rootScope);
     if (!entry) {
       return undefined;
     }
-    const metadata = resolveBundledChannelMetadata(id, rootScope);
     const plugin = entry.loadChannelPlugin() as ChannelPlugin | undefined;
     return plugin
       ? {
@@ -407,7 +399,7 @@ const bundledChannelArtifactLoaders: {
           meta: normalizeChannelMeta({
             id: plugin.id,
             meta: plugin.meta,
-            existing: metadata?.packageManifest?.channel,
+            existing: metadata.packageManifest?.channel,
           }),
         }
       : undefined;
