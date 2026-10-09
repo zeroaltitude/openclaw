@@ -173,6 +173,7 @@ export function buildGatewaySessionSnapshot(params: {
     providerReview: sessionRow.providerReview ?? null,
     lastRunId: sessionRow.lastRunId ?? null,
     hasAutomation: sessionRow.hasAutomation ?? false,
+    hasActiveSubagentDescendantRun: sessionRow.hasActiveSubagentDescendantRun ?? false,
     ...(params.activeRunState == null
       ? {}
       : {

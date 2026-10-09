@@ -52,6 +52,7 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
     public let lastRunError: String?
     public let hasActiveRun: Bool?
     public let activeRunIds: [String]?
+    public let hasActiveSubagentDescendantRun: Bool?
     public let startedAt: Double?
     public let endedAt: Double?
     public let swarmGroupId: String?
@@ -64,6 +65,7 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
     let statusPresent: Bool
     let lastRunErrorPresent: Bool
     let activeRunIdsPresent: Bool
+    let hasActiveSubagentDescendantRunPresent: Bool
 
     public init(
         sessionKey: String?,
@@ -83,6 +85,7 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
         lastRunError: String? = nil,
         hasActiveRun: Bool? = nil,
         activeRunIds: [String]? = nil,
+        hasActiveSubagentDescendantRun: Bool? = nil,
         startedAt: Double? = nil,
         endedAt: Double? = nil,
         swarmGroupId: String? = nil,
@@ -94,7 +97,8 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
         observerDigestPresent: Bool? = nil,
         statusPresent: Bool? = nil,
         lastRunErrorPresent: Bool? = nil,
-        activeRunIdsPresent: Bool? = nil)
+        activeRunIdsPresent: Bool? = nil,
+        hasActiveSubagentDescendantRunPresent: Bool? = nil)
     {
         self.sessionKey = sessionKey
         self.agentId = agentId
@@ -114,6 +118,8 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
         self.lastRunError = lastRunError
         self.hasActiveRun = hasActiveRun
         self.activeRunIds = activeRunIds ?? session?.activeRunIds
+        self.hasActiveSubagentDescendantRun =
+            hasActiveSubagentDescendantRun ?? session?.hasActiveSubagentDescendantRun
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.swarmGroupId = swarmGroupId
@@ -125,6 +131,8 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
         self.statusPresent = statusPresent ?? (status != nil)
         self.lastRunErrorPresent = lastRunErrorPresent ?? (lastRunError != nil)
         self.activeRunIdsPresent = activeRunIdsPresent ?? (activeRunIds != nil || session?.activeRunIds != nil)
+        self.hasActiveSubagentDescendantRunPresent = hasActiveSubagentDescendantRunPresent ??
+            (hasActiveSubagentDescendantRun != nil || session?.hasActiveSubagentDescendantRun != nil)
     }
 
     public init(from decoder: Decoder) throws {
@@ -164,6 +172,9 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
         self.lastRunError = try decode(String.self, forKey: .lastRunError)
         self.hasActiveRun = try decode(Bool.self, forKey: .hasActiveRun)
         self.activeRunIds = try decode([String].self, forKey: .activeRunIds)
+        self.hasActiveSubagentDescendantRun = try decode(
+            Bool.self,
+            forKey: .hasActiveSubagentDescendantRun)
         self.startedAt = try decode(Double.self, forKey: .startedAt)
         self.endedAt = try decode(Double.self, forKey: .endedAt)
         self.swarmGroupId = try decode(String.self, forKey: .swarmGroupId)
@@ -175,6 +186,9 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
         self.statusPresent = container.contains(.status) || nested?.contains(.status) == true
         self.lastRunErrorPresent = container.contains(.lastRunError) || nested?.contains(.lastRunError) == true
         self.activeRunIdsPresent = container.contains(.activeRunIds) || nested?.contains(.activeRunIds) == true
+        self.hasActiveSubagentDescendantRunPresent =
+            container.contains(.hasActiveSubagentDescendantRun) ||
+            nested?.contains(.hasActiveSubagentDescendantRun) == true
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -199,6 +213,15 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
         try container.encodeIfPresent(self.hasActiveRun, forKey: .hasActiveRun)
         if self.activeRunIdsPresent {
             try container.encode(self.activeRunIds, forKey: .activeRunIds)
+        }
+        if self.hasActiveSubagentDescendantRunPresent {
+            if let hasActiveSubagentDescendantRun {
+                try container.encode(
+                    hasActiveSubagentDescendantRun,
+                    forKey: .hasActiveSubagentDescendantRun)
+            } else {
+                try container.encodeNil(forKey: .hasActiveSubagentDescendantRun)
+            }
         }
         try container.encodeIfPresent(self.startedAt, forKey: .startedAt)
         try container.encodeIfPresent(self.endedAt, forKey: .endedAt)
@@ -227,6 +250,7 @@ public struct OpenClawChatSessionsChangedEvent: Codable, Sendable, Equatable {
         case lastRunError
         case hasActiveRun
         case activeRunIds
+        case hasActiveSubagentDescendantRun
         case startedAt
         case endedAt
         case swarmGroupId

@@ -155,6 +155,8 @@ describe("session list subagent metadata", () => {
           expect((await read(root)).childSessions).toEqual([child]);
           expect((await read(navigation)).childSessions).toEqual([child]);
           expect((await read(child)).hasActiveSubagentRun).toBe(true);
+          expect((await read(child)).hasActiveSubagentDescendantRun).toBe(true);
+          expect((await read(grandchild)).hasActiveSubagentDescendantRun).toBe(false);
           expect((await read(root)).swarm?.groups).toMatchObject([{ groupId: "group", done: 1 }]);
 
           const moved = {
@@ -175,6 +177,7 @@ describe("session list subagent metadata", () => {
           };
           persistRegistryFixture(new Map([[replacement.runId, replacement]]), [replacement.runId]);
           expect((await read(child)).hasActiveSubagentRun).toBe(false);
+          expect((await read(child)).hasActiveSubagentDescendantRun).toBe(false);
           expect((await read(movedRoot)).childSessions).toBeUndefined();
           expect((await read(navigation)).childSessions).toBeUndefined();
 

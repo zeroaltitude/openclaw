@@ -109,6 +109,7 @@ export function projectGatewaySessionRunState(params: {
     normalizeOptionalString(subagentRun?.controllerSessionKey) ||
     normalizeOptionalString(subagentRun?.requesterSessionKey);
   const liveSubagentRunActive = isSubagentRunLive(subagentRun) || isSubagentRunQueued(subagentRun);
+  const activeSubagentDescendantCount = subagentRuns.countActiveDescendantRuns(key);
   const hasProjectedRun = (sessionKey: string, sessionId?: string) => {
     if (!rowContext?.projectedAgentRuns) {
       return false;
@@ -123,7 +124,7 @@ export function projectGatewaySessionRunState(params: {
   // Follow-up turns retain the child session while owning a different run from its original spawn.
   const hasActiveSubagentRun =
     liveSubagentRunActive ||
-    subagentRuns.countActiveDescendantRuns(key) > 0 ||
+    activeSubagentDescendantCount > 0 ||
     ((subagentRun !== null || entry?.spawnedBy !== undefined) &&
       hasProjectedRun(key, entry?.sessionId)) ||
     rowContext?.projectedSubagentActivity?.has(key) === true;
@@ -133,6 +134,7 @@ export function projectGatewaySessionRunState(params: {
     | "lastRunError"
     | "subagentRunState"
     | "hasActiveSubagentRun"
+    | "hasActiveSubagentDescendantRun"
     | "startedAt"
     | "endedAt"
     | "runtimeMs"
@@ -141,6 +143,9 @@ export function projectGatewaySessionRunState(params: {
     lastRunError: entry?.lastRunError,
     subagentRunState: undefined,
     hasActiveSubagentRun: subagentRun || hasActiveSubagentRun ? hasActiveSubagentRun : undefined,
+    // Emit an explicit false so clients can distinguish a current Gateway with
+    // no live descendants from a legacy Gateway that does not expose this fact.
+    hasActiveSubagentDescendantRun: activeSubagentDescendantCount > 0,
     startedAt: entry?.startedAt,
     endedAt: entry?.endedAt,
     runtimeMs: entry?.runtimeMs,

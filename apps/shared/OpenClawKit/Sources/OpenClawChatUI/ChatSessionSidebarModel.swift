@@ -573,6 +573,9 @@ public enum ChatSessionSidebarModel {
         if change.activeRunIdsPresent {
             session.activeRunIds = change.activeRunIds
         }
+        if change.hasActiveSubagentDescendantRunPresent {
+            session.hasActiveSubagentDescendantRun = change.hasActiveSubagentDescendantRun
+        }
         if let startedAt = change.startedAt {
             session.startedAt = startedAt
         }
@@ -670,9 +673,13 @@ public enum ChatSessionSidebarModel {
         _ session: OpenClawChatSessionEntry,
         mainSessionKey: String) -> Bool
     {
-        ChatPayloadDecoding.trimmedNonEmptyString(session.sessionId) != nil &&
+        // Current Gateways emit the descendant-only fact explicitly. Older
+        // Gateways expose only the combined subagent activity bit, so retain
+        // that conservative veto until the new fact is present.
+        let hasActiveDescendants = session.hasActiveSubagentDescendantRun ?? session.hasActiveSubagentRun
+        return ChatPayloadDecoding.trimmedNonEmptyString(session.sessionId) != nil &&
             self.canDeleteSession(key: session.key, mainSessionKey: mainSessionKey) &&
-            !self.isRunning(session) && session.hasActiveSubagentRun != true
+            hasActiveDescendants != true
     }
 
     public static func isSessionInActiveAgentScope(
