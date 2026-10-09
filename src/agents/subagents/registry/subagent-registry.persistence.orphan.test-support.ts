@@ -85,6 +85,7 @@ export function registerSubagentOrphanTaskCases({
           runs: {
             [runId]: {
               runId,
+              taskRunId: runId,
               generation: 1,
               childSessionKey,
               requesterSessionKey: "agent:main:main",
@@ -116,6 +117,7 @@ export function registerSubagentOrphanTaskCases({
         if (observed) {
           expect(hasWait(), "unconfirmed child is re-waited after restore").toBe(true);
           const retained = subagentRuns.get(runId);
+          expect(resolveSubagentSessionStatus(retained)).toBe("running");
           expect(retained?.waitExpiryObservedAt).toBe(now - 1_000);
           expect(retained?.execution.endedAt).toBeUndefined();
           expect(retained?.execution.outcome).toBeUndefined();

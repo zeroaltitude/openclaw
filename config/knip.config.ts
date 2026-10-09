@@ -257,6 +257,9 @@ const repositoryScriptEntries = [
   "scripts/proof-117074-concurrent-write-latency.ts!",
   "scripts/proof-117074-tombstone-shared-owners.ts!",
   // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-126924-isolated-gateway.ts!",
+  "scripts/proof-126924-live-gateway-wait-expiry.ts!",
+  "scripts/proof-126924-store-upgrade-rollback.ts!",
   "scripts/proof-135480-subagent-shared-cwd-advisory.ts!",
   // Maintainer proof harnesses are invoked manually from PR evidence.
   "scripts/proof-app-server-runtime-chooser-bindings.ts!",

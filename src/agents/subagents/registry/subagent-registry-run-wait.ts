@@ -269,11 +269,13 @@ export abstract class SubagentWaitManager {
         endedAt: number | undefined,
         now: number,
         fallback: () => Promise<void>,
+        observedSuccess?: boolean,
       ) => {
         const timeoutAt = resolveCompletionAfterHardRunDeadline({
           entry,
           observedStartedAt: startedAt,
           observedEndedAt: endedAt,
+          observedSuccess,
           now,
         });
         return timeoutAt === undefined ? fallback() : completeAsRunTimeout(timeoutAt, startedAt);
@@ -303,35 +305,47 @@ export abstract class SubagentWaitManager {
         entry = currentEntry();
         if (completion) {
           const completionStartedAt = observedStartedAt ?? completion.startedAt;
-          await completeWithDeadline(completionStartedAt, completion.endedAt, now, () =>
-            complete({
-              endedAt: completion.endedAt,
-              outcome: completion.outcome,
-              reason: completion.reason,
-              startedAt: completionStartedAt,
-            }),
+          await completeWithDeadline(
+            completionStartedAt,
+            completion.endedAt,
+            now,
+            () =>
+              complete({
+                endedAt: completion.endedAt,
+                outcome: completion.outcome,
+                reason: completion.reason,
+                startedAt: completionStartedAt,
+              }),
+            completion.outcome.status === "ok",
           );
           return;
         }
         if (isTerminalWaitTimeout || hardRunTimeoutEndedAt !== undefined) {
-          const timeoutEndedAt =
+          let timeoutEndedAt =
             typeof wait.endedAt === "number" ? wait.endedAt : hardRunTimeoutEndedAt;
           // Only `isTerminalWaitTimeout` carries evidence that the run stopped.
           // Reaching the stored deadline is clock arithmetic on our own budget:
           // it earns the parent a wake, but must stay outside terminal completion
           // because that path owns browser/MCP/session cleanup.
           if (!isTerminalWaitTimeout) {
+            // The recorded observation is this row's publication identity, and
+            // the registry accepts a retry only under that exact value. A child
+            // that starts between attempts moves the computed deadline from
+            // `createdAt + timeout` to `startedAt + timeout`, so a recomputed
+            // timestamp would be refused and the parent would never be woken.
+            // Republish the persisted observation; the lifecycle fences still
+            // decide whether this wait may speak for the row at all.
             waitExpiryForRetry = {
               entry,
-              observedAt: timeoutEndedAt ?? now,
+              observedAt: entry.waitExpiryObservedAt ?? timeoutEndedAt ?? now,
               startedAt: observedStartedAt,
               lifecycleGeneration,
             };
             await this.options.reportSubagentWaitExpiry(waitExpiryForRetry);
             // Do not keep a second long-poll alive after the parent has been
             // notified. The periodic registry sweeper remains the settlement
-            // backstop: once the run context disappears, it reconciles the
-            // persisted terminal session state or records a lost-context error.
+            // backstop: it reconciles persisted terminal session evidence,
+            // retaining this row while the child's stop remains unconfirmed.
             return;
           }
           await completeWithDeadline(observedStartedAt, timeoutEndedAt, now, () =>
@@ -379,27 +393,33 @@ export abstract class SubagentWaitManager {
         );
         return;
       }
-      await completeWithDeadline(observedStartedAt, wait.endedAt, Date.now(), () => {
-        const endedAt = typeof wait.endedAt === "number" ? wait.endedAt : Date.now();
-        // A cancellation stays a cancellation even once `observedCompletion`
-        // has normalized it to a plain error: `resolveSubagentRunDisposition`
-        // reads an absent disposition as `exited`, so the kill would publish
-        // as a clean exit.
-        const outcome =
-          observedCompletion.reason === SUBAGENT_ENDED_REASON_KILLED
-            ? { ...observedCompletion.outcome, disposition: "killed" as const }
-            : observedCompletion.outcome;
-        return complete({
-          endedAt,
-          outcome: withSubagentOutcomeTiming(outcome, {
-            startedAt: observedStartedAt ?? entry.execution.startedAt,
+      await completeWithDeadline(
+        observedStartedAt,
+        wait.endedAt,
+        Date.now(),
+        () => {
+          const endedAt = typeof wait.endedAt === "number" ? wait.endedAt : Date.now();
+          // A cancellation stays a cancellation even once `observedCompletion`
+          // has normalized it to a plain error: `resolveSubagentRunDisposition`
+          // reads an absent disposition as `exited`, so the kill would publish
+          // as a clean exit.
+          const outcome =
+            observedCompletion.reason === SUBAGENT_ENDED_REASON_KILLED
+              ? { ...observedCompletion.outcome, disposition: "killed" as const }
+              : observedCompletion.outcome;
+          return complete({
             endedAt,
-          }),
-          reason: observedCompletion.reason,
-          startedAt: observedStartedAt,
-          terminalReply: wait.terminalReply,
-        });
-      });
+            outcome: withSubagentOutcomeTiming(outcome, {
+              startedAt: observedStartedAt ?? entry.execution.startedAt,
+              endedAt,
+            }),
+            reason: observedCompletion.reason,
+            startedAt: observedStartedAt,
+            terminalReply: wait.terminalReply,
+          });
+        },
+        observedCompletion.outcome.status === "ok",
+      );
     } catch (error) {
       if (hasSqliteWorkerOutcomeUnknown(error)) {
         throw error;

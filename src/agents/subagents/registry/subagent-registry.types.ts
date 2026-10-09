@@ -193,7 +193,7 @@ export type SubagentRunRecord = Omit<SubagentRunReadRecord, "execution" | "colle
   workspaceDir?: string;
   /** First clock-derived wait expiry observed without terminalizing the child. */
   waitExpiryObservedAt?: number;
-  /** Set after provisional notification settlement; not a visible-delivery receipt. */
+  /** Notification attempt settled; not proof of delivery or of child completion. */
   waitExpiryAnnouncedAt?: number;
   spawnMode?: SpawnSubagentMode;
   archiveAtMs?: number;

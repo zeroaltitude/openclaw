@@ -29,7 +29,10 @@ import {
   resolveExplicitFinalSourceReplyDeliveryEvidence,
 } from "../../embedded-agent-runner/delivery-evidence.js";
 import { hasVisibleAgentPayload } from "../../embedded-agent-runner/message-visibility.js";
-import { hasVisibleCompletionResult } from "../../internal-event-contract.js";
+import {
+  hasFailedSubagentNoOutputCompletion,
+  hasVisibleCompletionResult,
+} from "../../internal-event-contract.js";
 import { collectAgentInternalEventMedia, type AgentInternalEvent } from "../../internal-events.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
 import {
@@ -371,15 +374,37 @@ function collectDirectCompletionContent(params: {
 }
 
 /**
- * A wait expiry whose child has not stopped. The parent is instructed to stay
- * quiet about it, so this event neither reports a failure nor owes a visible
- * reply; both facts are read through the predicates below.
+ * A wait-expiry publication observes the waiter, not the run: the child is still
+ * live and the notification is provisional, so it owes no terminal visible
+ * result. Reporting one as missing makes the announce owner mark the attempt
+ * `retryable` and the wait manager schedule another, which turns an expiry
+ * notice for a silent internal requester into a retry loop.
  */
-export function isProvisionalSubagentCompletion(event: AgentInternalEvent | undefined): boolean {
+export function isStillRunningSubagentCompletion(event: AgentInternalEvent | undefined): boolean {
   return (
     event?.type === "task_completion" &&
     event.source === "subagent" &&
     event.disposition === "still-running"
+  );
+}
+
+/**
+ * True when a trusted subagent completion terminally owes a visible result.
+ *
+ * A still-running publication observes the waiter, not the run, so it owes
+ * nothing yet; treating it as a missing reply makes the announce owner mark the
+ * attempt `retryable` and the wait manager schedule another one.
+ */
+export function requiresSubagentNoOutputCompletionReply(
+  trustedCompletionEvent: AgentInternalEvent | undefined,
+  internalEvents: AgentInternalEvent[] | undefined,
+): boolean {
+  if (isStillRunningSubagentCompletion(trustedCompletionEvent)) {
+    return false;
+  }
+  return (
+    (trustedCompletionEvent !== undefined && !hasVisibleCompletionResult(trustedCompletionEvent)) ||
+    hasFailedSubagentNoOutputCompletion(internalEvents)
   );
 }
 
@@ -389,7 +414,7 @@ export function isFailedTerminalSubagentCompletion(event: AgentInternalEvent | u
     event?.type === "task_completion" &&
     event.source === "subagent" &&
     event.status !== "ok" &&
-    !isProvisionalSubagentCompletion(event)
+    event.disposition !== "still-running"
   );
 }
 

@@ -46,7 +46,8 @@ import {
   deliverCompletionDirect,
   isDirectMessageDeliveryTarget,
   isFailedTerminalSubagentCompletion,
-  isProvisionalSubagentCompletion,
+  isStillRunningSubagentCompletion,
+  requiresSubagentNoOutputCompletionReply,
   resolveRequesterRecoveryDelivery,
   runAnnounceAgentCall,
 } from "./subagent-announce-completion-delivery.js";
@@ -183,13 +184,11 @@ export async function sendSubagentAnnounceDirectly(
     const hasFailedTrustedSubagentCompletion =
       isFailedTerminalSubagentCompletion(trustedCompletionEvent);
     const hasProvisionalTrustedSubagentCompletion =
-      isProvisionalSubagentCompletion(trustedCompletionEvent);
+      isStillRunningSubagentCompletion(trustedCompletionEvent);
     const hasRequiredSubagentNoOutputCompletion =
       params.expectsCompletionMessage &&
       isSubagentCompletion &&
-      ((trustedCompletionEvent !== undefined &&
-        !hasVisibleCompletionResult(trustedCompletionEvent)) ||
-        hasFailedSubagentNoOutputCompletion(params.internalEvents));
+      requiresSubagentNoOutputCompletionReply(trustedCompletionEvent, params.internalEvents);
     const hasSuccessfulTrustedSubagentNoOutputCompletion =
       hasRequiredSubagentNoOutputCompletion && trustedCompletionEvent?.status === "ok";
     const textCompletionDirectDeliveryKind = hasFailedTrustedSubagentCompletion
@@ -441,6 +440,7 @@ export async function sendSubagentAnnounceDirectly(
       shouldDeliverAgentFinal,
       requiresMessageToolDelivery,
       isSubagentCompletion,
+      trustedCompletionEvent,
       hasSuccessfulTrustedSubagentNoOutputCompletion,
       hasRequiredSubagentNoOutputCompletion,
       hasProvisionalTrustedSubagentCompletion,

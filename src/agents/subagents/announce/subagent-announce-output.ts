@@ -11,8 +11,8 @@ import { resolveFreshSessionTotalTokens } from "../../../config/sessions/types.j
 import { isFastTestRuntimeEnv } from "../../../infra/env.js";
 import { formatDurationCompact } from "../../../infra/format-time/format-duration.js";
 import { isContractToolCallBlock } from "../../../shared/tool-block-contract.js";
-import { sleep } from "../../../utils/sleep.js";
 import type { AgentRunDisposition } from "../../internal-event-contract.js";
+import { sleep } from "../../../utils/sleep.js";
 import { extractStoredAssistantText } from "../../tools/chat-history-text.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import type { SubagentRunReadRecord } from "../registry/subagent-registry-read.types.js";
@@ -20,7 +20,10 @@ import { prepareSubagentRunsSnapshotForRunIds } from "../registry/subagent-regis
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import { isRequesterCompletionCohortCurrent } from "../registry/subagent-requester-settle-identity.js";
 import { recordLatestSubagentRun } from "../registry/subagent-run-generation.js";
-import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
+import {
+  resolveSubagentRunDisposition,
+  type SubagentRunOutcome,
+} from "../subagent-terminal-outcome.js";
 import {
   buildChildCompletionFindings,
   readSubagentRunAnnounceResultUsing,
@@ -38,6 +41,11 @@ import {
 } from "./subagent-announce.runtime.js";
 import { assistantCallsSessionsYield, isSessionsYieldToolResult } from "./subagent-yield-output.js";
 
+export {
+  resolveSubagentRunDisposition,
+  type SubagentRunOutcome,
+} from "../subagent-terminal-outcome.js";
+
 const FAST_TEST_RETRY_INTERVAL_MS = 8;
 
 type SubagentOutputSnapshot = {
@@ -46,14 +54,7 @@ type SubagentOutputSnapshot = {
   waitingForContinuation?: boolean;
 };
 
-/** Total read of a run's disposition; see `SubagentRunOutcome.disposition`. */
-export function resolveSubagentRunDisposition(
-  outcome: SubagentRunOutcome | undefined,
-): AgentRunDisposition {
-  return outcome?.disposition ?? "exited";
-}
-
-/** True when the completion event describes a child that has not stopped. */
+/** True when the observation carries no confirmed child stop. */
 export function isSubagentRunStillRunning(outcome: SubagentRunOutcome | undefined): boolean {
   return resolveSubagentRunDisposition(outcome) === "still-running";
 }
@@ -77,7 +78,12 @@ export function withSubagentOutcomeTiming(
   if (typeof startedAt === "number" && typeof endedAt === "number") {
     nextTiming.elapsedMs = Math.max(0, endedAt - startedAt);
   }
-  return { ...outcome, ...nextTiming };
+  const { timeoutDisposition, ...canonicalOutcome } = outcome;
+  return {
+    ...canonicalOutcome,
+    ...(timeoutDisposition ? { disposition: resolveSubagentRunDisposition(outcome) } : {}),
+    ...nextTiming,
+  };
 }
 
 function summarizeSubagentOutputHistory(messages: Array<unknown>): SubagentOutputSnapshot {

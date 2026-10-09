@@ -29,6 +29,7 @@ import { buildSubagentRunView } from "./subagent-run-view.js";
 import {
   getSubagentSessionRuntimeMs,
   getSubagentSessionStartedAt,
+  isSubagentChildStopUnconfirmed,
   resolveSubagentDisplayStatus,
 } from "./subagent-session-metrics.js";
 
@@ -51,7 +52,7 @@ const SHARED_CWD_RUN_SAMPLE_MAX = 3;
 const SHARED_CWD_PATH_MAX_CHARS = 72;
 
 /**
- * Advisory marker for live sibling runs spawned into one working directory.
+ * Advisory marker for sibling runs without confirmed stop sharing one working directory.
  * Present only when the spawner passed an explicit `cwd`; inherited workspaces
  * are shared by design and are never reported.
  */
@@ -63,7 +64,7 @@ type SubagentSharedCwdGroup = {
    * untruncated path stays internal to grouping and is never emitted per row.
    */
   path: string;
-  /** Exact live-run count for the group. */
+  /** Exact group count, including children whose stop remains unconfirmed. */
   runCount: number;
   /**
    * At most `SHARED_CWD_RUN_SAMPLE_MAX` run ids, ordered by run id. A sample,
@@ -282,7 +283,8 @@ function buildSharedCwdIndex(params: {
   const groups = new Map<string, { path: string; displayPath: string; runIds: string[] }>();
   const identityMemo = new Map<string, string>();
   for (const run of params.runs) {
-    if (!isRetainedUnendedSubagentRun(run, params.now)) {
+    // A wait expiry does not prove the child stopped accessing its directory.
+    if (!isRetainedUnendedSubagentRun(run, params.now) && !isSubagentChildStopUnconfirmed(run)) {
       continue;
     }
     const spawnedCwd = params.sessionEntries.get(run.childSessionKey)?.spawnedCwd?.trim();
@@ -382,7 +384,7 @@ function buildListText(params: {
       `shared working directories (${params.sharedCwdGroups.length}/${params.sharedCwdGroupTotal} shown):`,
       ...params.sharedCwdGroups.map(
         (group) =>
-          `[cwd ${group.id}] ${group.runCount} live runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
+          `[cwd ${group.id}] ${group.runCount} runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
       ),
     );
   }
@@ -395,8 +397,10 @@ export function buildSubagentList(params: {
   taskMaxChars?: number;
 }) {
   const { now, view: runView, childSessionsByController } = params.context;
-  // `runView.latest` is this function's former `dedupedRuns`: same sort, same
-  // dedup by childSessionKey, same authority.
+  // `runView.latest` is a superset of `active`/`recent` (every deduped run
+  // lands here first); the session entries the caller already loaded for
+  // active/recent cover it too, since the advisory's own filter below only
+  // ever admits runs that also qualify for `active`.
   const sharedCwdIndex = buildSharedCwdIndex({
     runs: runView.latest,
     sessionEntries: params.sessionEntries,

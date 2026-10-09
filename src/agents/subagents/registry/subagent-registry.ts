@@ -15,6 +15,7 @@ import {
 } from "../../../process/gateway-work-admission.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { prependAgentSteeringPrompt } from "../../agent-steering-queue.js";
+import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { reconcileRetiredSubagentCancellation } from "../completion/subagent-completion-admission.store.js";
 import { terminateAcceptedCollectorRun } from "../spawn/subagent-spawn-cleanup.js";
 import { isDeliverySuspended } from "./subagent-delivery-state.js";
@@ -599,16 +600,9 @@ const subagentRunManager = createSubagentRunManager({
     const isCurrent = () =>
       isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) &&
       subagentRuns.get(entry.runId) === entry &&
+      !subagentRuns.isCompletionAuthorityRetired(entry) &&
       typeof entry.execution.endedAt !== "number";
     const ownsObservation = () => isCurrent() && entry.waitExpiryObservedAt === observedAt;
-    // The runtime owns configured execution deadlines and commonly emits its
-    // terminal event in the same clock tick as agent.wait expires. Give that
-    // authoritative event one brief turn to win before publishing a still-live
-    // observation; this avoids a duplicate provisional wake for normal timeouts.
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, SUBAGENT_WAIT_EXPIRY_TERMINAL_GRACE_MS);
-      timer.unref?.();
-    });
     if (
       !isCurrent() ||
       typeof entry.waitExpiryAnnouncedAt === "number" ||
@@ -623,6 +617,17 @@ const subagentRunManager = createSubagentRunManager({
     }
     persistSubagentRunsOrThrow(entry.runId);
 
+    // Record the observation before yielding so the sweeper cannot mistake this
+    // live-but-unconfirmed child for a lost execution during announcement grace.
+    // The grace delays only the wake: an authoritative terminal event still wins.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, SUBAGENT_WAIT_EXPIRY_TERMINAL_GRACE_MS);
+      timer.unref?.();
+    });
+    if (!ownsObservation()) {
+      return;
+    }
+
     if (entry.collect === true || entry.expectsCompletionMessage === false) {
       return;
     }
@@ -632,7 +637,7 @@ const subagentRunManager = createSubagentRunManager({
       childSessionKey: entry.childSessionKey,
       childRunId: entry.runId,
       requesterSessionKey: entry.requesterSessionKey,
-      requesterAgentId: entry.requesterAgentId,
+      requesterAgentId: resolveSubagentRequesterAgentId(getRuntimeConfig(), entry),
       requesterOrigin: entry.requesterOrigin,
       task: entry.task,
       timeoutMs: SUBAGENT_ANNOUNCE_TIMEOUT_MS,

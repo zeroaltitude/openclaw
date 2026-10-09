@@ -33,7 +33,7 @@ export async function handleSubagentsListAction(
       `shared working directories (${list.sharedCwdGroups.length}/${list.sharedCwdGroupTotal} shown):`,
       ...list.sharedCwdGroups.map(
         (group) =>
-          `[cwd ${group.id}] ${group.runCount} live runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
+          `[cwd ${group.id}] ${group.runCount} runs: ${group.path} (sample: ${group.runIds.join(", ")})`,
       ),
     );
   }
