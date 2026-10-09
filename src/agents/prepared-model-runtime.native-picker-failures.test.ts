@@ -647,6 +647,56 @@ it("does not publish a pending native refresh after its owner is replaced", asyn
   expect(owner.isCurrent()).toBe(false);
 });
 
+it("keeps background renewal of a provider at least ten minutes apart", async () => {
+  const before = Date.now();
+  mocks.providerExpiries.set("provider-a", before + 60_000);
+  mocks.providerExpiries.set("provider-b", before + 60_000);
+  const { owner } = await fixture();
+  // Both hosted providers must land in the refresh scope for the renewal floor
+  // to be observable on their inventory rows.
+  const hosted = [
+    { provider: "provider-a", id: "hosted", name: "Hosted A" },
+    { provider: "provider-b", id: "hosted", name: "Hosted B" },
+  ];
+  mocks.runPreparedModelCatalogWorker.mockResolvedValue({
+    entries: hosted,
+    routeVariants: hosted,
+    providerOutcomes: [
+      { provider: "provider-a", status: "ready" },
+      { provider: "provider-b", status: "ready" },
+    ],
+  });
+  await owner.loadFullModelCatalog!({ refresh: true });
+  const inventoryOwner = resolvePreparedModelRuntimeOwnerBySnapshot(owner);
+  const renewalIntervalMs = 10 * 60_000;
+  for (const provider of ["provider-a", "provider-b"]) {
+    expect(
+      inventoryOwner?.catalogInventory?.providers.get(provider)?.expiresAt,
+      `${provider} renewal deadline`,
+    ).toBeGreaterThanOrEqual(before + renewalIntervalMs);
+  }
+  const calls = mocks.runPreparedModelCatalogWorker.mock.calls.length;
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    // The provider cache deadline (60s) has passed, but the renewal interval has not.
+    vi.setSystemTime(before + 5 * 60_000);
+    const published = owner.readFullModelCatalog!();
+    owner.refreshExpiredModelCatalog!();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 20);
+    });
+    expect(mocks.runPreparedModelCatalogWorker).toHaveBeenCalledTimes(calls);
+    expect(owner.readFullModelCatalog!()).toBe(published);
+    vi.setSystemTime(before + renewalIntervalMs + 60_000);
+    owner.refreshExpiredModelCatalog!();
+    await vi.waitFor(() => {
+      expect(mocks.runPreparedModelCatalogWorker.mock.calls.length).toBeGreaterThan(calls);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("renews native observations without retaining harness-only host projections", async () => {
   const provider = "custom";
   const native = { provider, id: "native", name: "Native", nativeRuntime: "fixture-native" };
