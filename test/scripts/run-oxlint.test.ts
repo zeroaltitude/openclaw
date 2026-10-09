@@ -7,6 +7,11 @@ import { setTimeout as waitForProcessTick } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  ownsExitTrailer,
+  runWithFailedTrailer,
+  writeExitTrailer,
+} from "../../scripts/lib/failed-trailer.mts";
+import {
   createOxlintShards,
   filterOxlintShards,
   parseShardRunnerArgs,
@@ -73,6 +78,20 @@ const RUN_OXLINT_SHARDS_URL = pathToFileURL(
 ).href;
 type SignalScenario = "forward" | "group" | "ignore";
 type SuccessfulLeaderDescendantMode = "drain" | "persist";
+
+async function captureFailedTrailer(
+  run: () => Promise<void> | void,
+): Promise<{ exitCode: number | undefined; lines: unknown[] }> {
+  const priorExitCode = process.exitCode;
+  const lines: unknown[] = [];
+  try {
+    process.exitCode = 0;
+    await runWithFailedTrailer("oxlint", run, (line: unknown) => lines.push(line));
+    return { exitCode: process.exitCode, lines };
+  } finally {
+    process.exitCode = priorExitCode;
+  }
+}
 
 function shouldSerializeShards(env: NodeJS.ProcessEnv, hostResources = CONSTRAINED_HOST): boolean {
   return shouldRunOxlintShardsSerial({ env, platform: "linux", hostResources });
@@ -345,6 +364,50 @@ function createPluginShardFixture(
 }
 
 describe("run-oxlint", () => {
+  it("marks a clean run so a truncated log cannot read as one", async () => {
+    // A passing run used to print nothing, leaving a killed run and a green run
+    // byte-identical in a detached log.
+    const { lines } = await captureFailedTrailer(async () => {});
+
+    expect(lines).toEqual(["[oxlint] EXIT 0"]);
+  });
+
+  it("reports a string exit code as the failure it names", async () => {
+    const { lines } = await captureFailedTrailer(() => {
+      // process.exitCode accepts a numeric string, which the old typeof guard
+      // dropped: the run failed and said nothing.
+      Object.assign(process, { exitCode: "2" });
+    });
+
+    expect(lines).toEqual(["[oxlint] EXIT 2", "[oxlint] FAILED (exit 2)"]);
+  });
+
+  it("treats an unparseable exit code as a terminated failure", () => {
+    const lines: unknown[] = [];
+
+    writeExitTrailer("oxlint", "boom", (line: unknown) => lines.push(line));
+
+    expect(lines).toEqual(["[oxlint] EXIT 1", "[oxlint] FAILED (exit 1)"]);
+  });
+
+  it.each([
+    { deferred: undefined, owns: true, scenario: "no shim wrapper published a marker" },
+    { deferred: "scripts/run-oxlint.mts", owns: false, scenario: "our own shim owns the marker" },
+    { deferred: "scripts/run-vitest.mts", owns: true, scenario: "another script's shim owns it" },
+  ])("gives the terminal marker one owner when $scenario", ({ deferred, owns }) => {
+    expect(ownsExitTrailer("scripts/run-oxlint.mts", deferred, "linux")).toBe(owns);
+  });
+
+  it("matches the deferred implementation case-insensitively on Windows", () => {
+    expect(
+      ownsExitTrailer(
+        "C:\\repo\\scripts\\Run-Oxlint.mts",
+        "c:\\repo\\scripts\\run-oxlint.mts",
+        "win32",
+      ),
+    ).toBe(false);
+  });
+
   it("prepares extension package boundary artifacts for normal lint runs", () => {
     expect(shouldPrepareExtensionPackageBoundaryArtifacts([])).toBe(true);
     expect(shouldPrepareExtensionPackageBoundaryArtifacts(["src/index.ts"])).toBe(true);
