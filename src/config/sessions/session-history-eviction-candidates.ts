@@ -162,7 +162,7 @@ export function collectSessionAdmissionReferences(params: {
 }
 
 export function readHistoricalSessionIdsInDatabase(params: {
-  database: Pick<OpenClawAgentDatabase, "db">;
+  database: Pick<OpenClawAgentDatabase, "db" | "path">;
   admissionIdentities: readonly string[];
   preserveRecentMs?: number | null;
 }): string[] {

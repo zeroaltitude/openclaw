@@ -247,6 +247,9 @@ const repositoryScriptEntries = [
   // Maintainer runtime proof invoked manually from PR evidence.
   "scripts/proof-117734-conversation-burst-replay.ts!",
   "scripts/proof-117734-slack-gateway-isolation.ts!",
+  // Maintainer proof harnesses are invoked manually from PR evidence.
+  "scripts/proof-117074-concurrent-write-latency.ts!",
+  "scripts/proof-117074-tombstone-shared-owners.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
   // qa/README.md delegates campaign Git execution to this guarded CLI by path.
