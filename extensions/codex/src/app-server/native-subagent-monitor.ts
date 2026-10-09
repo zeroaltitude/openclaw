@@ -136,6 +136,7 @@ class Monitor {
       parentState: (id) => this.parentStates.get(id),
       knownChild: (id) => this.knownChildren.get(id),
       childState: (runId) => this.childStates.get(runId),
+      isTerminalRevision: (id) => this.recovery.isTerminalRevision(id),
       runtime,
     });
     this.retainClient = options.retainClient;

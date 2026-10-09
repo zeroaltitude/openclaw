@@ -1,6 +1,8 @@
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { loadMcpToolGrants } from "../../infra/exec-approvals-mcp.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveProjectedMcpCodexToolApprovalMode } from "../mcp-codex-tool-approval.js";
+import { awaitBoundedNativeHookRelayChildAdmission } from "./native-hook-relay-child-admission.js";
 import { drainNativeHookRelayBridge } from "./native-hook-relay-bridge.js";
 import { nativeHookRelayState } from "./native-hook-relay-state.js";
 import type {
@@ -13,6 +15,7 @@ import type {
 } from "./native-hook-relay-types.js";
 
 const { relays } = nativeHookRelayState;
+const log = createSubsystemLogger("agents/harness/native-hook-relay");
 
 /** Capture synchronous inputs before the relay owner admits its deferred policy read. */
 export function prepareNativeHookRelayMcpPolicy(
@@ -139,11 +142,25 @@ export async function resolveNativeHookRelayInvocationBinding(
     if (!lifetime.foregroundOpen && !retention.allowPreToolUse(claim)) {
       throw new Error("native hook relay retained invocation not allowed");
     }
-    if (retention.awaitForegroundAdmission) {
-      assertAdmission = await racePromiseWithAbortSignal(
-        retention.awaitForegroundAdmission(claim, signal),
-        signal,
-      );
+    const awaitForegroundAdmission = retention.awaitForegroundAdmission;
+    if (awaitForegroundAdmission) {
+      const admissionStartedAtMs = Date.now();
+      try {
+        assertAdmission = await awaitBoundedNativeHookRelayChildAdmission({
+          admit: (admissionSignal) => awaitForegroundAdmission(claim, admissionSignal),
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          ...(signal ? { signal } : {}),
+        });
+      } catch (error) {
+        log.debug("native hook relay child admission failed", {
+          relayId: registration.relayId,
+          childThreadId: claim,
+          admissionWaitMs: Date.now() - admissionStartedAtMs,
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          error,
+        });
+        throw error;
+      }
       if (!assertAdmission) {
         throw new Error("native hook relay retained invocation not allowed");
       }
