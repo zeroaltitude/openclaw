@@ -554,6 +554,9 @@ async function startMcpLoopbackServer(
     revokeMcpLoopbackClientGrantsForRuntime(ownerToken);
     unregisterGrantRevocation();
     toolCache.clear();
+    // Abort in-flight request work as soon as shutdown starts; do not wait on
+    // the socket layer to finish draining before signaling cancellation.
+    work.beginClose();
     try {
       await new Promise<void>((resolve, reject) => {
         httpServer.close((error) => (error ? reject(error) : resolve()));
