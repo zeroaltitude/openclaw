@@ -251,7 +251,7 @@ describe("runReplyAgent stalled turn continuation", () => {
           channel: "telegram",
           to: "12345",
           payload: expect.objectContaining({
-            text: "⚠️ This turn was interrupted because it stopped making progress. Please try again.",
+            text: "⚠️ Your reply was dropped: the run made no progress and was reclaimed by stuck-session recovery. The session is intact — please retry.",
             isError: true,
           }),
         }),
@@ -393,7 +393,7 @@ describe("runReplyAgent stalled turn continuation", () => {
       expect.objectContaining({
         state: "error",
         errorMessage:
-          "⚠️ This turn was interrupted because it stopped making progress. Please try again.",
+          "⚠️ Your reply was dropped: the run made no progress and was reclaimed by stuck-session recovery. The session is intact — please retry.",
       }),
     ]);
   });

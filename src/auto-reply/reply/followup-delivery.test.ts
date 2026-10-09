@@ -334,7 +334,7 @@ describe("resolveFollowupDeliveryDecision", () => {
           kind: "deliver",
           payloads: [
             {
-              text: "⚠️ This turn was interrupted because it stopped making progress. Please try again.",
+              text: "⚠️ Your reply was dropped: the run made no progress and was reclaimed by stuck-session recovery. The session is intact — please retry.",
               isError: true,
             },
           ],
