@@ -2,8 +2,8 @@ import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { loadMcpToolGrants } from "../../infra/exec-approvals-mcp.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveProjectedMcpCodexToolApprovalMode } from "../mcp-codex-tool-approval.js";
-import { awaitBoundedNativeHookRelayChildAdmission } from "./native-hook-relay-child-admission.js";
 import { drainNativeHookRelayBridge } from "./native-hook-relay-bridge.js";
+import { awaitBoundedNativeHookRelayChildAdmission } from "./native-hook-relay-child-admission.js";
 import { NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR } from "./native-hook-relay-client.js";
 import type {
   ActiveNativeHookRelayRegistration,

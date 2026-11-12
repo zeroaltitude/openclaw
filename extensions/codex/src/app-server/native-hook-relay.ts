@@ -531,13 +531,11 @@ export function createCodexNativeHookRelay(params: {
     hasClaimedDirectChild: () => directChildClaims.size > 0,
     rejectPendingDirectChild: (threadIdInput, reason) => {
       const threadId = threadIdInput.trim();
-      if (!threadId) {
-        return;
-      }
       // The monitor calls this once the child's turn is terminal, which is the
       // release for a request whose wait already expired and left nothing here.
+      // An empty id is never recorded, so deleting it is a no-op.
       directChildAdmissionRequests.delete(threadId);
-      const pending = pendingDirectChildAdmissions.get(threadId);
+      const pending = threadId ? pendingDirectChildAdmissions.get(threadId) : undefined;
       if (!pending) {
         return;
       }
