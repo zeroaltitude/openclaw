@@ -1,0 +1,3 @@
+906
+# Native hook relay transport-failure surfacing: dispatcher-visible relay death, approval-wait survival, abandoned-approval projection, and the relay CLI's transport error reporting.
+# Exact measured net test LF growth; shared scalar unchanged and no spare ceiling credit.
