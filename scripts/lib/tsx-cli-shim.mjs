@@ -83,8 +83,23 @@ function signalExitCode(signal) {
   return typeof signalNumber === "number" ? 128 + signalNumber : 1;
 }
 
-function writeFailureTrailer(tool, exitCode) {
-  if (tool && exitCode !== 0) {
+/**
+ * Write the fixed-shape terminal marker for a curated gate wrapper, then the
+ * human failure line. A detached gate log is judged by this marker: a killed
+ * run leaves none, so a pass must not be silent. Only wrappers that name a
+ * `failureTool` get it — every other shimmed program keeps its stderr to itself.
+ *
+ * The text mirrors `scripts/lib/failed-trailer.mts` deliberately rather than
+ * importing it: this shim's dependency set is mirrored in packaging manifests
+ * and test fixtures, so it stays free of repo-internal imports.
+ */
+function writeExitTrailer(tool, exitCode) {
+  if (!tool) {
+    return;
+  }
+  console.error(`[${tool}] EXIT ${exitCode}`);
+  // The human line stays last so "final line names the failure" keeps holding.
+  if (exitCode !== 0) {
     console.error(`[${tool}] FAILED (exit ${exitCode})`);
   }
 }
@@ -162,7 +177,7 @@ async function runCliShimProcess(moduleUrl, options, nodeArgs, onReady) {
         });
       },
     });
-    writeFailureTrailer(options.failureTool, exitCode);
+    writeExitTrailer(options.failureTool, exitCode);
     if (childSignal && !interrupted) {
       process.kill(process.pid, childSignal);
       return { interrupted };
@@ -224,12 +239,12 @@ async function runCliShimProcess(moduleUrl, options, nodeArgs, onReady) {
     cleanup();
 
     if (result.signal) {
-      writeFailureTrailer(options.failureTool, signalExitCode(result.signal));
+      writeExitTrailer(options.failureTool, signalExitCode(result.signal));
       process.kill(process.pid, result.signal);
       return { interrupted };
     }
     const exitCode = result.code ?? options.failureExitCode ?? 1;
-    writeFailureTrailer(options.failureTool, exitCode);
+    writeExitTrailer(options.failureTool, exitCode);
     process.exitCode = exitCode;
     return { interrupted };
   } catch (error) {
@@ -239,7 +254,7 @@ async function runCliShimProcess(moduleUrl, options, nodeArgs, onReady) {
     }
     console.error(error);
     const exitCode = options.failureExitCode ?? 1;
-    writeFailureTrailer(options.failureTool, exitCode);
+    writeExitTrailer(options.failureTool, exitCode);
     process.exitCode = exitCode;
     return { interrupted };
   }
@@ -260,7 +275,7 @@ async function runCliShim(moduleUrl, options, nodeArgs) {
   } catch (error) {
     console.error(error);
     const exitCode = options.failureExitCode ?? 1;
-    writeFailureTrailer(options.failureTool, exitCode);
+    writeExitTrailer(options.failureTool, exitCode);
     process.exitCode = exitCode;
     return { interrupted: false };
   }
@@ -285,7 +300,7 @@ export async function runTsxCliShim(moduleUrl, options = {}) {
       }
     } catch (error) {
       console.error(error);
-      writeFailureTrailer(options.failureTool, 1);
+      writeExitTrailer(options.failureTool, 1);
       process.exitCode = 1;
       return { interrupted: false };
     }

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { runWithFailedTrailer, writeExitTrailer } from "../../scripts/lib/failed-trailer.mts";
 import {
   createOxlintShards,
   filterOxlintShards,
@@ -69,6 +70,20 @@ const ROOMY_HOST = { totalMemoryBytes: 64 * 1024 ** 3, logicalCpuCount: 16 };
 const RUN_OXLINT_SHARDS_URL = pathToFileURL(
   join(process.cwd(), "scripts/run-oxlint-shards.mts"),
 ).href;
+
+async function captureFailedTrailer(
+  run: () => Promise<void> | void,
+): Promise<{ exitCode: number | undefined; lines: unknown[] }> {
+  const priorExitCode = process.exitCode;
+  const lines: unknown[] = [];
+  try {
+    process.exitCode = 0;
+    await runWithFailedTrailer("oxlint", run, (line: unknown) => lines.push(line));
+    return { exitCode: process.exitCode, lines };
+  } finally {
+    process.exitCode = priorExitCode;
+  }
+}
 
 function resolveSplitCoreConcurrency(env: NodeJS.ProcessEnv, hostResources = ROOMY_HOST): number {
   return resolveOxlintShardConcurrency({ env, platform: "linux", hostResources, splitCore: true });
@@ -189,6 +204,32 @@ function selectedShards(group: string, options: Parameters<typeof createOxlintSh
 }
 
 describe("run-oxlint", () => {
+  it("marks a clean run so a truncated log cannot read as one", async () => {
+    // A passing run used to print nothing, leaving a killed run and a green run
+    // byte-identical in a detached log.
+    const { lines } = await captureFailedTrailer(async () => {});
+
+    expect(lines).toEqual(["[oxlint] EXIT 0"]);
+  });
+
+  it("reports a string exit code as the failure it names", async () => {
+    const { lines } = await captureFailedTrailer(() => {
+      // process.exitCode accepts a numeric string, which the old typeof guard
+      // dropped: the run failed and said nothing.
+      Object.assign(process, { exitCode: "2" });
+    });
+
+    expect(lines).toEqual(["[oxlint] EXIT 2", "[oxlint] FAILED (exit 2)"]);
+  });
+
+  it("treats an unparseable exit code as a terminated failure", () => {
+    const lines: unknown[] = [];
+
+    writeExitTrailer("oxlint", "boom", (line: unknown) => lines.push(line));
+
+    expect(lines).toEqual(["[oxlint] EXIT 1", "[oxlint] FAILED (exit 1)"]);
+  });
+
   it.each([
     [[], true],
     [["--tsconfig", "extensions/tsconfig.json", "extensions/telegram/src/index.ts"], true],
