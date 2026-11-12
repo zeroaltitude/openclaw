@@ -250,6 +250,17 @@ describe("mcp-grant-store", () => {
       expect(message).toContain("lastWrite=deactivate-capture");
       expect(message).toContain("phase=probe");
       expect(message).not.toContain(grant.token);
+
+      const closing = mintClient({
+        context: { nativeCronCreatorToolAllowlist: [], runId: "run-closed-native" },
+        admittedRunContext: await admitted("run-closed-native"),
+      });
+      const closedCapture = activateCapture(grantParams(closing.token, "capture-closed"));
+      admissions.at(-1)?.close();
+      expect(closedCapture && closedCapture.captureNativeToolAuthority(null)).toBe(false);
+      expect(String(warn.mock.calls.at(-1)?.[0])).toContain(
+        "reason=authority-closed(no-retained-cause)",
+      );
     } finally {
       warn.mockRestore();
     }
