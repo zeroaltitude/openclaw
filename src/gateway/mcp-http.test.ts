@@ -153,6 +153,7 @@ import {
   mintAttachGrant,
   mintMcpLoopbackClientGrant,
   revokeMcpLoopbackClientGrant,
+  transferMcpLoopbackClientGrant,
 } from "./mcp-grant-store.js";
 import { handleMcpJsonRpc } from "./mcp-http.handlers.js";
 import { closeMcpLoopbackServer, ensureMcpLoopbackServer } from "./mcp-http.js";
@@ -164,6 +165,7 @@ import {
   markMcpLoopbackToolCallStarted,
   waitForMcpLoopbackToolCallCaptureIdle,
 } from "./mcp-http.loopback-runtime.js";
+import { setMcpNativeToolAllowlistWaitTimeoutMsForTests } from "./mcp-http.request.js";
 import {
   angleSchema,
   buildMockMcpToolSchema,
@@ -961,6 +963,60 @@ describe("mcp loopback server", () => {
   });
 
   it("allows native discovery but denies calls until the current turn observes its tools", async () => {
+    // Unresolved calls wait (bounded) before the hard reject; keep the bound tiny.
+    setMcpNativeToolAllowlistWaitTimeoutMsForTests(30);
+    try {
+      getRuntimeConfigMock.mockReturnValue({ session: { mainKey: "main" } });
+      const execute = vi.fn(async (nativeTools: readonly string[] | null | undefined) => ({
+        content: [{ type: "text", text: JSON.stringify(nativeTools) }],
+      }));
+      resolveGatewayScopedToolsMock.mockImplementation(async () => {
+        const { nativeCronCreatorToolAllowlist } = getScopedToolsCall(
+          resolveGatewayScopedToolsMock.mock.calls.length - 1,
+        );
+        return {
+          agentId: "main",
+          tools: [makeMessageTool({ execute: () => execute(nativeCronCreatorToolAllowlist) })],
+        };
+      });
+      await startLoopbackServerForTest();
+      const { capture, scope: requestScope } = await createCliGrant("run-native-discovery", {
+        context: { nativeCronCreatorToolAllowlist: ["read", "exec"] },
+        captureKey: "capture-native-discovery",
+      });
+
+      expectMcpToolNames(await readOkMcpPayload(await sendLoopbackToolsList(requestScope)), [
+        "message",
+      ]);
+      const response = await sendLoopbackToolCall({ ...requestScope, name: "message" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        error: { code: -32000, message: expect.stringMatching(/retry|wait|initializ/i) },
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(capture.captureNativeToolAuthority(["read"])).toBe(true);
+      expectMcpResultText(
+        await readOkMcpPayload(await sendLoopbackToolCall({ ...requestScope, name: "message" })),
+        '["read"]',
+      );
+      expect(capture.captureNativeToolAuthority([])).toBe(true);
+      expectMcpResultText(
+        await readOkMcpPayload(await sendLoopbackToolCall({ ...requestScope, name: "message" })),
+        "[]",
+      );
+      expect(capture.captureNativeToolAuthority(null)).toBe(true);
+      expect(
+        await (await sendLoopbackToolCall({ ...requestScope, name: "message" })).json(),
+      ).toMatchObject({
+        error: { code: -32000 },
+      });
+      expect(execute).toHaveBeenCalledTimes(2);
+    } finally {
+      setMcpNativeToolAllowlistWaitTimeoutMsForTests(undefined);
+    }
+  });
+
+  it("waits for a concurrent native tool capture instead of rejecting immediately, and scopes tools against the resolved (not stale) allowlist", async () => {
     getRuntimeConfigMock.mockReturnValue({ session: { mainKey: "main" } });
     const execute = vi.fn(async (nativeTools: readonly string[] | null | undefined) => ({
       content: [{ type: "text", text: JSON.stringify(nativeTools) }],
@@ -975,37 +1031,116 @@ describe("mcp loopback server", () => {
       };
     });
     await startLoopbackServerForTest();
-    const { capture, scope: requestScope } = await createCliGrant("run-native-discovery", {
+    const { capture, scope: requestScope } = await createCliGrant("run-native-wait", {
       context: { nativeCronCreatorToolAllowlist: ["read", "exec"] },
-      captureKey: "capture-native-discovery",
+      captureKey: "capture-native-wait",
     });
 
-    expectMcpToolNames(await readOkMcpPayload(await sendLoopbackToolsList(requestScope)), [
-      "message",
-    ]);
-    const response = await sendLoopbackToolCall({ ...requestScope, name: "message" });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      error: { code: -32000, message: expect.stringMatching(/retry|wait|initializ/i) },
+    // The allowlist is still null (pre-capture) when this fires. Do not await
+    // it yet — it must sit inside the gateway's bounded wait rather than
+    // reject immediately.
+    const startedAt = performance.now();
+    const callPromise = sendLoopbackToolCall({ ...requestScope, name: "message" });
+    // Give the request a moment to reach (and start blocking inside) the
+    // wait before the real capture lands, so this exercises the actual
+    // wait-then-wake path rather than a same-tick coincidence.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 25);
     });
     expect(execute).not.toHaveBeenCalled();
-    expect(capture.captureNativeToolAuthority(["read"])).toBe(true);
-    expectMcpResultText(
-      await readOkMcpPayload(await sendLoopbackToolCall({ ...requestScope, name: "message" })),
-      '["read"]',
-    );
-    expect(capture.captureNativeToolAuthority([])).toBe(true);
-    expectMcpResultText(
-      await readOkMcpPayload(await sendLoopbackToolCall({ ...requestScope, name: "message" })),
-      "[]",
-    );
-    expect(capture.captureNativeToolAuthority(null)).toBe(true);
+    expect(capture.captureNativeToolAuthority(["read", "exec"])).toBe(true);
+
+    const payload = await readOkMcpPayload(await callPromise);
+    // Resolved well under the production default (~5s): proves the request
+    // woke on the capture, not on a timeout fallback.
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
+    expectMcpResultText(payload, '["read","exec"]');
+    // The tool schema itself (not just the later gate) must reflect the
+    // freshly captured allowlist — never the null snapshot frozen at auth
+    // time before the wait began.
     expect(
-      await (await sendLoopbackToolCall({ ...requestScope, name: "message" })).json(),
-    ).toMatchObject({
-      error: { code: -32000 },
+      getScopedToolsCall(resolveGatewayScopedToolsMock.mock.calls.length - 1)
+        .nativeCronCreatorToolAllowlist,
+    ).toEqual(["read", "exec"]);
+  });
+
+  it("rejects a waiting call whose bearer was taken over by a successor turn before the wait", async () => {
+    const cfg = { session: { mainKey: "main" } };
+    getRuntimeConfigMock.mockReturnValue(cfg);
+    const execute = vi.fn(async () => ({ content: [{ type: "text", text: "ran" }] }));
+    resolveGatewayScopedToolsMock.mockImplementation(async () => ({
+      agentId: "main",
+      tools: [makeMessageTool({ execute })],
+    }));
+    await startLoopbackServerForTest();
+    const { token, scope: requestScope } = await createCliGrant("run-turn-a", {
+      context: { nativeCronCreatorToolAllowlist: ["read", "exec"] },
+      captureKey: "capture-warm-reuse",
     });
-    expect(execute).toHaveBeenCalledTimes(2);
+    const runtime = expectDefined(getActiveMcpLoopbackRuntime(), "active MCP loopback runtime");
+    const admissionForSuccessor = await activeAdmission("run-turn-b");
+    // Warm turns reuse the child's bearer and capture key. Land the successor on
+    // turn A's token once the request has been authenticated, so the request
+    // resolves turn A's pending (null) allowlist, then finds turn B on the token.
+    getRuntimeConfigMock.mockImplementationOnce(() => {
+      const successor = mintMcpLoopbackClientGrant({
+        context: {
+          sessionKey: "agent:main:main",
+          senderIsOwner: true,
+          nativeCronCreatorToolAllowlist: ["read", "exec"],
+        },
+        runtimeOwnerToken: runtime.ownerToken,
+        admittedRunContext: admissionForSuccessor,
+        toolPolicyConfig: cfg,
+      });
+      transferMcpLoopbackClientGrant({
+        sourceToken: successor.token,
+        targetToken: token,
+        runtimeOwnerToken: runtime.ownerToken,
+      });
+      const successorCapture = activateMcpLoopbackClientGrantCapture({
+        token,
+        runtimeOwnerToken: runtime.ownerToken,
+        captureKey: "capture-warm-reuse",
+      });
+      if (!successorCapture) {
+        throw new Error("expected the successor turn to activate its capture");
+      }
+      successorCapture.captureNativeToolAuthority(["exec"]);
+      return cfg;
+    });
+
+    const response = await sendLoopbackToolCall({ ...requestScope, name: "message" });
+    expect(response.status).toBe(401);
+    expect(execute).not.toHaveBeenCalled();
+    expect(resolveGatewayScopedToolsMock).not.toHaveBeenCalled();
+  });
+
+  it("still hard-rejects with the original error once the wait times out with nothing resolved", async () => {
+    getRuntimeConfigMock.mockReturnValue({ session: { mainKey: "main" } });
+    setMcpNativeToolAllowlistWaitTimeoutMsForTests(30);
+    try {
+      await startLoopbackServerForTest();
+      const { scope: requestScope } = await createCliGrant("run-native-timeout-fallback", {
+        context: { nativeCronCreatorToolAllowlist: ["read", "exec"] },
+        captureKey: "capture-native-timeout-fallback",
+      });
+
+      // Nothing ever calls captureNativeToolAuthority for this grant. The
+      // request must still resolve (not hang) and land on the exact original
+      // hard-reject, byte for byte.
+      const response = await sendLoopbackToolCall({ ...requestScope, name: "message" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        error: {
+          code: -32000,
+          message:
+            "Native tool authority is not initialized. Retry after native startup, or start a fresh session; no tool action was taken.",
+        },
+      });
+    } finally {
+      setMcpNativeToolAllowlistWaitTimeoutMsForTests(undefined);
+    }
   });
 
   it("keeps admitted CLI tool policy across config publication while new grants use current policy", async () => {
