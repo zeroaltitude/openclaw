@@ -26,7 +26,10 @@ import { captureRuntimeConfig } from "../config/runtime-source-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GroupToolPolicyConfig } from "../config/types.tools.js";
 import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-policy.js";
-import type { AgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
+import {
+  readAgentRunDelegatedAuthorityFailure,
+  type AgentRunDelegatedAuthority,
+} from "../infra/agent-run-registry.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
 import { logWarn } from "../logger.js";
 import type {
@@ -449,7 +452,22 @@ function describeNativeCaptureRefusal(
   } else {
     const current = getAdmittedRunDelegatedAuthority(admission);
     if (!current) {
-      reasons.push("authority-closed");
+      // The registry retires an authority when its session source assertion throws,
+      // and keeps that error. It names what changed under the run.
+      const cause = readAgentRunDelegatedAuthorityFailure(authority)?.cause;
+      const frames =
+        cause instanceof Error
+          ? (cause.stack ?? "")
+              .split("\n")
+              .slice(1, 9)
+              .map((frame) => /^\s*at (?:async )?([^\s(]+) \(/.exec(frame)?.[1] ?? "?")
+              .join("<")
+          : "";
+      reasons.push(
+        cause === undefined
+          ? "authority-closed(no-retained-cause)"
+          : `authority-closed(cause=${String(cause instanceof Error ? cause.message : cause).slice(0, 240)} at=${frames})`,
+      );
     } else if (current !== authority) {
       reasons.push("authority-replaced");
     }
