@@ -513,6 +513,7 @@ const repositoryScriptEntries = [
   "scripts/proof-cli-stream-post-budget-cost.ts!",
   "scripts/proof-cli-stream-process-boundary.ts!",
   "scripts/proof-cli-stream-turn-budget.ts!",
+  "scripts/proof-136474-blocked-hook-registrations.ts!",
   "scripts/qa-coverage-report.ts!",
   "scripts/qa-parity-report.ts!",
   // qa/README.md delegates campaign Git execution to this guarded CLI by path.

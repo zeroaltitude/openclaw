@@ -38,6 +38,7 @@ function createInspectReport(
     capabilities: [],
     typedHooks: [],
     customHooks: [],
+    blockedHooks: [],
     tools: [],
     commands: [],
     cliCommands: [],
@@ -377,6 +378,33 @@ describe("plugins cli inspect", () => {
       );
       expect(logs.at(-1)).toContain("Gateway discovery:\nmem0-runtime-discovery");
     }
+  });
+
+  it("renders refused hook registrations in the inspect Blocked hooks section", async () => {
+    const message =
+      'typed hook "before_prompt_build" was NOT registered: set ' +
+      "plugins.entries.openclaw-beads.hooks.allowConversationAccess to true";
+    const plugin = createPluginRecord({ id: "openclaw-beads", name: "Beads" });
+    mockInspection(plugin, {
+      shape: "hook-only",
+      blockedHooks: [
+        {
+          pluginId: plugin.id,
+          hookName: "before_prompt_build",
+          reason: "conversation-access-missing",
+          severity: "error",
+          configPath: "plugins.entries.openclaw-beads.hooks.allowConversationAccess",
+          message,
+          source: "/plugins/openclaw-beads/index.js",
+        },
+      ],
+    });
+
+    await plugins("inspect", plugin.id, "--runtime");
+
+    const output = logs.join("\n");
+    expect(output).toContain("Blocked hooks");
+    expect(output).toContain(`ERROR before_prompt_build: ${message}`);
   });
 
   it.each(["", "-other"])(
