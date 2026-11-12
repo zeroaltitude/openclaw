@@ -7,6 +7,7 @@ import type {
   registerSubagentRun,
 } from "../subagents/registry/subagent-registry.js";
 import type { InProcessGatewayCaller } from "./in-process-gateway.js";
+import type { VisibleChildModelCatalogLoader } from "./sessions-spawn-visible-thinking.js";
 
 export type SessionsSpawnToolOptions = {
   callGateway?: InProcessGatewayCaller;
@@ -40,6 +41,11 @@ export type SessionsSpawnToolOptions = {
   /** Host-owned sessions_create mode: a visible session without supervision or completion. */
   independent?: boolean;
   signal?: AbortSignal;
+  /**
+   * Prepared model catalog used to clamp a visible child's thinking level.
+   * Defaults to the Gateway's prepared catalog snapshot.
+   */
+  loadModelCatalog?: VisibleChildModelCatalogLoader;
 } & SpawnedToolContext;
 
 type VisibleSessionsSpawnOptions = SessionsSpawnToolOptions & {
