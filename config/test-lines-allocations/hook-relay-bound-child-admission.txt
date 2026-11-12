@@ -1,0 +1,3 @@
+654
+# Native hook relay bounded child admission: admission-timeout and abort regressions in the harness relay, Codex relay retention across foreground close, and the subagent monitor's terminal-turn release of an expired admission request.
+# Exact measured net test LF growth; shared scalar unchanged and no spare ceiling credit.

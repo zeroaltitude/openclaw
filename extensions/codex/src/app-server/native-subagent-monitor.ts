@@ -163,6 +163,7 @@ class Monitor {
       parentStates: this.parentStates,
       knownChildren: this.knownChildren,
       childStates: this.childStates,
+      isTerminalThread: (id) => this.recovery.isTerminalThread(id),
       runtime,
     });
     this.retainClient = options.retainClient;

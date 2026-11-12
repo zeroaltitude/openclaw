@@ -34,6 +34,7 @@ export class CodexNativeSubagentAdmissionCustody {
       parentStates: ReadonlyMap<string, ParentState>;
       knownChildren: ReadonlyMap<string, KnownChild>;
       childStates: ReadonlyMap<string, ChildState>;
+      isTerminalThread: (threadId: string) => boolean;
       runtime: NativeSubagentMonitorRuntime;
     },
   ) {}
@@ -85,12 +86,15 @@ export class CodexNativeSubagentAdmissionCustody {
               ((candidate.nativeTurnId !== undefined &&
                 candidate.nativeTurnId === evidence.nativeTurnId) ||
                 (evidence.itemId !== undefined && candidate.itemId === evidence.itemId)))),
-      ) ||
-      (requiresUnboundOwner &&
-        [...this.pending.values()].reduce((count, entries) => count + entries.length, 0) >=
-          MAX_PENDING_CHILD_ADMISSION_EVIDENCE)
+      )
     ) {
       return;
+    }
+    if (requiresUnboundOwner) {
+      // At capacity, evict the oldest rather than refusing the newest. Refusing
+      // silently discarded the only evidence that could ever claim a live child,
+      // whose first pre_tool_use hook is already blocked on that claim.
+      this.evictOldestPending();
     }
     try {
       if (evidence.kind === "interaction") {
@@ -126,6 +130,21 @@ export class CodexNativeSubagentAdmissionCustody {
   hasUnboundParentOwner(parentThreadId: string): boolean {
     const owners = this.dependencies.parentStates.get(parentThreadId)?.owners.values() ?? [];
     return [...owners].some((owner) => owner.turnId === undefined);
+  }
+
+  /** Frees a slot so a new admission evidence fits, oldest turn first. */
+  private evictOldestPending(): void {
+    while (
+      [...this.pending.values()].reduce((count, entries) => count + entries.length, 0) >=
+      MAX_PENDING_CHILD_ADMISSION_EVIDENCE
+    ) {
+      const oldest = [...this.pending.entries()].find(([, entries]) => entries.length > 0);
+      if (!oldest) {
+        return;
+      }
+      const [oldestTurnId, entries] = oldest;
+      this.replace(oldestTurnId, entries.slice(1));
+    }
   }
 
   replace(turnId: string, remaining: NativeChildAdmissionEvidence[]): void {
@@ -170,6 +189,40 @@ export class CodexNativeSubagentAdmissionCustody {
     });
   }
 
+  /**
+   * Provisional admission for direct-spawn evidence that owner resolution can
+   * never consume. Only turn-less evidence qualifies: it is keyed by nothing, so
+   * no bindTurn will ever drain it, and the child's first pre_tool_use hook is
+   * already blocked on the claim it will never receive. Evidence whose turn id
+   * matches no owner stays unclaimed on purpose — it is not authoritative for
+   * this parent's live runs, and its own turn's owner still drains the buffer.
+   */
+  private claimDirectChildWithoutTurn(parentThreadId: string, childState: ChildState): void {
+    if (
+      childState.terminal ||
+      childState.settledWithoutCompletion ||
+      childState.releaseDirectChild
+    ) {
+      return;
+    }
+    if (this.dependencies.isTerminalThread(childState.childThreadId)) {
+      // Matches registerChildThread: a late spawn event must not mint direct
+      // authority for a child this client has already seen terminate.
+      return;
+    }
+    const state = this.dependencies.parentStates.get(parentThreadId);
+    // Without a turn ID, the parent must have exactly one owner. Fan-out would
+    // grant unrelated runs authority over a child they did not spawn.
+    if (state?.owners.size !== 1) {
+      return;
+    }
+    const owner = state.owners.values().next().value;
+    if (owner?.claimDirectChild) {
+      childState.directOwner = owner;
+      childState.releaseDirectChild = owner.claimDirectChild(childState.childThreadId);
+    }
+  }
+
   registerDirectSpawnChild(
     turnIdInput: string | undefined,
     evidence: DirectSpawnEvidence,
@@ -186,6 +239,11 @@ export class CodexNativeSubagentAdmissionCustody {
       ...(owner ? { directOwner: owner } : {}),
     });
     if (!owner) {
+      // The child's first pre_tool_use hook blocks on this claim, so evidence
+      // that owner resolution can never consume must still admit the child.
+      if (childState && !turnIdInput?.trim()) {
+        this.claimDirectChildWithoutTurn(evidence.parentThreadId, childState);
+      }
       this.buffer(turnIdInput, { ...evidence, kind: "spawn" });
     } else if (childState) {
       admitNativeChildModelExecution(

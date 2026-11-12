@@ -233,6 +233,7 @@ export type RelayLifetime = {
   foregroundOpen: boolean;
   /** Null requires turn acceptance; undefined preserves public registration semantics. */
   foregroundTurn?: { threadId: string; turnId: string } | null;
+  childAdmissionTimeoutMs: number;
   policyReady: Promise<void>;
   /** Process-local monotonic expiry used only by the in-process rearm timer. */
   expiresAtMonotonicMs?: number;

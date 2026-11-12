@@ -3,6 +3,7 @@ import { loadMcpToolGrants } from "../../infra/exec-approvals-mcp.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveProjectedMcpCodexToolApprovalMode } from "../mcp-codex-tool-approval.js";
 import { drainNativeHookRelayBridge } from "./native-hook-relay-bridge.js";
+import { awaitBoundedNativeHookRelayChildAdmission } from "./native-hook-relay-child-admission.js";
 import { NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR } from "./native-hook-relay-client.js";
 import type {
   ActiveNativeHookRelayRegistration,
@@ -151,19 +152,32 @@ export async function resolveNativeHookRelayInvocationBinding(
     if (!lifetime.foregroundOpen && !retention.allowPreToolUse(claim)) {
       throw new Error("native hook relay retained invocation not allowed");
     }
-    if (retention.awaitForegroundAdmission) {
+    const awaitForegroundAdmission = retention.awaitForegroundAdmission;
+    if (awaitForegroundAdmission) {
       // Attribution for a hook that dies waiting here: a long admissionWaitMs
       // means the child lost the admission race, a short one with no outcome
       // means the relay was already gone.
-      const admissionStartedAt = Date.now();
-      assertAdmission = await racePromiseWithAbortSignal(
-        retention.awaitForegroundAdmission(claim, signal),
-        signal,
-      );
+      const admissionStartedAtMs = Date.now();
+      try {
+        assertAdmission = await awaitBoundedNativeHookRelayChildAdmission({
+          admit: (admissionSignal) => awaitForegroundAdmission(claim, admissionSignal),
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          ...(signal ? { signal } : {}),
+        });
+      } catch (error) {
+        log.debug("native hook relay child admission failed", {
+          relayId: registration.relayId,
+          childThreadId: claim,
+          admissionWaitMs: Date.now() - admissionStartedAtMs,
+          timeoutMs: lifetime.childAdmissionTimeoutMs,
+          error,
+        });
+        throw error;
+      }
       log.debug("native hook relay child admission settled", {
         relayId: registration.relayId,
         childThreadId: claim,
-        admissionWaitMs: Date.now() - admissionStartedAt,
+        admissionWaitMs: Date.now() - admissionStartedAtMs,
         outcome: assertAdmission ? "admitted" : "not-admitted",
       });
       if (!assertAdmission) {

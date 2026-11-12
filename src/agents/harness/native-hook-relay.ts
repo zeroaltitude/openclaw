@@ -21,6 +21,7 @@ import {
   renewNativeHookRelayBridgeRecord,
   unregisterNativeHookRelayBridge,
 } from "./native-hook-relay-bridge.js";
+import { resolveNativeHookRelayChildAdmissionTimeoutMs } from "./native-hook-relay-child-admission.js";
 import {
   normalizeNativeHookInvocation,
   normalizeNativeHookToolName,
@@ -258,6 +259,9 @@ function registerNativeHookRelayInternal(
     setRelayLifetime(registration, {
       foregroundOpen: true,
       ...(owner?.requireForegroundTurn ? { foregroundTurn: null } : {}),
+      childAdmissionTimeoutMs: resolveNativeHookRelayChildAdmissionTimeoutMs(
+        params.command?.timeoutMs,
+      ),
       policyReady,
       expiresAtMonotonicMs,
       ...(retained ? { retained } : {}),
