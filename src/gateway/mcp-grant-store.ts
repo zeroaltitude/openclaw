@@ -28,6 +28,7 @@ import type { GroupToolPolicyConfig } from "../config/types.tools.js";
 import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-policy.js";
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
+import { logWarn } from "../logger.js";
 import type {
   PluginHookChannelContext,
   PluginHookToolRequesterContext,
@@ -253,6 +254,31 @@ function settleNativeToolAllowlistWaiter(token: string): void {
   waiter.resolve();
 }
 
+/**
+ * Diagnostic trail for openclaw-e2m1: the last write to each bearer's row. A
+ * refused native capture reports it, so the log names what replaced or removed
+ * the row. Holds run ids and call-site names only, never bearer material.
+ */
+type GrantRowWrite = { op: string; runId?: string; atMs: number; origin: string };
+const GRANT_ROW_WRITE_TRAIL_MAX = 256;
+const lastGrantRowWriteByToken = new Map<string, GrantRowWrite>();
+
+function noteGrantRowWrite(token: string, op: string, runId: string | undefined): void {
+  const origin = (new Error().stack ?? "")
+    .split("\n")
+    .slice(3, 7)
+    .map((frame) => /^\s*at (?:async )?([^\s(]+) \(/.exec(frame)?.[1] ?? "?")
+    .join("<");
+  lastGrantRowWriteByToken.delete(token);
+  lastGrantRowWriteByToken.set(token, { op, runId, atMs: Date.now(), origin });
+  if (lastGrantRowWriteByToken.size > GRANT_ROW_WRITE_TRAIL_MAX) {
+    const oldest = lastGrantRowWriteByToken.keys().next().value;
+    if (oldest !== undefined) {
+      lastGrantRowWriteByToken.delete(oldest);
+    }
+  }
+}
+
 function clampTtlMs(ttlMs: number | undefined): number {
   if (ttlMs === undefined || !Number.isFinite(ttlMs) || ttlMs <= 0) {
     return DEFAULT_TTL_MS;
@@ -363,13 +389,15 @@ export function mintMcpLoopbackClientGrant(
     ...(params.toolAuth ? { toolAuth: structuredClone(params.toolAuth) } : {}),
   };
   clientGrantsByToken.set(grant.token, grant);
+  noteGrantRowWrite(grant.token, "mint", grant.context.runId);
   const minted = structuredClone({ token: grant.token, context: grant.context });
   mintedClientGrantOwners.set(minted, owner);
   return minted;
 }
 
-function replaceMcpLoopbackClientGrant(grant: StoredMcpLoopbackClientGrant): void {
+function replaceMcpLoopbackClientGrant(grant: StoredMcpLoopbackClientGrant, op: string): void {
   clientGrantsByToken.set(grant.token, grant);
+  noteGrantRowWrite(grant.token, op, grant.context.runId);
   // Cached tools capture a row's authority even when token and capture strings stay unchanged.
   notifyMcpLoopbackClientGrantRevoked({
     token: grant.token,
@@ -398,6 +426,67 @@ function isMcpLoopbackClientGrantCurrent(
   );
 }
 
+/** Names every condition that refused a native capture (diagnostic, openclaw-e2m1). */
+function describeNativeCaptureRefusal(
+  grant: StoredMcpLoopbackClientGrant,
+  admission: AdmittedRunContext | undefined,
+  authority: AgentRunDelegatedAuthority | undefined,
+): string {
+  const reasons: string[] = [];
+  const probe = (label: string, assertion: (() => void) | undefined) => {
+    try {
+      assertion?.();
+    } catch (error) {
+      reasons.push(
+        `${label}(${String(error instanceof Error ? error.message : error).slice(0, 160)})`,
+      );
+    }
+  };
+  if (!admission) {
+    reasons.push("no-admission");
+  } else if (!authority) {
+    reasons.push("no-authority-at-activation");
+  } else {
+    const current = getAdmittedRunDelegatedAuthority(admission);
+    if (!current) {
+      reasons.push("authority-closed");
+    } else if (current !== authority) {
+      reasons.push("authority-replaced");
+    }
+  }
+  if (grant.abortSignal?.aborted) {
+    reasons.push("aborted");
+  }
+  probe("caller-assertion", grant.assertCurrent);
+  probe("capture-assertion", grant.assertCaptureCurrent);
+  const row = clientGrantsByToken.get(grant.token);
+  if (!row) {
+    reasons.push("row-missing");
+  } else if (row !== grant) {
+    reasons.push(
+      `row-replaced(rowRun=${row.context.runId ?? "none"} rowCapture=${
+        row.activeCaptureKey
+          ? row.activeCaptureKey === grant.activeCaptureKey
+            ? "same-key"
+            : "other-key"
+          : "inactive"
+      })`,
+    );
+  }
+  if (grant.context.nativeCronCreatorToolAllowlist === undefined) {
+    reasons.push("no-allowlist-slot");
+  }
+  const last = lastGrantRowWriteByToken.get(grant.token);
+  return [
+    `reason=${reasons.join("+") || "unknown"}`,
+    `run=${grant.context.runId ?? "none"}`,
+    `session=${grant.context.sessionKey}`,
+    last
+      ? `lastWrite=${last.op} lastWriteRun=${last.runId ?? "none"} lastWriteAgeMs=${Date.now() - last.atMs} lastWriteOrigin=${last.origin}`
+      : "lastWrite=none",
+  ].join(" ");
+}
+
 /** Attaches the exact late CLI admission before the grant can execute tools. */
 export function bindMcpLoopbackClientGrantAdmission(params: {
   token: string;
@@ -412,7 +501,10 @@ export function bindMcpLoopbackClientGrantAdmission(params: {
   ) {
     return false;
   }
-  replaceMcpLoopbackClientGrant({ ...grant, admittedRunContext: params.admittedRunContext });
+  replaceMcpLoopbackClientGrant(
+    { ...grant, admittedRunContext: params.admittedRunContext },
+    "bind-admission",
+  );
   return true;
 }
 
@@ -442,7 +534,7 @@ export function activateMcpLoopbackClientGrantCapture(params: {
         : {}),
     },
   };
-  replaceMcpLoopbackClientGrant(activeGrant);
+  replaceMcpLoopbackClientGrant(activeGrant, "activate-capture");
   const admission = grant.admittedRunContext;
   const authority = admission && getAdmittedRunDelegatedAuthority(admission);
   return {
@@ -455,6 +547,13 @@ export function activateMcpLoopbackClientGrantCapture(params: {
         !isMcpLoopbackClientGrantCurrent(activeGrant, authority) ||
         activeGrant.context.nativeCronCreatorToolAllowlist === undefined
       ) {
+        logWarn(
+          `mcp-loopback: native tool authority capture refused: ${describeNativeCaptureRefusal(
+            activeGrant,
+            admission,
+            authority,
+          )} phase=${toolNames === null ? "probe" : "allowlist"}`,
+        );
         return false;
       }
       const resolvedAllowlist = toolNames === null ? null : [...toolNames];
@@ -466,7 +565,7 @@ export function activateMcpLoopbackClientGrantCapture(params: {
         },
       };
       // Discovery can precede native initialization; discard its earlier cap snapshot.
-      replaceMcpLoopbackClientGrant(activeGrant);
+      replaceMcpLoopbackClientGrant(activeGrant, "native-capture");
       if (resolvedAllowlist !== null) {
         // A real (possibly empty) allowlist landed. Wake anything waiting on
         // this token so it re-reads the live grant instead of the null
@@ -499,7 +598,7 @@ export function deactivateMcpLoopbackClientGrantCapture(params: {
     assertCaptureCurrent: _assertCaptureCurrent,
     ...inactiveGrant
   } = grant;
-  replaceMcpLoopbackClientGrant(inactiveGrant);
+  replaceMcpLoopbackClientGrant(inactiveGrant, "deactivate-capture");
   // This capture attempt is over; no further captureNativeToolAuthority call
   // will land for it. Wake anything still waiting on it now rather than
   // stranding it until its own timeout — a re-activation later lazily creates
@@ -539,6 +638,8 @@ export function transferMcpLoopbackClientGrant(params: {
     token: params.targetToken,
   });
   clientGrantsByToken.delete(params.sourceToken);
+  noteGrantRowWrite(params.targetToken, "transfer-in", source.context.runId);
+  noteGrantRowWrite(params.sourceToken, "transfer-out", source.context.runId);
   source.owner.bearerToken = params.targetToken;
   // A request may be waiting on the source token for a native capture that
   // will now land under the target token instead. Move the waiter so it still
@@ -721,6 +822,7 @@ export function revokeMcpLoopbackClientGrant(token: string): boolean {
   if (!grant || !clientGrantsByToken.delete(token)) {
     return false;
   }
+  noteGrantRowWrite(token, "revoke", grant.context.runId);
   // Revocation must also release server-owned projections whose closures retain
   // this grant's prepared credentials.
   notifyMcpLoopbackClientGrantRevoked({ token, runtimeOwnerToken: grant.runtimeOwnerToken });
