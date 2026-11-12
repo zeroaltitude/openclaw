@@ -120,7 +120,7 @@ import { prepareCliBundleMcpConfig, resolveCliNativeWebSearchEnabled } from "./b
 import { prepareClaudeCliSkillsPlugin } from "./claude-skills-plugin.js";
 import { runCliCleanup, sequenceCliCleanups, throwCliPreparationFailure } from "./cleanup.js";
 import { resolveBundledCliBackendAuthPolicy } from "./cli-backend-auth-policy.js";
-import { getCliLiveSessionGeneration } from "./cli-live-session-registry.js";
+import { getCliLiveSessionGeneration, refuseNativeCapture } from "./cli-live-session-registry.js";
 import { resolveCliSessionId } from "./cli-run-recovery.js";
 import {
   resolveCliExecutionTarget,
@@ -1040,7 +1040,7 @@ async function prepareCliRunContextWithinReadFence(
                       params.assertCurrent?.();
                       params.abortSignal?.throwIfAborted();
                       if (!activeCapture || !activeCapture.captureNativeToolAuthority(null)) {
-                        throw new Error("Native tool authority capture is no longer active.");
+                        refuseNativeCapture(activeToken !== mcpClientGrant.token);
                       }
                       if (
                         !Array.isArray(tools) ||
@@ -1059,7 +1059,7 @@ async function prepareCliRunContextWithinReadFence(
                         ? capabilities
                         : capabilities.filter((name) => name !== "web_search");
                       if (!activeCapture.captureNativeToolAuthority(allowed)) {
-                        throw new Error("Native tool authority capture is no longer active.");
+                        refuseNativeCapture(activeToken !== mcpClientGrant.token);
                       }
                     },
                   }
