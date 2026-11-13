@@ -33,7 +33,7 @@ import { stripOpenClawMcpToolPrefix } from "../tool-display-call.js";
 import { isToolResultError } from "../tool-result-error.js";
 import { cliAssistantItemId } from "./assistant-identity.js";
 import type { CliToolTracking } from "./execute-tool-tracking.js";
-import { normalizeCliToolName } from "./tool-policy.js";
+import { normalizeCliToolName, resolveCliRunOfferedToolNames } from "./tool-policy.js";
 import { recordCliTrajectoryEvent } from "./trajectory.js";
 import type { PreparedCliRunContext } from "./types.js";
 
@@ -240,6 +240,12 @@ export function createCliEventHandlers(params: {
       stripOpenClawMcpToolPrefix(event.name) === event.name
     ) {
       const result = readResult();
+      // A name this run never offered was refused by the harness: nothing was
+      // dispatched, so observers must not read the refusal as tool output. Only
+      // registry membership can say so. The refusal's error string is a constant
+      // shared with tools that ran and failed, and its result envelope is
+      // tool-authored content any MCP server can reproduce verbatim.
+      const offeredToolNames = resolveCliRunOfferedToolNames(runParams, context.backendResolved);
       void runAgentHarnessAfterToolCallHook({
         toolName: normalizeCliToolName(event.name),
         toolCallId: event.toolCallId,
@@ -253,6 +259,7 @@ export function createCliEventHandlers(params: {
         ...(event.isError
           ? { error: extractToolErrorMessage(result) ?? "CLI tool execution failed" }
           : {}),
+        ...(offeredToolNames && !offeredToolNames.has(event.name) ? { rejected: true } : {}),
         startedAt: startedCall?.startedAt,
       }).catch(() => {});
     }
