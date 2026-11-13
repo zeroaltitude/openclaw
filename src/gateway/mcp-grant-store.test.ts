@@ -258,9 +258,9 @@ describe("mcp-grant-store", () => {
       const closedCapture = activateCapture(grantParams(closing.token, "capture-closed"));
       admissions.at(-1)?.close();
       expect(closedCapture && closedCapture.captureNativeToolAuthority(null)).toBe(false);
-      expect(String(warn.mock.calls.at(-1)?.[0])).toContain(
-        "reason=authority-closed(no-retained-cause)",
-      );
+      const closedMessage = String(warn.mock.calls.at(-1)?.[0]);
+      expect(closedMessage).toContain("reason=authority-closed(cause=none closedBy=");
+      expect(closedMessage).toMatch(/closedBy=(?!unknown)\S+ closedAgeMs=\d+/);
     } finally {
       warn.mockRestore();
     }

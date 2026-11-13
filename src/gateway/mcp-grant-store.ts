@@ -26,10 +26,7 @@ import { captureRuntimeConfig } from "../config/runtime-source-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GroupToolPolicyConfig } from "../config/types.tools.js";
 import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-policy.js";
-import {
-  readAgentRunDelegatedAuthorityFailure,
-  type AgentRunDelegatedAuthority,
-} from "../infra/agent-run-registry.js";
+import type { AgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
 import { logWarn } from "../logger.js";
 import type {
@@ -45,6 +42,11 @@ import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
 import type { CronCreatorAuthorityGrant } from "./cron-creator-authority-grant.types.js";
+import {
+  describeNativeCaptureRefusal,
+  installAuthorityClosureTrail,
+  noteGrantRowWrite,
+} from "./mcp-grant-capture-diagnostics.js";
 
 /** Set by MCP authentication; caller-token conversation headers cannot select a binding. */
 export type McpCurrentConversationOrigin = "run-bound-grant" | "server-session" | "caller-token";
@@ -262,26 +264,6 @@ function settleNativeToolAllowlistWaiter(token: string): void {
  * refused native capture reports it, so the log names what replaced or removed
  * the row. Holds run ids and call-site names only, never bearer material.
  */
-type GrantRowWrite = { op: string; runId?: string; atMs: number; origin: string };
-const GRANT_ROW_WRITE_TRAIL_MAX = 256;
-const lastGrantRowWriteByToken = new Map<string, GrantRowWrite>();
-
-function noteGrantRowWrite(token: string, op: string, runId: string | undefined): void {
-  const origin = (new Error().stack ?? "")
-    .split("\n")
-    .slice(3, 7)
-    .map((frame) => /^\s*at (?:async )?([^\s(]+) \(/.exec(frame)?.[1] ?? "?")
-    .join("<");
-  lastGrantRowWriteByToken.delete(token);
-  lastGrantRowWriteByToken.set(token, { op, runId, atMs: Date.now(), origin });
-  if (lastGrantRowWriteByToken.size > GRANT_ROW_WRITE_TRAIL_MAX) {
-    const oldest = lastGrantRowWriteByToken.keys().next().value;
-    if (oldest !== undefined) {
-      lastGrantRowWriteByToken.delete(oldest);
-    }
-  }
-}
-
 function clampTtlMs(ttlMs: number | undefined): number {
   if (ttlMs === undefined || !Number.isFinite(ttlMs) || ttlMs <= 0) {
     return DEFAULT_TTL_MS;
@@ -368,6 +350,7 @@ export function mintMcpLoopbackClientGrant(
   if (!runtimeOwnerToken) {
     throw new Error("mintMcpLoopbackClientGrant: runtimeOwnerToken is required");
   }
+  installAuthorityClosureTrail();
   const owner = { bearerToken: crypto.randomBytes(32).toString("hex") };
   const grant: StoredMcpLoopbackClientGrant = {
     token: owner.bearerToken,
@@ -427,82 +410,6 @@ function isMcpLoopbackClientGrantCurrent(
     !grant.abortSignal?.aborted &&
     clientGrantsByToken.get(grant.token) === grant
   );
-}
-
-/** Names every condition that refused a native capture (diagnostic, openclaw-e2m1). */
-function describeNativeCaptureRefusal(
-  grant: StoredMcpLoopbackClientGrant,
-  admission: AdmittedRunContext | undefined,
-  authority: AgentRunDelegatedAuthority | undefined,
-): string {
-  const reasons: string[] = [];
-  const probe = (label: string, assertion: (() => void) | undefined) => {
-    try {
-      assertion?.();
-    } catch (error) {
-      reasons.push(
-        `${label}(${String(error instanceof Error ? error.message : error).slice(0, 160)})`,
-      );
-    }
-  };
-  if (!admission) {
-    reasons.push("no-admission");
-  } else if (!authority) {
-    reasons.push("no-authority-at-activation");
-  } else {
-    const current = getAdmittedRunDelegatedAuthority(admission);
-    if (!current) {
-      // The registry retires an authority when its session source assertion throws,
-      // and keeps that error. It names what changed under the run.
-      const cause = readAgentRunDelegatedAuthorityFailure(authority)?.cause;
-      const frames =
-        cause instanceof Error
-          ? (cause.stack ?? "")
-              .split("\n")
-              .slice(1, 9)
-              .map((frame) => /^\s*at (?:async )?([^\s(]+) \(/.exec(frame)?.[1] ?? "?")
-              .join("<")
-          : "";
-      reasons.push(
-        cause === undefined
-          ? "authority-closed(no-retained-cause)"
-          : `authority-closed(cause=${String(cause instanceof Error ? cause.message : cause).slice(0, 240)} at=${frames})`,
-      );
-    } else if (current !== authority) {
-      reasons.push("authority-replaced");
-    }
-  }
-  if (grant.abortSignal?.aborted) {
-    reasons.push("aborted");
-  }
-  probe("caller-assertion", grant.assertCurrent);
-  probe("capture-assertion", grant.assertCaptureCurrent);
-  const row = clientGrantsByToken.get(grant.token);
-  if (!row) {
-    reasons.push("row-missing");
-  } else if (row !== grant) {
-    reasons.push(
-      `row-replaced(rowRun=${row.context.runId ?? "none"} rowCapture=${
-        row.activeCaptureKey
-          ? row.activeCaptureKey === grant.activeCaptureKey
-            ? "same-key"
-            : "other-key"
-          : "inactive"
-      })`,
-    );
-  }
-  if (grant.context.nativeCronCreatorToolAllowlist === undefined) {
-    reasons.push("no-allowlist-slot");
-  }
-  const last = lastGrantRowWriteByToken.get(grant.token);
-  return [
-    `reason=${reasons.join("+") || "unknown"}`,
-    `run=${grant.context.runId ?? "none"}`,
-    `session=${grant.context.sessionKey}`,
-    last
-      ? `lastWrite=${last.op} lastWriteRun=${last.runId ?? "none"} lastWriteAgeMs=${Date.now() - last.atMs} lastWriteOrigin=${last.origin}`
-      : "lastWrite=none",
-  ].join(" ");
 }
 
 /** Attaches the exact late CLI admission before the grant can execute tools. */
@@ -568,6 +475,7 @@ export function activateMcpLoopbackClientGrantCapture(params: {
         logWarn(
           `mcp-loopback: native tool authority capture refused: ${describeNativeCaptureRefusal(
             activeGrant,
+            clientGrantsByToken.get(activeGrant.token),
             admission,
             authority,
           )} phase=${toolNames === null ? "probe" : "allowlist"}`,
