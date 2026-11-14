@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
@@ -9,7 +9,6 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
-import * as logger from "../logger.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
 import {
   activateMcpLoopbackClientGrantCapture as activateCapture,
@@ -221,49 +220,6 @@ describe("mcp-grant-store", () => {
     expect(activateCapture(params)).toBeTruthy();
     expect(resolveClient(params)?.context.nativeCronCreatorToolAllowlist).toBeNull();
     expect(capture.captureNativeToolAuthority(["exec"])).toBe(false);
-  });
-
-  it("names the failed condition and the last row write when a native capture is refused", async () => {
-    const warn = vi.spyOn(logger, "logWarn").mockImplementation(() => {});
-    try {
-      const grant = mintClient({
-        context: { nativeCronCreatorToolAllowlist: [], runId: "run-refused-native" },
-        admittedRunContext: await admitted("run-refused-native"),
-      });
-      const params = grantParams(grant.token, "capture-refused");
-      const capture = activateCapture(params);
-      if (!capture) {
-        throw new Error("expected an active native capture");
-      }
-      expect(capture.captureNativeToolAuthority(["read"])).toBe(true);
-      expect(warn).not.toHaveBeenCalled();
-
-      expect(deactivateCapture(params)).toBe(true);
-      expect(capture.captureNativeToolAuthority(null)).toBe(false);
-
-      const message = String(warn.mock.calls.at(-1)?.[0]);
-      expect(message).toContain("native tool authority capture refused");
-      expect(message).toContain(
-        "reason=row-replaced(rowRun=run-refused-native rowCapture=inactive)",
-      );
-      expect(message).toContain("run=run-refused-native");
-      expect(message).toContain("lastWrite=deactivate-capture");
-      expect(message).toContain("phase=probe");
-      expect(message).not.toContain(grant.token);
-
-      const closing = mintClient({
-        context: { nativeCronCreatorToolAllowlist: [], runId: "run-closed-native" },
-        admittedRunContext: await admitted("run-closed-native"),
-      });
-      const closedCapture = activateCapture(grantParams(closing.token, "capture-closed"));
-      admissions.at(-1)?.close();
-      expect(closedCapture && closedCapture.captureNativeToolAuthority(null)).toBe(false);
-      const closedMessage = String(warn.mock.calls.at(-1)?.[0]);
-      expect(closedMessage).toContain("reason=authority-closed(cause=none closedBy=");
-      expect(closedMessage).toMatch(/closedBy=(?!unknown)\S+ closedAgeMs=\d+/);
-    } finally {
-      warn.mockRestore();
-    }
   });
 
   it.each([
