@@ -42,39 +42,6 @@ const liveSessions = new Map<string, CliLiveSessionRecord>();
 const retiredSessionCleanup = new Map<string, Promise<void>>();
 const retiringSessionHandles = new WeakSet<CliBackendLiveSessionHandle>();
 
-// Containment for openclaw-e2m1: a warm process whose native tool capture is
-// refused fails its turn before the model answers. Until the cause is fixed,
-// stop reusing warm processes after a few refusals; every turn then starts a
-// fresh process, which is the path that works. Resets on Gateway restart.
-const WARM_CAPTURE_REFUSAL_LIMIT = 2;
-let warmCaptureRefusals = 0;
-
-/** Counts one refused native capture on a reused process. */
-export function noteCliLiveSessionCaptureRefusal(): void {
-  warmCaptureRefusals += 1;
-  if (warmCaptureRefusals === WARM_CAPTURE_REFUSAL_LIMIT) {
-    cliBackendLog.warn(
-      `cli live session reuse suspended after ${warmCaptureRefusals} refused native captures; turns start fresh processes until restart`,
-    );
-  }
-}
-
-/** Fails the turn whose native capture was refused; `adopted` marks a reused process. */
-export function refuseNativeCapture(adopted: boolean): never {
-  if (adopted) {
-    noteCliLiveSessionCaptureRefusal();
-  }
-  throw new Error("Native tool authority capture is no longer active.");
-}
-
-function isCliLiveSessionReuseSuspended(): boolean {
-  return warmCaptureRefusals >= WARM_CAPTURE_REFUSAL_LIMIT;
-}
-
-export function resetCliLiveSessionReuseSuspensionForTest(): void {
-  warmCaptureRefusals = 0;
-}
-
 function buildCliLiveRegistryKey(owner: CliLiveSessionOwner): string {
   return `${owner.backendId}:${buildCliLiveOwnerKey(owner)}`;
 }
@@ -106,9 +73,6 @@ export function hasCliLiveSession(owner: CliLiveSessionOwner): boolean {
 
 /** Returns the opaque generation of this owner's registered execution session. */
 export function getCliLiveSessionGeneration(owner: CliLiveSessionOwner): string | undefined {
-  if (isCliLiveSessionReuseSuspended()) {
-    return undefined;
-  }
   return liveSessions.get(buildCliLiveRegistryKey(owner))?.handle.generation;
 }
 
@@ -419,10 +383,7 @@ export function createCliLiveSessionCapability(params: {
     fingerprint,
     current: () => {
       assertActive();
-      // A suspended registry reports no process, so the backend replaces it.
-      const handle = isCliLiveSessionReuseSuspended()
-        ? undefined
-        : liveSessions.get(ownerKey)?.handle;
+      const handle = liveSessions.get(ownerKey)?.handle;
       if (params.requiredGeneration && handle?.generation !== params.requiredGeneration) {
         throw requiredSessionError(
           handle ? "cli_live_session_changed" : "cli_live_session_missing",

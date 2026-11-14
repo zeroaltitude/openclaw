@@ -18,8 +18,6 @@ import {
   getCliLiveSessionApprovalGrants,
   getCliLiveSessionGeneration,
   hasCliLiveSession,
-  noteCliLiveSessionCaptureRefusal,
-  resetCliLiveSessionReuseSuspensionForTest,
   restartCliLiveSession,
 } from "./cli-live-session-registry.js";
 import { settlePreparedCliRun } from "./cli-run-settlement.js";
@@ -160,37 +158,9 @@ afterEach(() => {
     admission.close();
   }
   vi.restoreAllMocks();
-  resetCliLiveSessionReuseSuspensionForTest();
 });
 
 describe("generic plugin-owned live session registry", () => {
-  it("stops offering a warm process once refused native captures suspend reuse", async () => {
-    const original = await registeredOwner({ sessionId: "suspended-owner" });
-    const owner = {
-      backendId: "claude-cli",
-      agentId: "main",
-      sessionId: original.sessionId,
-      sessionKey: original.sessionKey,
-    };
-    const next = await createOwner({ sessionId: original.sessionId });
-
-    noteCliLiveSessionCaptureRefusal();
-    expect(next.capability.current()).toBe(original.session);
-    expect(hasCliLiveSession(owner)).toBe(true);
-
-    noteCliLiveSessionCaptureRefusal();
-    expect(next.capability.current()).toBeUndefined();
-    expect(getCliLiveSessionGeneration(owner)).toBeUndefined();
-    expect(hasCliLiveSession(owner)).toBe(false);
-
-    // The backend replaces the process it was not offered.
-    await next.capability.restart();
-    expect(original.close).toHaveBeenCalledOnce();
-    next.register();
-    resetCliLiveSessionReuseSuspensionForTest();
-    expect(original.capability.current()).toBe(next.session);
-  });
-
   it.each([{ agentAccountId: "telegram-account" }, { authProfileId: "different-profile" }])(
     "retires one conversation's conflicting process before replacement: %j",
     async (scope) => {
